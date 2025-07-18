@@ -41,7 +41,7 @@ def convert_docx_to_pdf(docx_file_path):
 iface = gr.Interface(
     fn=convert_docx_to_pdf,
     inputs=gr.File(label="Загрузите DOCX файл", file_types=[".docx"]),
-    outputs=gr.File(label="Скачать PDF"),
+    outputs=gr.File(label="Скачать PDF файл"),
     title="DOCX to PDF Converter",
     description="Загрузите DOCX файл для конвертации в PDF"
 )
