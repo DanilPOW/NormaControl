@@ -1,0 +1,13 @@
+[0;1;32m●[0m gradio-app.service - Gradio Application
+     Loaded: loaded (]8;;file://cv4990812.novalocal/etc/systemd/system/gradio-app.service/etc/systemd/system/gradio-app.service]8;;; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Fri 2025-07-18 09:09:30 MSK; 21s ago
+   Main PID: 145813 (python)
+      Tasks: 3 (limit: 1124)
+     Memory: 122.9M (peak: 123.1M)
+        CPU: 4.488s
+     CGroup: /system.slice/gradio-app.service
+             └─[0;38;5;245m145813 /opt/gradio-app/venv/bin/python app.py[0m
+
+Jul 18 09:09:27 cv4990812.novalocal systemd[1]: [0;1;38;5;185m[0;1;39m[0;1;38;5;185mgradio-app.service: Failed with result 'exit-code'.[0m
+Jul 18 09:09:30 cv4990812.novalocal systemd[1]: gradio-app.service: Scheduled restart job, restart counter is at 251.
+Jul 18 09:09:30 cv4990812.novalocal systemd[1]: Started gradio-app.service - Gradio Application.
