@@ -4,21 +4,20 @@ import os
 import shutil
 import uuid
 
-def convert_docx_to_pdf(docx_file):
+def convert_docx_to_pdf(docx_file_path):
     """Конвертация DOCX в PDF с помощью LibreOffice"""
-    if docx_file is None:
-        return None
+    if not docx_file_path or not os.path.exists(docx_file_path):
+        return "Ошибка: файл не найден"
 
-    # Уникальная директория для каждого запуска
+    # Создаем уникальную временную директорию
     temp_dir = f"/tmp/docx2pdf_{uuid.uuid4().hex}"
     os.makedirs(temp_dir, exist_ok=True)
 
-    # Сохраняем загруженный DOCX в temp-файл
+    # Копируем загруженный файл
     input_path = os.path.join(temp_dir, "input.docx")
-    with open(input_path, "wb") as f:
-        f.write(docx_file.read())
+    shutil.copy(docx_file_path, input_path)
 
-    # Команда LibreOffice для конвертации
+    # Конвертация через LibreOffice
     cmd = [
         "libreoffice",
         "--headless",
@@ -30,17 +29,13 @@ def convert_docx_to_pdf(docx_file):
     try:
         subprocess.run(cmd, check=True)
 
-        # Получаем путь к сконвертированному PDF
-        pdf_path = os.path.join(temp_dir, "input.pdf")
-        if not os.path.exists(pdf_path):
+        output_pdf = os.path.join(temp_dir, "input.pdf")
+        if os.path.exists(output_pdf):
+            return output_pdf
+        else:
             return "Ошибка: PDF не создан"
-
-        return pdf_path
     except subprocess.CalledProcessError as e:
         return f"Ошибка конвертации: {e}"
-    finally:
-        # Удалить временные файлы позже, если нужно (опционально)
-        pass
 
 # Интерфейс Gradio
 iface = gr.Interface(
