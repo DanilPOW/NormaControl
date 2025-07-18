@@ -19,7 +19,7 @@ def convert_docx_to_pdf(docx_file_path):
 
     # Конвертация через LibreOffice
     cmd = [
-        "libreoffice",
+        "/usr/bin/libreoffice",
         "--headless",
         "--convert-to", "pdf",
         "--outdir", temp_dir,
