@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import fitz  # PyMuPDF
 import re
 import os
@@ -134,7 +133,7 @@ class PDFQuoteAnalyzer:
             logger.error(f"❌ Ошибка при поиске позиции в span'ах: {str(e)}")
             return None
 
-     def _add_annotation(self, page, quote_char, page_text, char_position):
+    def _add_annotation(self, page, quote_char, page_text, char_position):
         """Улучшенное добавление аннотации на страницу PDF"""
         annotations_added = 0
         
