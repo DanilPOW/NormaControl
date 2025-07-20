@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class PDFQuoteAnalyzer:
     def __init__(self):
         # Паттерны для поиска неправильных кавычек
-        self.wrong_quotes_pattern = re.compile(r'["\']')
+        self.wrong_quotes_pattern = re.compile(r'[\"\'“”‘’]')
         self.correct_quotes = {'open': '«', 'close': '»'}
         
     def analyze_pdf(self, pdf_path):
