@@ -134,7 +134,7 @@ class PDFQuoteAnalyzer:
             logger.error(f"❌ Ошибка при поиске позиции в span'ах: {str(e)}")
             return None
 
-    def _add_annotation(self, page, quote_char, page_text, char_position):
+     def _add_annotation(self, page, quote_char, page_text, char_position):
         """Улучшенное добавление аннотации на страницу PDF"""
         annotations_added = 0
         
@@ -148,16 +148,22 @@ class PDFQuoteAnalyzer:
                 # Аннотируем ВСЕ найденные вхождения, а не только первое
                 for i, rect in enumerate(quote_instances):
                     try:
+                        # Создаем полный текст аннотации
+                        full_annotation_text = (
+                            'Вы используете не те кавычки. Замените их на «ёлочки» для соответствия стандартам.\n'
+                            f'Найден символ: "{quote_char}" (U+{ord(quote_char):04X})'
+                        )
+
                         annotation = page.add_text_annot(
                             rect.tl,
-                            'Кавычки указаны не верно, используйте кавычки «ёлочки».'
+                            full_annotation_text
                         )
-                        
+
                         annotation.set_info(
                             title="❌ Неправильные кавычки",
-                            content=f'Найден символ: "{quote_char}" (U+{ord(quote_char):04X})\nИспользуйте кавычки «ёлочки».'
+                            content=full_annotation_text  # Используем тот же текст
                         )
-                        
+
                         annotation.set_colors(stroke=[1, 0, 0])
                         annotation.update()
                         
@@ -180,16 +186,22 @@ class PDFQuoteAnalyzer:
                     
                     if char_rect:
                         try:
+                            # Создаем полный текст аннотации для точного позиционирования
+                            full_annotation_text = (
+                                'Вы используете не те кавычки. Замените их на «ёлочки» для соответствия стандартам.\n'
+                                f'Найден символ: "{quote_char}" (U+{ord(quote_char):04X}) в позиции {pos}'
+                            )
+
                             annotation = page.add_text_annot(
                                 char_rect.tl,
-                                "Вы используете не те кавычки. Замените их на «ёлочки»."
+                                full_annotation_text
                             )
-                            
+
                             annotation.set_info(
                                 title="❌ Неправильные кавычки (точное позиционирование)",
-                                content=f'Используйте кавычки «ёлочки».'
+                                content=full_annotation_text  # Используем тот же текст
                             )
-                            
+
                             annotation.set_colors(stroke=[1, 0, 0])
                             annotation.update()
                             
@@ -209,16 +221,22 @@ class PDFQuoteAnalyzer:
                     50 + (char_position % 10) * 20
                 )
                 
+                # Создаем полный текст для fallback аннотации
+                full_annotation_text = (
+                    'Вы используете не те кавычки. Замените их на «ёлочки» для соответствия стандартам.\n'
+                    f'Обнаружен символ "{quote_char}" (U+{ord(quote_char):04X}) в позиции {char_position}'
+                )
+
                 annotation = page.add_text_annot(
                     fallback_point,
-                    f'Найдена неправильная кавычка: "{quote_char}"'
+                    full_annotation_text
                 )
-                
+
                 annotation.set_info(
                     title="❌ Неправильные кавычки (fallback)",
-                    content=f'Обнаружен символ "{quote_char}" (U+{ord(quote_char):04X}) в позиции {char_position}. Используйте «ёлочки».'
+                    content=full_annotation_text  # Используем тот же текст
                 )
-                
+
                 annotation.set_colors(stroke=[1, 0, 0])
                 annotation.update()
                 
