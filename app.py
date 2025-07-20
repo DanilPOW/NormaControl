@@ -1,5 +1,5 @@
 import gradio as gr
-print("Текущая версия Gradio:", gradio.__version__)
+print("Текущая версия Gradio:", gr.__version__)
 import os
 import tempfile
 from scripts.tree_analyzer import analyzer
