@@ -11,22 +11,30 @@ def process_pdf_file(pdf_file):
         result = analyzer.process_pdf(pdf_file.name, temp_dir)
         if result['status'] == 'success':
             output_path = result['output_path']
-            file_url = f"/file={os.path.basename(output_path)}"
-            # Кастомная большая кнопка с download
-            btn_html = f"""
-            <a href="{file_url}" download style="
-                display: inline-block; 
+            btn_html = '''
+            <div style="display: flex; flex-direction: column; align-items: start;">
+              <button id="customDownloadBtn" style="
                 background: linear-gradient(90deg, #5d65f1 0%, #8475fa 100%);
                 color: white; font-size: 1.25rem; border-radius: 10px; padding: 18px 48px;
-                border: none; margin-top: 18px; margin-bottom: 8px; cursor: pointer; font-weight: bold; text-decoration: none;">
+                border: none; margin-top: 18px; margin-bottom: 8px; cursor: pointer; font-weight: bold; letter-spacing: 0.5px;">
                 📥 Скачать аннотированный файл
-            </a>
-            """
+              </button>
+              <small>Файл откроется или сохранится в вашей папке загрузок</small>
+            </div>
+            <script>
+              document.getElementById("customDownloadBtn").onclick = function() {
+                // Найти label gr.File по части текста (label="Скачать стандартно")
+                const el = [...document.querySelectorAll("label")]
+                  .find(l => l.textContent.includes("Скачать стандартно"));
+                if (el) el.click();
+              };
+            </script>
+            '''
             return (
-                output_path,                # Стандартная gr.File — появится ссылка с именем файла
+                output_path,                # gr.File — для стандартной ссылки
                 result['user_message'],
                 result['admin_logs'],
-                btn_html                    # gr.HTML — большая кнопка скачать
+                btn_html
             )
         else:
             return (
@@ -65,7 +73,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
         with gr.Column(scale=1):
             gr.Markdown("### Результат проверки")
             pdf_output = gr.File(
-                label="Скачать стандартно",
+                label="Скачать стандартно",      # По этому label ищет JS
                 interactive=True
             )
             download_html = gr.HTML(value="", visible=True)
