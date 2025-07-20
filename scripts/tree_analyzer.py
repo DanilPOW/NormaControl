@@ -96,48 +96,139 @@ class PDFQuoteAnalyzer:
         end = min(len(text), position + context_length)
         return text[start:end].strip()
 
-    def _add_annotation(self, page, quote_char, page_text, char_position):
-        """Добавление аннотации на страницу PDF"""
+    def _find_char_position_in_spans(self, page, target_char, global_position):
+        """Находит точную позицию символа в span'ах для более точного позиционирования"""
         try:
+            text_dict = page.get_text("dict")
+            char_counter = 0
+            
+            for block in text_dict.get("blocks", []):
+                if "lines" not in block:
+                    continue
+                    
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        span_text = span.get("text", "")
+                        
+                        for i, char in enumerate(span_text):
+                            if char_counter == global_position and char == target_char:
+                                # Вычисляем приблизительную позицию символа в span'е
+                                bbox = span["bbox"]
+                                char_width = (bbox[2] - bbox[0]) / len(span_text) if len(span_text) > 0 else 10
+                                
+                                char_rect = fitz.Rect(
+                                    bbox[0] + i * char_width,
+                                    bbox[1],
+                                    bbox[0] + (i + 1) * char_width,
+                                    bbox[3]
+                                )
+                                
+                                return char_rect
+                            
+                            char_counter += 1
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при поиске позиции в span'ах: {str(e)}")
+            return None
+
+    def _add_annotation(self, page, quote_char, page_text, char_position):
+        """Улучшенное добавление аннотации на страницу PDF"""
+        annotations_added = 0
+        
+        try:
+            # Метод 1: Используем search_for для поиска всех вхождений
             quote_instances = page.search_for(quote_char)
             
             if quote_instances:
-                rect = quote_instances[0]
-                annotation = page.add_text_annot(
-                    rect.tl,
-                    'Кавычки указаны не верно, используйте кавычки «ёлочки».'
-                )
+                logger.info(f"🔍 Найдено {len(quote_instances)} вхождений '{quote_char}' через search_for")
                 
-                annotation.set_info(
-                    title="❌ Неправильные кавычки",
-                    content=f'Найден символ: "{quote_char}" (U+{ord(quote_char):04X})\nИспользуйте кавычки «ёлочки».'
-                )
+                # Аннотируем ВСЕ найденные вхождения, а не только первое
+                for i, rect in enumerate(quote_instances):
+                    try:
+                        annotation = page.add_text_annot(
+                            rect.tl,
+                            'Кавычки указаны не верно, используйте кавычки «ёлочки».'
+                        )
+                        
+                        annotation.set_info(
+                            title="❌ Неправильные кавычки",
+                            content=f'Найден символ: "{quote_char}" (U+{ord(quote_char):04X})\nИспользуйте кавычки «ёлочки».'
+                        )
+                        
+                        annotation.set_colors(stroke=[1, 0, 0])
+                        annotation.update()
+                        
+                        annotations_added += 1
+                        logger.info(f"✅ Аннотация #{i+1} добавлена для '{quote_char}' в позиции {rect}")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка при добавлении аннотации #{i+1}: {str(e)}")
+            
+            # Метод 2: Если search_for не нашел или нашел мало, используем точное позиционирование
+            if not quote_instances or len(quote_instances) < page_text.count(quote_char):
+                logger.info(f"🔧 Используем точное позиционирование через span'ы")
                 
-                annotation.set_colors(stroke=[1, 0, 0])
-                annotation.update()
+                # Находим все позиции символа в тексте
+                positions = [i for i, char in enumerate(page_text) if char == quote_char]
+                logger.info(f"📍 Найдено {len(positions)} позиций '{quote_char}' в тексте: {positions[:10]}...")
                 
-                logger.info(f"✅ Добавлена аннотация для '{quote_char}' (U+{ord(quote_char):04X})")
-                return True
-            else:
+                for pos in positions:
+                    char_rect = self._find_char_position_in_spans(page, quote_char, pos)
+                    
+                    if char_rect:
+                        try:
+                            annotation = page.add_text_annot(
+                                char_rect.tl,
+                                'Кавычки указаны не верно, используйте кавычки «ёлочки».'
+                            )
+                            
+                            annotation.set_info(
+                                title="❌ Неправильные кавычки (точное позиционирование)",
+                                content=f'Найден символ: "{quote_char}" (U+{ord(quote_char):04X}) в позиции {pos}\nИспользуйте кавычки «ёлочки».'
+                            )
+                            
+                            annotation.set_colors(stroke=[1, 0, 0])
+                            annotation.update()
+                            
+                            annotations_added += 1
+                            logger.info(f"✅ Точная аннотация добавлена для '{quote_char}' в позиции {pos}")
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка при точном позиционировании для позиции {pos}: {str(e)}")
+            
+            # Метод 3: Fallback - если ничего не сработало
+            if annotations_added == 0:
+                logger.warning(f"⚠️ Используем fallback размещение для '{quote_char}'")
+                
                 page_rect = page.rect
-                fallback_point = fitz.Point(page_rect.width - 100, 50 + (char_position % 10) * 20)
+                fallback_point = fitz.Point(
+                    page_rect.width - 100, 
+                    50 + (char_position % 10) * 20
+                )
                 
                 annotation = page.add_text_annot(
                     fallback_point,
                     f'Найдена неправильная кавычка: "{quote_char}"'
                 )
+                
                 annotation.set_info(
-                    title="❌ Неправильные кавычки",
-                    content=f'Обнаружен символ "{quote_char}" (U+{ord(quote_char):04X}). Используйте «ёлочки».'
+                    title="❌ Неправильные кавычки (fallback)",
+                    content=f'Обнаружен символ "{quote_char}" (U+{ord(quote_char):04X}) в позиции {char_position}. Используйте «ёлочки».'
                 )
+                
                 annotation.set_colors(stroke=[1, 0, 0])
                 annotation.update()
                 
-                logger.warning(f"⚠️ Резервное размещение для '{quote_char}' (U+{ord(quote_char):04X})")
-                return True
-                
+                annotations_added += 1
+                logger.info(f"✅ Fallback аннотация добавлена для '{quote_char}'")
+            
+            logger.info(f"📊 Всего добавлено аннотаций для '{quote_char}': {annotations_added}")
+            return annotations_added > 0
+            
         except Exception as e:
-            logger.error(f"❌ Ошибка при добавлении аннотации для '{quote_char}': {str(e)}")
+            logger.error(f"❌ Критическая ошибка при добавлении аннотации для '{quote_char}': {str(e)}")
             return False
 
     def process_pdf(self, input_path, output_dir="/tmp"):
@@ -146,6 +237,7 @@ class PDFQuoteAnalyzer:
             doc = fitz.open(input_path)
             violations = []
             total_violations = 0
+            total_annotations = 0
             
             logger.info(f"📄 Начинаем анализ PDF: {os.path.basename(input_path)}")
             logger.info(f"📊 Количество страниц: {len(doc)}")
@@ -183,35 +275,50 @@ class PDFQuoteAnalyzer:
                 matches = list(self.wrong_quotes_pattern.finditer(page_text))
                 logger.info(f"🔎 Regex нашел совпадений: {len(matches)}")
                 
-                for i, match in enumerate(matches, 1):
+                # Группируем совпадения по символам для более эффективной обработки
+                matches_by_char = {}
+                for match in matches:
                     quote_char = match.group()
-                    logger.info(f"🎯 Совпадение #{i}: '{quote_char}' (U+{ord(quote_char):04X}) на позиции {match.start()}")
+                    if quote_char not in matches_by_char:
+                        matches_by_char[quote_char] = []
+                    matches_by_char[quote_char].append(match)
+                
+                # Обрабатываем каждый тип кавычек отдельно
+                for quote_char, char_matches in matches_by_char.items():
+                    logger.info(f"🎯 Обрабатываем символ '{quote_char}' (U+{ord(quote_char):04X}): {len(char_matches)} вхождений")
                     
-                    violation = {
-                        'page': page_num + 1,
-                        'position': match.start(),
-                        'quote': quote_char,
-                        'unicode': f"U+{ord(quote_char):04X}",
-                        'context': self._get_context(page_text, match.start()),
-                        'method': best_method
-                    }
-                    violations.append(violation)
-                    total_violations += 1
+                    # Добавляем аннотации для всех вхождений этого символа
+                    success = self._add_annotation(page, quote_char, page_text, char_matches[0].start())
                     
-                    logger.info(f"🚨 НАРУШЕНИЕ #{total_violations}: '{quote_char}' (U+{ord(quote_char):04X}) на стр. {page_num + 1}")
-                    logger.info(f"   Контекст: ...{violation['context']}...")
-                    
-                    success = self._add_annotation(page, quote_char, page_text, match.start())
                     if success:
-                        logger.info(f"✅ Аннотация добавлена успешно")
+                        total_annotations += 1
+                        logger.info(f"✅ Аннотации для '{quote_char}' добавлены успешно")
                     else:
-                        logger.error(f"❌ Не удалось добавить аннотацию")
+                        logger.error(f"❌ Не удалось добавить аннотации для '{quote_char}'")
+                    
+                    # Записываем все нарушения для отчета
+                    for match in char_matches:
+                        violation = {
+                            'page': page_num + 1,
+                            'position': match.start(),
+                            'quote': quote_char,
+                            'unicode': f"U+{ord(quote_char):04X}",
+                            'context': self._get_context(page_text, match.start()),
+                            'method': best_method
+                        }
+                        violations.append(violation)
+                        total_violations += 1
+                        
+                        logger.info(f"🚨 НАРУШЕНИЕ #{total_violations}: '{quote_char}' (U+{ord(quote_char):04X}) на стр. {page_num + 1}")
+                        logger.info(f"   Контекст: ...{violation['context']}...")
             
             logger.info(f"\n{'='*60}")
             logger.info(f"📊 ИТОГОВАЯ СТАТИСТИКА")
             logger.info(f"{'='*60}")
             logger.info(f"Всего нарушений найдено: {total_violations}")
+            logger.info(f"Всего аннотаций добавлено: {total_annotations}")
             
+            # Генерируем имя выходного файла
             original_name = os.path.splitext(os.path.basename(input_path))[0]
             current_time = datetime.now()
             date_str = current_time.strftime("%d.%m.%Y")
