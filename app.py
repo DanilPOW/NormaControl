@@ -8,31 +8,28 @@ from scripts.tree_analyzer import analyzer
 def process_pdf_file(pdf_file):
     """Обработка загруженного PDF файла"""
     if not pdf_file:
-        return None, "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен", None, None
+        return None, "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен", None
     try:
         temp_dir = tempfile.mkdtemp()
         result = analyzer.process_pdf(pdf_file.name, temp_dir)
         if result['status'] == 'success':
             output_path = result['output_path']
-            filename = os.path.basename(output_path)
             return (
-                output_path,
-                result['user_message'],
-                result['admin_logs'],
-                output_path,   # для DownloadButton.file
-                filename       # для DownloadButton.file_name
+                output_path,                    # pdf_output (для предпросмотра/стандартной ссылки)
+                result['user_message'],         # user_notes
+                result['admin_logs'],           # admin_logs
+                output_path                     # download_btn (для отдельной кнопки)
             )
         else:
             return (
                 None,
                 result['user_message'],
                 result['admin_logs'],
-                None,
                 None
             )
     except Exception as e:
         error_msg = f"Произошла ошибка при обработке файла: {e}"
-        return None, error_msg, f"ERROR: {e}", None, None
+        return None, error_msg, f"ERROR: {e}", None
 
 # Функция аутентификации администратора
 def authenticate_admin(password):
@@ -65,11 +62,11 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 label="",
                 interactive=True
             )
-            download_btn = gr.DownloadButton(
+            # Отдельная большая кнопка скачать
+            download_btn = gr.File(
                 label="📥 Скачать аннотированный файл",
-                file=None,
-                file_name=None,
-                visible=False
+                interactive=True,
+                visible=True
             )
 
     # Нижняя часть — заметки пользователя
@@ -114,7 +111,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
     process_btn.click(
         fn=process_pdf_file,
         inputs=[pdf_input],
-        outputs=[pdf_output, user_notes, admin_logs, download_btn, download_btn]
+        outputs=[pdf_output, user_notes, admin_logs, download_btn]
     )
     login_btn.click(
         fn=authenticate_admin,
