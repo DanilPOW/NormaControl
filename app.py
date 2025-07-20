@@ -3,43 +3,33 @@ import os
 import tempfile
 from scripts.tree_analyzer import analyzer
 
-# Глобальный стейт для хранения пути к результату
-RESULT_PATH = ""
-
 def process_pdf_file(pdf_file):
-    global RESULT_PATH
     if not pdf_file:
-        RESULT_PATH = ""
-        # Кнопка не показывается, файл не передаётся
-        return None, "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен", gr.HTML.update(value=hide_html_btn()), None
+        return None, "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен", "", None
     try:
         temp_dir = tempfile.mkdtemp()
         result = analyzer.process_pdf(pdf_file.name, temp_dir)
         if result['status'] == 'success':
             output_path = result['output_path']
-            RESULT_PATH = output_path
-            # Сформировать html-кнопку
             btn_html = custom_html_btn()
             return (
-                output_path,
-                result['user_message'],
-                result['admin_logs'],
-                gr.HTML.update(value=btn_html, visible=True),
-                output_path   # file для скачивания
+                output_path,                      # pdf_output (если хочешь)
+                result['user_message'],           # user_notes
+                result['admin_logs'],             # admin_logs
+                btn_html,                         # download_html — кастомная кнопка
+                output_path                       # hidden_file — ссылка на файл
             )
         else:
-            RESULT_PATH = ""
             return (
                 None,
                 result['user_message'],
                 result['admin_logs'],
-                gr.HTML.update(value=hide_html_btn()),
+                "",
                 None
             )
     except Exception as e:
-        RESULT_PATH = ""
         error_msg = f"Произошла ошибка при обработке файла: {e}"
-        return None, error_msg, f"ERROR: {e}", gr.HTML.update(value=hide_html_btn()), None
+        return None, error_msg, f"ERROR: {e}", "", None
 
 def authenticate_admin(password):
     if password == os.getenv("ADMIN_PW", "secret123"):
@@ -47,8 +37,8 @@ def authenticate_admin(password):
     else:
         return gr.update(visible=False)
 
-# Генерация html-кнопки, которая через js-клик вызывает клик по скрытому gr.File
 def custom_html_btn():
+    # Кнопка, которая вызывает клик по скрытому gr.File (label: hidden_file_download)
     return '''
     <div style="display: flex; flex-direction: column; align-items: start;">
       <button id="customDownloadBtn" style="
@@ -60,7 +50,6 @@ def custom_html_btn():
       <small>Файл откроется или сохранится в вашей папке загрузок</small>
     </div>
     <script>
-      // при клике на нашу кнопку ищем настоящий gr.File с label "hidden_file_download"
       document.getElementById("customDownloadBtn").onclick = function() {
         // ищем скрытый input (gr.File) и кликаем по нему
         const el = [...document.querySelectorAll("label")]
@@ -69,10 +58,6 @@ def custom_html_btn():
       };
     </script>
     '''
-
-def hide_html_btn():
-    # Пустая заглушка — ничего не показываем
-    return ""
 
 with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.themes.Soft()) as iface:
     gr.Markdown("# 📄 Анализатор кавычек в PDF документах")
@@ -96,15 +81,15 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
             pdf_output = gr.File(
                 label="",
                 interactive=True,
-                visible=False   # скрытый стандартный file
+                visible=False   # можно скрыть стандартный file, если не нужен
             )
             # Большая кастомная кнопка
-            download_html = gr.HTML(value=hide_html_btn(), visible=False)
+            download_html = gr.HTML(value="", visible=True)
             # Скрытый gr.File с уникальным label
             hidden_file = gr.File(
                 label="hidden_file_download",
                 interactive=True,
-                visible=False
+                visible=False  # скрытый file, по клику будет скачиваться
             )
 
     with gr.Row():
