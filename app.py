@@ -3,7 +3,29 @@ import os
 import tempfile
 from scripts.tree_analyzer import analyzer
 
+# Кастомный HTML для большой кнопки
+download_html = """
+<button id="customDownloadBtn" style="
+    background: linear-gradient(90deg, #5d65f1 0%, #8475fa 100%);
+    color: white; font-size: 1.25rem; border-radius: 10px; padding: 18px 48px;
+    border: none; margin-top: 18px; margin-bottom: 8px; cursor: pointer;
+    font-weight: bold; letter-spacing: 0.5px;
+">
+    &#128190; Скачать аннотированный файл
+</button>
+<script>
+document.getElementById("customDownloadBtn").onclick = function() {
+    // Ищем первую gradio-ссылку на скачивание
+    let link = document.querySelector("a.download-link");
+    if(link) link.click();
+    else alert("Сначала обработайте файл — появится ссылка для скачивания.");
+};
+</script>
+"""
+
+# Функция обработки PDF файла
 def process_pdf_file(pdf_file):
+    """Обработка загруженного PDF файла"""
     if not pdf_file:
         return None, "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен", ""
     try:
@@ -11,50 +33,24 @@ def process_pdf_file(pdf_file):
         result = analyzer.process_pdf(pdf_file.name, temp_dir)
         if result['status'] == 'success':
             output_path = result['output_path']
-            btn_html = '''
-            <div style="display: flex; flex-direction: column; align-items: start;">
-              <button id="customDownloadBtn" style="
-                background: linear-gradient(90deg, #5d65f1 0%, #8475fa 100%);
-                color: white; font-size: 1.25rem; border-radius: 10px; padding: 18px 48px;
-                border: none; margin-top: 18px; margin-bottom: 8px; cursor: pointer; font-weight: bold; letter-spacing: 0.5px;">
-                📥 Скачать аннотированный файл
-              </button>
-              <small>Файл будет скачан в папку загрузок браузера</small>
-            </div>
-            <script>
-              // Ждем появления кнопки для скачивания внутри gr.File
-              document.getElementById("customDownloadBtn").onclick = function() {
-                // Поиск <a> с ссылкой на файл
-                let fileLinks = Array.from(document.querySelectorAll('a'))
-                  .filter(a => a.download && a.href && a.textContent.trim().length > 0);
-                if (fileLinks.length > 0) {
-                  fileLinks[0].click();
-                  return;
-                }
-                // Если не нашли — fallback: ищем кнопку Download
-                let btns = Array.from(document.querySelectorAll('button,span'))
-                  .filter(b => /скачать|download/i.test(b.textContent));
-                if (btns.length > 0) btns[0].click();
-              };
-            </script>
-            '''
             return (
-                output_path,                # gr.File — для стандартной ссылки
+                output_path,
                 result['user_message'],
                 result['admin_logs'],
-                btn_html
+                download_html  # HTML появляется после обработки
             )
         else:
             return (
                 None,
                 result['user_message'],
                 result['admin_logs'],
-                ""
+                ""  # Не показываем кнопку, если ошибка
             )
     except Exception as e:
         error_msg = f"Произошла ошибка при обработке файла: {e}"
         return None, error_msg, f"ERROR: {e}", ""
 
+# Функция аутентификации администратора
 def authenticate_admin(password):
     if password == os.getenv("ADMIN_PW", "secret123"):
         return gr.update(visible=True)
@@ -81,11 +77,13 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
         with gr.Column(scale=1):
             gr.Markdown("### Результат проверки")
             pdf_output = gr.File(
-                label="Скачать стандартно",      # По этому label ищет JS
+                label="Скачать стандартно",
                 interactive=True
             )
-            download_html = gr.HTML(value="", visible=True)
+            # Кастомная кнопка (HTML обновляется после обработки)
+            html_btn = gr.HTML(value="", visible=True)
 
+    # Заметки для пользователя
     with gr.Row():
         with gr.Column():
             gr.Markdown("### 👤 Заметки для пользователя")
@@ -97,6 +95,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 placeholder="Здесь появится информация о результатах проверки..."
             )
 
+    # Блок админ-логов
     with gr.Row():
         with gr.Column():
             gr.Markdown("### 🔧 Логи для администраторов")
@@ -109,6 +108,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 visible=False
             )
 
+    # Авторизация администратора
     with gr.Row():
         with gr.Column(scale=1):
             admin_pwd = gr.Textbox(
@@ -121,10 +121,11 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 variant="secondary"
             )
 
+    # Колбэки
     process_btn.click(
         fn=process_pdf_file,
         inputs=[pdf_input],
-        outputs=[pdf_output, user_notes, admin_logs, download_html]
+        outputs=[pdf_output, user_notes, admin_logs, html_btn]
     )
     login_btn.click(
         fn=authenticate_admin,
@@ -132,6 +133,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
         outputs=[admin_logs]
     )
 
+    # Информация о проверке
     with gr.Accordion("ℹ️ Информация о проверке", open=False):
         gr.Markdown("""
         ### Что проверяется:
