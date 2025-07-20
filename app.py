@@ -5,59 +5,45 @@ from scripts.tree_analyzer import analyzer
 
 def process_pdf_file(pdf_file):
     if not pdf_file:
-        return None, "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен", "", None
+        return None, "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен", ""
     try:
         temp_dir = tempfile.mkdtemp()
         result = analyzer.process_pdf(pdf_file.name, temp_dir)
         if result['status'] == 'success':
             output_path = result['output_path']
-            btn_html = custom_html_btn()
+            file_url = f"/file={os.path.basename(output_path)}"
+            # Кастомная большая кнопка с download
+            btn_html = f"""
+            <a href="{file_url}" download style="
+                display: inline-block; 
+                background: linear-gradient(90deg, #5d65f1 0%, #8475fa 100%);
+                color: white; font-size: 1.25rem; border-radius: 10px; padding: 18px 48px;
+                border: none; margin-top: 18px; margin-bottom: 8px; cursor: pointer; font-weight: bold; text-decoration: none;">
+                📥 Скачать аннотированный файл
+            </a>
+            """
             return (
-                output_path,                      # pdf_output (если хочешь)
-                result['user_message'],           # user_notes
-                result['admin_logs'],             # admin_logs
-                btn_html,                         # download_html — кастомная кнопка
-                output_path                       # hidden_file — ссылка на файл
+                output_path,                # Стандартная gr.File — появится ссылка с именем файла
+                result['user_message'],
+                result['admin_logs'],
+                btn_html                    # gr.HTML — большая кнопка скачать
             )
         else:
             return (
                 None,
                 result['user_message'],
                 result['admin_logs'],
-                "",
-                None
+                ""
             )
     except Exception as e:
         error_msg = f"Произошла ошибка при обработке файла: {e}"
-        return None, error_msg, f"ERROR: {e}", "", None
+        return None, error_msg, f"ERROR: {e}", ""
 
 def authenticate_admin(password):
     if password == os.getenv("ADMIN_PW", "secret123"):
         return gr.update(visible=True)
     else:
         return gr.update(visible=False)
-
-def custom_html_btn():
-    # Кнопка, которая вызывает клик по скрытому gr.File (label: hidden_file_download)
-    return '''
-    <div style="display: flex; flex-direction: column; align-items: start;">
-      <button id="customDownloadBtn" style="
-        background: linear-gradient(90deg, #5d65f1 0%, #8475fa 100%);
-        color: white; font-size: 1.25rem; border-radius: 10px; padding: 18px 48px;
-        border: none; margin-top: 18px; margin-bottom: 8px; cursor: pointer; font-weight: bold; letter-spacing: 0.5px;">
-        📥 Скачать аннотированный файл
-      </button>
-      <small>Файл откроется или сохранится в вашей папке загрузок</small>
-    </div>
-    <script>
-      document.getElementById("customDownloadBtn").onclick = function() {
-        // ищем скрытый input (gr.File) и кликаем по нему
-        const el = [...document.querySelectorAll("label")]
-          .find(l => l.textContent.includes("hidden_file_download"))
-        if (el) el.click();
-      };
-    </script>
-    '''
 
 with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.themes.Soft()) as iface:
     gr.Markdown("# 📄 Анализатор кавычек в PDF документах")
@@ -79,18 +65,10 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
         with gr.Column(scale=1):
             gr.Markdown("### Результат проверки")
             pdf_output = gr.File(
-                label="",
-                interactive=True,
-                visible=False   # можно скрыть стандартный file, если не нужен
+                label="Скачать стандартно",
+                interactive=True
             )
-            # Большая кастомная кнопка
             download_html = gr.HTML(value="", visible=True)
-            # Скрытый gr.File с уникальным label
-            hidden_file = gr.File(
-                label="hidden_file_download",
-                interactive=True,
-                visible=False  # скрытый file, по клику будет скачиваться
-            )
 
     with gr.Row():
         with gr.Column():
@@ -130,7 +108,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
     process_btn.click(
         fn=process_pdf_file,
         inputs=[pdf_input],
-        outputs=[pdf_output, user_notes, admin_logs, download_html, hidden_file]
+        outputs=[pdf_output, user_notes, admin_logs, download_html]
     )
     login_btn.click(
         fn=authenticate_admin,
