@@ -1,7 +1,7 @@
 import gradio as gr
 import os
 import tempfile
-from scripts.pdf_analyzer import analyzer
+from scripts.tree_analyzer import analyzer
 
 def process_pdf_file(pdf_file):
     """Обработка загруженного PDF файла"""
