@@ -6,29 +6,29 @@ from scripts.tree_analyzer import analyzer
 def process_pdf_file(pdf_file):
     """Обработка загруженного PDF файла"""
     if not pdf_file:
-        return None, None, "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен", False
+        # Скрыть download_btn при ошибке
+        return None, gr.update(visible=False, value=None), "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен"
     try:
         temp_dir = tempfile.mkdtemp()
         result = analyzer.process_pdf(pdf_file.name, temp_dir)
         if result['status'] == 'success':
             output_path = result['output_path']
             return (
-                output_path,      # gr.File (стандартная ссылка)
-                output_path,      # gr.DownloadButton (большая кнопка)
+                output_path,                     # gr.File
+                gr.update(visible=True, value=output_path),  # gr.DownloadButton — показать и обновить value
                 result['user_message'],
-                result['admin_logs'],
-                True              # показать download_btn
+                result['admin_logs']
             )
         else:
+            # Скрыть download_btn при ошибке
             return (
-                None, None,
+                None, gr.update(visible=False, value=None),
                 result['user_message'],
-                result['admin_logs'],
-                False
+                result['admin_logs']
             )
     except Exception as e:
         error_msg = f"Произошла ошибка при обработке файла: {e}"
-        return None, None, error_msg, f"ERROR: {e}", False
+        return None, gr.update(visible=False, value=None), error_msg, f"ERROR: {e}"
 
 def authenticate_admin(password):
     if password == os.getenv("ADMIN_PW", "secret123"):
@@ -61,7 +61,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
             )
             download_btn = gr.DownloadButton(
                 label="📥 СКАЧАТЬ АННОТИРОВАННЫЙ ФАЙЛ",
-                visible=False,  # Показываем только после обработки
+                visible=False,
                 size="lg"
             )
 
@@ -103,7 +103,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
     process_btn.click(
         fn=process_pdf_file,
         inputs=[pdf_input],
-        outputs=[pdf_output, download_btn, user_notes, admin_logs, download_btn.visible]
+        outputs=[pdf_output, download_btn, user_notes, admin_logs]
     )
     login_btn.click(
         fn=authenticate_admin,
