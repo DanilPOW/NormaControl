@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import fitz  # PyMuPDF
 import re
 import os
@@ -181,12 +182,12 @@ class PDFQuoteAnalyzer:
                         try:
                             annotation = page.add_text_annot(
                                 char_rect.tl,
-                                'Кавычки указаны не верно, используйте кавычки «ёлочки».'
+                                "Вы используете не те кавычки. Замените их на «ёлочки»."
                             )
                             
                             annotation.set_info(
                                 title="❌ Неправильные кавычки (точное позиционирование)",
-                                content=f'Найден символ: "{quote_char}" (U+{ord(quote_char):04X}) в позиции {pos}\nИспользуйте кавычки «ёлочки».'
+                                content=f'Используйте кавычки «ёлочки».'
                             )
                             
                             annotation.set_colors(stroke=[1, 0, 0])
