@@ -13,11 +13,11 @@ def process_pdf_file(pdf_file):
         if result['status'] == 'success':
             output_path = result['output_path']
             return (
-                output_path,      # gr.File (output)
-                output_path,      # gr.DownloadButton (value)
+                output_path,      # gr.File (стандартная ссылка)
+                output_path,      # gr.DownloadButton (большая кнопка)
                 result['user_message'],
                 result['admin_logs'],
-                True              # показать большую кнопку
+                True              # показать download_btn
             )
         else:
             return (
@@ -56,16 +56,15 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
         with gr.Column(scale=1):
             gr.Markdown("### Результат проверки")
             pdf_output = gr.File(
-                label="Скачать аннотированный PDF",
+                label="Стандартное скачивание",
                 interactive=True
             )
-            # Кастомная большая кнопка DownloadButton
             download_btn = gr.DownloadButton(
-                label="📥 Скачать аннотированный файл (Большая кнопка)",
-                visible=False
+                label="📥 СКАЧАТЬ АННОТИРОВАННЫЙ ФАЙЛ",
+                visible=False,  # Показываем только после обработки
+                size="lg"
             )
 
-    # Заметки для пользователя
     with gr.Row():
         with gr.Column():
             gr.Markdown("### 👤 Заметки для пользователя")
@@ -77,7 +76,6 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 placeholder="Здесь появится информация о результатах проверки..."
             )
 
-    # Блок админ-логов
     with gr.Row():
         with gr.Column():
             gr.Markdown("### 🔧 Логи для администраторов")
@@ -90,7 +88,6 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 visible=False
             )
 
-    # Авторизация администратора
     with gr.Row():
         with gr.Column(scale=1):
             admin_pwd = gr.Textbox(
@@ -103,11 +100,10 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 variant="secondary"
             )
 
-    # Колбэки
     process_btn.click(
         fn=process_pdf_file,
         inputs=[pdf_input],
-        outputs=[pdf_output, download_btn, user_notes, admin_logs, download_btn]
+        outputs=[pdf_output, download_btn, user_notes, admin_logs, download_btn.visible]
     )
     login_btn.click(
         fn=authenticate_admin,
