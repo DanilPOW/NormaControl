@@ -19,14 +19,22 @@ def process_pdf_file(pdf_file):
                 border: none; margin-top: 18px; margin-bottom: 8px; cursor: pointer; font-weight: bold; letter-spacing: 0.5px;">
                 📥 Скачать аннотированный файл
               </button>
-              <small>Файл откроется или сохранится в вашей папке загрузок</small>
+              <small>Файл будет скачан в папку загрузок браузера</small>
             </div>
             <script>
+              // Ждем появления кнопки для скачивания внутри gr.File
               document.getElementById("customDownloadBtn").onclick = function() {
-                // Найти label gr.File по части текста (label="Скачать стандартно")
-                const el = [...document.querySelectorAll("label")]
-                  .find(l => l.textContent.includes("Скачать стандартно"));
-                if (el) el.click();
+                // Поиск <a> с ссылкой на файл
+                let fileLinks = Array.from(document.querySelectorAll('a'))
+                  .filter(a => a.download && a.href && a.textContent.trim().length > 0);
+                if (fileLinks.length > 0) {
+                  fileLinks[0].click();
+                  return;
+                }
+                // Если не нашли — fallback: ищем кнопку Download
+                let btns = Array.from(document.querySelectorAll('button,span'))
+                  .filter(b => /скачать|download/i.test(b.textContent));
+                if (btns.length > 0) btns[0].click();
               };
             </script>
             '''
