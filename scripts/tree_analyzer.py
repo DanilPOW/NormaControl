@@ -36,7 +36,7 @@ class PDFQuoteAnalyzer:
                                 if char_count == char_position and char == quote_char:
                                     # Вычисляем приблизительные координаты символа
                                     bbox = span["bbox"]
-                                    char_width = (bbox[2] - bbox[0]) / len(span_text)
+                                    char_width = (bbox[2] - bbox[0]) / len(span_text) if len(span_text) > 0 else 10
                                     char_x = bbox[0] + (i * char_width)
                                     
                                     return fitz.Rect(
@@ -44,25 +44,20 @@ class PDFQuoteAnalyzer:
                                         char_x + char_width, bbox[3]
                                     )
                                 char_count += 1
-        
-        return None
-        
-    except Exception as e:
-        logger.warning(f"Не удалось найти точные координаты: {str(e)}")
-        return None
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Не удалось найти точные координаты: {str(e)}")
+            return None
     
     def _add_annotation_improved(self, page, quote_char, page_text, char_position):
         """Улучшенное добавление аннотации с более точным позиционированием"""
         try:
-            # Ищем все вхождения символа на странице
-            # quote_instances = page.search_for(quote_char)
             rect = self._find_quote_coordinates(page, quote_char, char_position)
             
             if rect:
-            # Берем первое найденное вхождение (можно улучшить логику выбора)
-            # rect = quote_instances[0]
-            
-            # Расширяем прямоугольник для лучшей видимости аннотации
+                # Расширяем прямоугольник для лучшей видимости аннотации
                 expanded_rect = fitz.Rect(
                     rect.x0 - 2, rect.y0 - 2,
                     rect.x1 + 2, rect.y1 + 2
@@ -117,9 +112,6 @@ class PDFQuoteAnalyzer:
             
             for page_num in range(len(doc)):
                 page = doc[page_num]
-                
-                # Получаем детальную информацию о тексте с координатами
-                text_dict = page.get_text("dict")
                 page_text = page.get_text()
                 
                 # Поиск неправильных кавычек
@@ -137,48 +129,48 @@ class PDFQuoteAnalyzer:
                     
                     # Добавляем аннотацию на страницу (улучшенная версия)
                     self._add_annotation_improved(page, match.group(), page_text, match.start())
-        
-        # Генерируем имя выходного файла
-        original_name = os.path.splitext(os.path.basename(input_path))[0]
-        current_time = datetime.now()
-        date_str = current_time.strftime("%d.%m.%Y")
-        time_str = current_time.strftime("%H:%M")
-        
-        output_filename = f"{original_name}_Проверено_{date_str}_в_{time_str}.pdf"
-        output_path = os.path.join(output_dir, output_filename)
-        
-        # Сохраняем уже проаннотированный документ
-        doc.save(output_path)
-        doc.close()
-        
-        # Формируем отчеты
-        analysis_result = {
-            'violations': violations,
-            'total_count': total_violations,
-            'status': 'success'
-        }
-        
-        user_message = self._generate_user_report(analysis_result)
-        admin_logs = self._generate_admin_logs(analysis_result, input_path, output_path)
-        
-        logger.info(f"Обработка завершена. Найдено {total_violations} нарушений. Файл сохранен: {output_path}")
-        
-        return {
-            'status': 'success',
-            'output_path': output_path,
-            'user_message': user_message,
-            'admin_logs': admin_logs,
-            'violations_count': total_violations
-        }
-        
-    except Exception as e:
-        logger.error(f"Ошибка при обработке PDF: {str(e)}")
-        return {
-            'status': 'error',
-            'error_message': str(e),
-            'user_message': f"Ошибка при обработке файла: {str(e)}",
-            'admin_logs': f"ERROR: {str(e)}"
-        }
+            
+            # Генерируем имя выходного файла
+            original_name = os.path.splitext(os.path.basename(input_path))[0]
+            current_time = datetime.now()
+            date_str = current_time.strftime("%d.%m.%Y")
+            time_str = current_time.strftime("%H:%M")
+            
+            output_filename = f"{original_name}_Проверено_{date_str}_в_{time_str}.pdf"
+            output_path = os.path.join(output_dir, output_filename)
+            
+            # Сохраняем уже проаннотированный документ
+            doc.save(output_path)
+            doc.close()
+            
+            # Формируем отчеты
+            analysis_result = {
+                'violations': violations,
+                'total_count': total_violations,
+                'status': 'success'
+            }
+            
+            user_message = self._generate_user_report(analysis_result)
+            admin_logs = self._generate_admin_logs(analysis_result, input_path, output_path)
+            
+            logger.info(f"Обработка завершена. Найдено {total_violations} нарушений. Файл сохранен: {output_path}")
+            
+            return {
+                'status': 'success',
+                'output_path': output_path,
+                'user_message': user_message,
+                'admin_logs': admin_logs,
+                'violations_count': total_violations
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка при обработке PDF: {str(e)}")
+            return {
+                'status': 'error',
+                'error_message': str(e),
+                'user_message': f"Ошибка при обработке файла: {str(e)}",
+                'admin_logs': f"ERROR: {str(e)}"
+            }
     
     def _generate_user_report(self, analysis_result):
         """Генерация отчета для пользователя"""
