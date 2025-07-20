@@ -3,6 +3,8 @@ import os
 import tempfile
 from scripts.tree_analyzer import analyzer
 
+# Функция обработки PDF файла
+
 def process_pdf_file(pdf_file):
     """Обработка загруженного PDF файла"""
     if not pdf_file:
@@ -31,6 +33,16 @@ def process_pdf_file(pdf_file):
     except Exception as e:
         error_msg = f"Произошла ошибка при обработке файла: {str(e)}"
         return None, error_msg, f"ERROR: {str(e)}"
+
+# Функция аутентификации администратора
+
+def authenticate_admin(password):
+    """Показывает админ-логи при верном пароле"""
+    # Пароль берется из переменной окружения ADMIN_PW, иначе 'secret123'
+    if password == os.getenv("ADMIN_PW", "secret123"):
+        return gr.update(visible=True)
+    else:
+        return gr.update(visible=False)
 
 # Создаем интерфейс Gradio
 with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.themes.Soft()) as iface:
@@ -61,7 +73,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 interactive=False
             )
     
-    # Нижняя часть - отчеты
+    # Нижняя часть - заметки пользователя
     with gr.Row():
         with gr.Column():
             gr.Markdown("### 👤 Заметки для пользователя")
@@ -71,7 +83,9 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 interactive=False,
                 placeholder="Здесь появится информация о результатах проверки..."
             )
-        
+    
+    # Блок админ-логов, по умолчанию скрыт
+    with gr.Row(visible=False) as admin_row:
         with gr.Column():
             gr.Markdown("### 🔧 Логи для администраторов")
             admin_logs = gr.Textbox(
@@ -81,11 +95,30 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 placeholder="Здесь появятся технические детали обработки..."
             )
     
-    # Обработчик события
+    # Поле ввода пароля и кнопка входа
+    with gr.Row():
+        with gr.Column(scale=1):
+            admin_pwd = gr.Textbox(
+                label="Пароль администратора",
+                type="password"
+            )
+        with gr.Column(scale=1):
+            login_btn = gr.Button(
+                "Войти как администратор",
+                variant="secondary"
+            )
+
+    # Обработчики событий
     process_btn.click(
         fn=process_pdf_file,
         inputs=[pdf_input],
         outputs=[pdf_output, user_notes, admin_logs]
+    )
+
+    login_btn.click(
+        fn=authenticate_admin,
+        inputs=[admin_pwd],
+        outputs=[admin_row]
     )
     
     # Информационная секция
@@ -102,8 +135,8 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
         4. Создается новый PDF файл с пометкой о дате и времени проверки
         
         ### Формат имени выходного файла:
-        `ИмяФайла_Проверено_ДД.ММ.ГГГГ_в_ЧЧ:ММ.pdf`
-        """)
+        `ИмяФайла_Проверено_ДД.MM.ГГГГ_в_ЧЧ:ММ.pdf`
+        """ )
 
 if __name__ == "__main__":
     iface.launch(
