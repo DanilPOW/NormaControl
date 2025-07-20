@@ -3,26 +3,6 @@ import os
 import tempfile
 from scripts.tree_analyzer import analyzer
 
-# Кастомный HTML для большой кнопки
-download_html = """
-<button id="customDownloadBtn" style="
-    background: linear-gradient(90deg, #5d65f1 0%, #8475fa 100%);
-    color: white; font-size: 1.25rem; border-radius: 10px; padding: 18px 48px;
-    border: none; margin-top: 18px; margin-bottom: 8px; cursor: pointer;
-    font-weight: bold; letter-spacing: 0.5px;
-">
-    &#128190; Скачать аннотированный файл
-</button>
-<script>
-document.getElementById("customDownloadBtn").onclick = function() {
-    // Ищем первую gradio-ссылку на скачивание
-    let link = document.querySelector("a.download-link");
-    if(link) link.click();
-    else alert("Сначала обработайте файл — появится ссылка для скачивания.");
-};
-</script>
-"""
-
 # Функция обработки PDF файла
 def process_pdf_file(pdf_file):
     """Обработка загруженного PDF файла"""
@@ -33,18 +13,19 @@ def process_pdf_file(pdf_file):
         result = analyzer.process_pdf(pdf_file.name, temp_dir)
         if result['status'] == 'success':
             output_path = result['output_path']
+            # Показываем сообщение для скачивания
             return (
                 output_path,
                 result['user_message'],
                 result['admin_logs'],
-                download_html  # HTML появляется после обработки
+                "➡️ **СКАЧАЙ АННОТИРОВАННЫЙ ФАЙЛ НИЖЕ**"
             )
         else:
             return (
                 None,
                 result['user_message'],
                 result['admin_logs'],
-                ""  # Не показываем кнопку, если ошибка
+                ""
             )
     except Exception as e:
         error_msg = f"Произошла ошибка при обработке файла: {e}"
@@ -76,12 +57,11 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
             )
         with gr.Column(scale=1):
             gr.Markdown("### Результат проверки")
+            download_info = gr.Markdown("")  # Текст-подсказка для скачивания
             pdf_output = gr.File(
-                label="Скачать стандартно",
+                label="Скачать аннотированный PDF",
                 interactive=True
             )
-            # Кастомная кнопка (HTML обновляется после обработки)
-            html_btn = gr.HTML(value="", visible=True)
 
     # Заметки для пользователя
     with gr.Row():
@@ -125,7 +105,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
     process_btn.click(
         fn=process_pdf_file,
         inputs=[pdf_input],
-        outputs=[pdf_output, user_notes, admin_logs, html_btn]
+        outputs=[pdf_output, user_notes, admin_logs, download_info]
     )
     login_btn.click(
         fn=authenticate_admin,
