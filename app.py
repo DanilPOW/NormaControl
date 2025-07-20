@@ -3,35 +3,33 @@ import os
 import tempfile
 from scripts.tree_analyzer import analyzer
 
-# Функция обработки PDF файла
 def process_pdf_file(pdf_file):
     """Обработка загруженного PDF файла"""
     if not pdf_file:
-        return None, "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен", ""
+        return None, None, "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен", False
     try:
         temp_dir = tempfile.mkdtemp()
         result = analyzer.process_pdf(pdf_file.name, temp_dir)
         if result['status'] == 'success':
             output_path = result['output_path']
-            # Показываем сообщение для скачивания
             return (
-                output_path,
+                output_path,      # gr.File (output)
+                output_path,      # gr.DownloadButton (value)
                 result['user_message'],
                 result['admin_logs'],
-                "➡️ **СКАЧАЙ АННОТИРОВАННЫЙ ФАЙЛ НИЖЕ**"
+                True              # показать большую кнопку
             )
         else:
             return (
-                None,
+                None, None,
                 result['user_message'],
                 result['admin_logs'],
-                ""
+                False
             )
     except Exception as e:
         error_msg = f"Произошла ошибка при обработке файла: {e}"
-        return None, error_msg, f"ERROR: {e}", ""
+        return None, None, error_msg, f"ERROR: {e}", False
 
-# Функция аутентификации администратора
 def authenticate_admin(password):
     if password == os.getenv("ADMIN_PW", "secret123"):
         return gr.update(visible=True)
@@ -57,10 +55,14 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
             )
         with gr.Column(scale=1):
             gr.Markdown("### Результат проверки")
-            download_info = gr.Markdown("")  # Текст-подсказка для скачивания
             pdf_output = gr.File(
                 label="Скачать аннотированный PDF",
                 interactive=True
+            )
+            # Кастомная большая кнопка DownloadButton
+            download_btn = gr.DownloadButton(
+                label="📥 Скачать аннотированный файл (Большая кнопка)",
+                visible=False
             )
 
     # Заметки для пользователя
@@ -105,7 +107,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
     process_btn.click(
         fn=process_pdf_file,
         inputs=[pdf_input],
-        outputs=[pdf_output, user_notes, admin_logs, download_info]
+        outputs=[pdf_output, download_btn, user_notes, admin_logs, download_btn]
     )
     login_btn.click(
         fn=authenticate_admin,
@@ -113,7 +115,6 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
         outputs=[admin_logs]
     )
 
-    # Информация о проверке
     with gr.Accordion("ℹ️ Информация о проверке", open=False):
         gr.Markdown("""
         ### Что проверяется:
