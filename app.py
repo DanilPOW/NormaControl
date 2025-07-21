@@ -39,7 +39,7 @@ def process_pdf_file(pdf_file):
         temp_path = os.path.join(TEMP_DIR, f"{next(tempfile._get_candidate_names())}{ext}")
         with open(pdf_file.name, "rb") as fsrc, open(temp_path, "wb") as fdst:
             fdst.write(fsrc.read())
-        result = analyzer.process_pdf_file(temp_path, TEMP_DIR)
+        result = analyzer.process_pdf_file(temp_path, TEMP_DIR, original_basename=os.path.splitext(pdf_file.orig_name)[0])
         if result['status'] == 'success':
             output_path = result['output_path']
             return (
