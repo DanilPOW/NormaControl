@@ -1,5 +1,10 @@
 import fitz
 
+# ГОСТ 7.32-2017 в сантиметрах
+MARGINS_CM = {'left': 3, 'right': 1.5, 'top': 2, 'bottom': 2}
+# Переводим в пункты
+MARGIN_PT = {k: v * 28.35 for k, v in MARGINS_CM.items()}
+
 def check_margins_and_annotate(pdf_document, margin_pt, margin_cm, tolerance=3):
     """
     Проверяет и аннотирует, если есть нарушения в полях на первой странице.
