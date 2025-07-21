@@ -70,8 +70,7 @@ def process_pdf_file(pdf_path: str):
         margin_admin = margins['admin_details']
 
         pdf_doc.save(out_path)
-
-    pdf_doc.close()  # Вне блока with (можно не дублировать, если уверен, что не будет return внутри with)
+        pdf_doc.close()
 
     user_notes = (
         "# Проверка кавычек:\n"
