@@ -192,19 +192,20 @@ class PDFHandler:
             logger.error(f"❌ Критическая ошибка при добавлении аннотации для '{quote_char}': {str(e)}")
             return False
     
-    def save_pdf(self, output_dir="/tmp"):
+    def save_pdf(self, output_dir="/tmp", basename=None):
         """Сохраняет PDF файл с аннотациями"""
-        if not self.document or not self.input_path:
+        if not self.document:
             raise Exception("Документ не открыт или путь не указан")
         
         try:
             # Генерируем имя выходного файла
-            original_name = os.path.splitext(os.path.basename(self.input_path))[0]
+            if basename is None:
+                basename = os.path.splitext(os.path.basename(self.input_path))[0]
             current_time = datetime.now()
             date_str = current_time.strftime("%d.%m.%Y")
             time_str = current_time.strftime("%H:%M")
             
-            output_filename = f"{original_name}_Проверено_{date_str}_в_{time_str}.pdf"
+            output_filename = f"{basename}_Проверено_{date_str}_в_{time_str}.pdf"
             output_path = os.path.join(output_dir, output_filename)
             
             self.document.save(output_path)
