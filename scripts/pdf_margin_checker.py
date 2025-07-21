@@ -1,15 +1,9 @@
 import fitz
 
-# ГОСТ 7.32-2017 в сантиметрах
 MARGINS_CM = {'left': 3, 'right': 1.5, 'top': 2, 'bottom': 2}
-# Переводим в пункты
 MARGIN_PT = {k: v * 28.35 for k, v in MARGINS_CM.items()}
 
-def check_margins_and_annotate(pdf_document, margin_pt, margin_cm, tolerance=3):
-    """
-    Проверяет и аннотирует, если есть нарушения в полях на первой странице.
-    Возвращает текстовый отчёт.
-    """
+def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARGINS_CM, tolerance=3):
     page = pdf_document[0]
     page_rect = page.rect
     blocks = page.get_text("dict")["blocks"]
@@ -23,7 +17,7 @@ def check_margins_and_annotate(pdf_document, margin_pt, margin_cm, tolerance=3):
         elif b["type"] == 1:
             content_rects.append(fitz.Rect(b["bbox"]))
     if not content_rects:
-        return "Нет содержимого для анализа полей."
+        return {"user_summary": "❌ Нет содержимого для анализа полей.", "admin_details": ""}
     union = fitz.Rect(content_rects[0])
     for r in content_rects[1:]:
         union |= r
@@ -31,22 +25,34 @@ def check_margins_and_annotate(pdf_document, margin_pt, margin_cm, tolerance=3):
     right = page_rect.x1 - union.x1
     top = union.y0 - page_rect.y0
     bottom = page_rect.y1 - union.y1
-    verdicts = []
-    errors = []
+
+    verdict = {}
     for k, v in zip(['left', 'right', 'top', 'bottom'], [left, right, top, bottom]):
         required = margin_pt[k]
-        actual_cm = round(v / 28.35, 2)
-        ok = abs(v - required) <= tolerance
-        verdicts.append(f"{k.title()}: {actual_cm} см (норма: {margin_cm[k]} см) — {'✅' if ok else '❌'}")
-        if not ok:
-            errors.append(f"Проверьте {k} поле: {actual_cm} см вместо {margin_cm[k]} см")
-    if errors:
-        # Оставляем аннотацию в верхнем левом углу первой страницы
+        verdict[k] = {
+            "actual_cm": round(v / 28.35, 2),
+            "required_cm": margin_cm[k],
+            "ok": abs(v - required) <= tolerance
+        }
+
+    user_lines = []
+    admin_lines = []
+    error_lines = []
+    for side, info in verdict.items():
+        mark = "✅" if info["ok"] else "❌"
+        user_lines.append(f"{side.title()}: {info['actual_cm']} см (норма: {info['required_cm']} см) — {mark}")
+        admin_lines.append(f"{side}: {info['actual_cm']} см (норма: {info['required_cm']} см) — {'OK' if info['ok'] else 'FAIL'}")
+        if not info["ok"]:
+            error_lines.append(f"{side.title()}: {info['actual_cm']} см (норма: {info['required_cm']} см)")
+
+    if error_lines:
         page.add_text_annot(
             fitz.Point(page_rect.x0 + 40, page_rect.y0 + 40),
-            "❗ Нарушены требования к полям документа по ГОСТ 7.32-2017:\n" + "\n".join(errors)
+            "❗ Нарушены требования к полям документа по ГОСТ 7.32-2017:\n" + "\n".join(error_lines)
         )
-        verdicts.append("Нарушены поля ГОСТ 7.32-2017.")
+        user_summary = "❗ ВНИМАНИЕ: Нарушены поля ГОСТ 7.32-2017.\n" + "\n".join(user_lines)
     else:
-        verdicts.append("Все поля соответствуют ГОСТ 7.32-2017.")
-    return "\n".join(verdicts)
+        user_summary = "✅ Все поля соответствуют ГОСТ 7.32-2017.\n" + "\n".join(user_lines)
+
+    admin_details = "\n".join(admin_lines)
+    return {"user_summary": user_summary, "admin_details": admin_details}
