@@ -55,10 +55,6 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
             )
         with gr.Column(scale=1):
             gr.Markdown("### Результат проверки")
-            gr.Markdown(
-                "⚠️ <span style='color: #D32F2F; font-weight: bold;'>Рекомендуем открывать итоговый PDF-файл **именно в программе Adobe Acrobat Reader**.<br> В браузерах возможны проблемы с отображением аннотаций!</span>",
-                elem_id="download-comment"
-            )
             pdf_output = gr.File(
                 label="Стандартное скачивание",
                 interactive=True
@@ -67,6 +63,10 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 label="📥 СКАЧАТЬ ПРОВЕРЕННЫЙ ФАЙЛ",
                 visible=False,
                 size="lg"
+            )
+            gr.Markdown(
+                "⚠️ <span style='color: #D32F2F; font-weight: bold;'>**Рекомендуем открывать итоговый PDF-файл именно в программе Adobe Acrobat Reader.<br> В браузерах возможны проблемы с отображением аннотаций!**</span>",
+                elem_id="download-comment"
             )
 
     with gr.Row():
