@@ -37,8 +37,8 @@ def authenticate_admin(password):
         return gr.update(visible=False)
 
 with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.themes.Soft()) as iface:
-    gr.Markdown("# 📄 Анализатор кавычек в PDF документах")
-    gr.Markdown("Загрузите PDF файл для проверки правильности использования кавычек")
+    gr.Markdown("# 📄 Анализатор документов в соотвествии с ГОСТ 7.32-2017")
+    gr.Markdown("Загрузите PDF файл для проверки файла")
 
     with gr.Row():
         with gr.Column(scale=1):
@@ -50,17 +50,21 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
             )
             process_btn = gr.Button(
                 "🔍 Проверить кавычки",
-                variant="primary",
+                variant="secondary",
                 size="lg"
             )
         with gr.Column(scale=1):
             gr.Markdown("### Результат проверки")
+            gr.Markdown(
+                "⚠️ <span style='color: #D32F2F; font-weight: bold;'>Рекомендуем открывать итоговый PDF-файл **именно в программе Adobe Acrobat Reader**.<br> В браузерах возможны проблемы с отображением аннотаций!</span>",
+                elem_id="download-comment"
+            )
             pdf_output = gr.File(
                 label="Стандартное скачивание",
                 interactive=True
             )
             download_btn = gr.DownloadButton(
-                label="📥 СКАЧАТЬ АННОТИРОВАННЫЙ ФАЙЛ",
+                label="📥 СКАЧАТЬ ПРОВЕРЕННЫЙ ФАЙЛ",
                 visible=False,
                 size="lg"
             )
