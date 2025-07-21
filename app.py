@@ -52,39 +52,34 @@ def process_pdf_file(pdf_path: str):
     pdf_doc = fitz.open(tmp_path)
 
     # --- АНАЛИЗ КАВЫЧЕК ---
-    # ВАЖНО: analyze_document должен работать с pdf_doc!
-    # Если твой analyzer.process_pdf_file открывает pdf внутри, нужно переделать
-    # analyzer.analyze_document(pdf_doc, pdf_handler) — как у тебя реализовано
-
-    try:
-        from scripts.pdf_handler import PDFHandler  # Импортируем здесь, чтобы не было циклических зависимостей
-        with PDFHandler() as pdf_handler:
-            quote_result = analyzer.analyze_document(pdf_doc, pdf_handler)
-    except Exception as e:
-        pdf_doc.close()
-        return None, hide_btn, hide_warn, f"Ошибка анализа кавычек: {e}", str(e)
-
-    # --- АНАЛИЗ ПОЛЕЙ (и аннотирование, если надо) ---
-    try:
-        margin_report = check_margins_and_annotate(pdf_doc, MARGIN_PT, MARGINS_CM)
-    except Exception as e:
-        margin_report = f"Ошибка проверки полей: {e}"
-
-    # --- СОХРАНЯЕМ ФИНАЛЬНЫЙ PDF ---
-    from datetime import datetime
-    now = datetime.now()
-    out_filename = f"{basename}_Проверено_{now.strftime('%d.%m.%Y')}_в_{now.strftime('%H:%M')}.pdf"
-    out_path = os.path.join(TEMP_DIR, out_filename)
-    try:
-        pdf_doc.save(out_path)
-    except Exception as e:
-        pdf_doc.close()
-        return None, hide_btn, hide_warn, f"Ошибка сохранения файла: {e}", str(e)
+    analysis = analyzer.analyze_document(pdf_doc, pdf_handler)
+    viol_count = analysis['annotations_count']
+    quote_user_message = analyzer._generate_user_report(viol_count)
+    quote_admin_logs = analyzer._generate_admin_logs(
+        analysis['violations'], input_path=tmp_path, output_path=out_path
+    )
+    
+    # --- АНАЛИЗ ПОЛЕЙ ---
+    margins = check_margins_and_annotate(pdf_doc)
+    margin_user = margins['user_summary']
+    margin_admin = margins['admin_details']
+    
+    # --- СОХРАНЯЕМ PDF ---
+    pdf_doc.save(out_path)
     pdf_doc.close()
-
-    # --- Сбор текста для пользователя и админа ---
-    user_notes = (quote_result.get("user_message", "") or "") + "\n\n" + margin_report
-    admin_logs = (quote_result.get("admin_logs", "") or "") + "\n\n[MarginCheck]\n" + margin_report
+    
+    # --- СОБИРАЕМ ОТЧЁТЫ ---
+    user_notes = (
+        "# Проверка кавычек:\n"
+        f"{quote_user_message}\n\n"
+        "# Проверка полей:\n"
+        f"{margin_user}"
+    )
+    admin_logs = (
+        quote_admin_logs + "\n\n"
+        "[MarginCheck]\n"
+        f"{margin_admin}"
+    )
 
     return (
         out_path,
