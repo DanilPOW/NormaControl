@@ -66,7 +66,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 size="lg"
             )
             warning_msg = gr.Markdown(
-                "⚠️ <span style='color: #D32F2F; font-weight: bold;'>**Рекомендуем открывать итоговый PDF-файл именно в программе Adobe Acrobat Reader.<br> В браузерах возможны проблемы с отображением аннотаций!**</span>",
+                "⚠️ <span style='color: #D32F2F;'>**Рекомендуем открывать итоговый PDF-файл именно в программе Adobe Acrobat Reader.<br> В браузерах возможны проблемы с отображением аннотаций!**</span>",
                 elem_id="download-comment",
                 visible=False  # Скрыто по умолчанию
             )
