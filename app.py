@@ -14,12 +14,11 @@ def process_pdf_file(pdf_file):
         if result['status'] == 'success':
             output_path = result['output_path']
             return (
-                output_path,                     # gr.File
-                gr.update(visible=True, value=output_path),  # gr.DownloadButton — показать и обновить value
+                output_path,  # gr.File
+                gr.update(visible=True, value=output_path),  # gr.DownloadButton
+                gr.update(visible=True),  # warning_msg
                 result['user_message'],
-                result['admin_logs'],
-                gr.update(visible=True),
-                gr.update(value=output_path, visible=True)  # показать кнопку
+                result['admin_logs']
             )
         else:
             # Скрыть download_btn при ошибке
