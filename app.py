@@ -136,7 +136,10 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
             )
 
     process_btn.click(
-        fn=process_pdf_file,
+        fn=lambda pdf: process_pdf_file(
+        pdf,
+        TEMP_DIR,
+        basename=os.path.splitext(os.path.basename(pdf))[0]),
         inputs=[pdf_input],
         outputs=[pdf_output, download_btn, warning_msg, user_notes, admin_logs]
     )
