@@ -79,7 +79,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 type="filepath"
             )
             process_btn = gr.Button(
-                "🔍 Проверить кавычки",
+                "🔍 Проверить документ",
                 variant="secondary",
                 size="lg"
             )
