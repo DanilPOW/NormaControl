@@ -58,7 +58,7 @@ def process_pdf_file(pdf_path: str):
             error_msg = analysis.get('error_message', 'Ошибка при анализе кавычек.')
             return None, hide_btn, hide_warn, error_msg, error_msg
 
-        viol_count = analysis['annotations_count']
+        viol_count = analysis['violations_count']
         quote_user_message = analyzer._generate_user_report(viol_count)
         quote_admin_logs = analyzer._generate_admin_logs(
             analysis['violations'], input_path=tmp_path, output_path=out_path
