@@ -80,7 +80,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
     with gr.Row():
         with gr.Column():
             pdf_input = gr.File(label="Выберите PDF", file_types=[".pdf"], type="filepath")
-            check_btn = gr.Button("🔍 Проверить документ", variant="primary", size="lg")
+            check_btn = gr.Button("🔍 Проверить документ", variant="secondary", size="lg")
         with gr.Column():
             pdf_output = gr.File(label="Стандартное скачивание", interactive=True)
             download_btn = gr.DownloadButton(
