@@ -227,7 +227,7 @@ class PDFQuoteAnalyzer:
         
         return "\n".join(logs)
     
-    def process_pdf_file(self, input_path, output_dir="/tmp"):
+    def process_pdf_file(self, input_path, output_dir="/tmp", basename=None):
         """
         Полная обработка PDF файла - открытие, анализ, сохранение
         
@@ -257,7 +257,7 @@ class PDFQuoteAnalyzer:
                     }
                 
                 # Сохраняем файл с аннотациями
-                output_path = pdf_handler.save_pdf(output_dir)
+                output_path = pdf_handler.save_pdf(output_dir, basename=basename)
                 
                 # Генерируем отчеты
                 violations_count = analysis_result['violations_count']
