@@ -17,11 +17,8 @@ class PDFHandler:
         try:
             self.input_path = file_path
             self.document = fitz.open(file_path)
-            logger.info(f"📄 PDF файл открыт: {os.path.basename(file_path)}")
-            logger.info(f"📊 Количество страниц: {len(self.document)}")
             return self.document
         except Exception as e:
-            logger.error(f"❌ Ошибка при открытии PDF файла: {str(e)}")
             raise Exception(f"Не удалось открыть PDF файл: {str(e)}")
     
     def get_page_text_methods(self, page):
@@ -92,7 +89,6 @@ class PDFHandler:
             return None
             
         except Exception as e:
-            logger.error(f"❌ Ошибка при поиске позиции в span'ах: {str(e)}")
             return None
     
     def add_annotation_to_page(self, page, quote_char, page_text, char_position):
@@ -104,8 +100,6 @@ class PDFHandler:
             quote_instances = page.search_for(quote_char)
             
             if quote_instances:
-                logger.info(f"🔍 Найдено {len(quote_instances)} вхождений '{quote_char}' через search_for")
-                
                 # Аннотируем ВСЕ найденные вхождения
                 for i, rect in enumerate(quote_instances):
                     try:
