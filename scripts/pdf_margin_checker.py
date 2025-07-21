@@ -29,10 +29,15 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     verdict = {}
     for k, v in zip(['left', 'right', 'top', 'bottom'], [left, right, top, bottom]):
         required = margin_pt[k]
+        # Для правого поля: ошибка только если поле меньше нормы!
+        if k == "right":
+            ok = v >= required - tolerance  # только "меньше нормы" — ошибка
+        else:
+            ok = abs(v - required) <= tolerance  # для остальных как раньше (можно добавить отдельную логику)
         verdict[k] = {
             "actual_cm": round(v / 28.35, 2),
             "required_cm": margin_cm[k],
-            "ok": abs(v - required) <= tolerance
+            "ok": ok
         }
 
     user_lines = []
@@ -48,9 +53,9 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     if error_lines:
         page.add_text_annot(
             fitz.Point(page_rect.x0 + 40, page_rect.y0 + 40),
-            "❗ Нарушены требования к полям документа по ГОСТ 7.32-2017:\n" + "\n".join(error_lines)
+            "Нарушены требования к полям документа по ГОСТ 7.32-2017:\n" + "\n".join(error_lines)
         )
-        user_summary = "❗ ВНИМАНИЕ: Нарушены поля ГОСТ 7.32-2017.\n" + "\n".join(user_lines)
+        user_summary = "Нарушены поля ГОСТ 7.32-2017.\n" + "\n".join(user_lines)
     else:
         user_summary = "✅ Все поля соответствуют ГОСТ 7.32-2017.\n" + "\n".join(user_lines)
 
