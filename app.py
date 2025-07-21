@@ -56,7 +56,6 @@ def process_pdf_file(pdf_path: str):
         analysis = analyzer.analyze_document(pdf_doc, pdf_handler)
         if 'violations' not in analysis:
             error_msg = analysis.get('error_message', 'Ошибка при анализе кавычек.')
-            pdf_doc.close()
             return None, hide_btn, hide_warn, error_msg, error_msg
 
         viol_count = analysis['annotations_count']
@@ -70,7 +69,6 @@ def process_pdf_file(pdf_path: str):
         margin_admin = margins['admin_details']
 
         pdf_doc.save(out_path)
-        pdf_doc.close()
 
     user_notes = (
         "# Проверка кавычек:\n"
