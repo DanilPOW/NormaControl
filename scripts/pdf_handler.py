@@ -112,7 +112,7 @@ class PDFHandler:
                             full_annotation_text
                         )
                         annotation.set_info(
-                            title="❌ Неправильные кавычки",
+                            title="СЕРВИС НОРОКОНТРОЛЯ",
                             content=full_annotation_text
                         )
                         annotation.set_colors(stroke=[1, 0, 0])
