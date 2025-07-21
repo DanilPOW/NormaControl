@@ -17,7 +17,9 @@ def process_pdf_file(pdf_file):
                 output_path,                     # gr.File
                 gr.update(visible=True, value=output_path),  # gr.DownloadButton — показать и обновить value
                 result['user_message'],
-                result['admin_logs']
+                result['admin_logs'],
+                gr.update(visible=True),
+                gr.update(value=output_path, visible=True)  # показать кнопку
             )
         else:
             # Скрыть download_btn при ошибке
@@ -64,9 +66,10 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 visible=False,
                 size="lg"
             )
-            gr.Markdown(
+            warning_msg = gr.Markdown(
                 "⚠️ <span style='color: #D32F2F; font-weight: bold;'>**Рекомендуем открывать итоговый PDF-файл именно в программе Adobe Acrobat Reader.<br> В браузерах возможны проблемы с отображением аннотаций!**</span>",
-                elem_id="download-comment"
+                elem_id="download-comment",
+                visible=False  # Скрыто по умолчанию
             )
 
     with gr.Row():
@@ -107,7 +110,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
     process_btn.click(
         fn=process_pdf_file,
         inputs=[pdf_input],
-        outputs=[pdf_output, download_btn, user_notes, admin_logs]
+        outputs=[pdf_output, download_btn, warning_msg, user_notes, admin_logs]
     )
     login_btn.click(
         fn=authenticate_admin,
@@ -118,14 +121,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
     with gr.Accordion("ℹ️ Информация о проверке", open=False):
         gr.Markdown("""
         ### Что проверяется:
-        - **Неправильные кавычки**: " и '
-        - **Правильные кавычки**: « и »
-
-        ### Что происходит при проверке:
-        1. Анализируется весь текст в PDF документе
-        2. Находятся все случаи использования неправильных кавычек
-        3. В местах нарушений добавляются аннотации с рекомендациями
-        4. Создается новый PDF файл с пометкой о дате и времени проверки
+        - **Правильность написания кавычек**
 
         ### Формат имени выходного файла:
         `ИмяФайла_Проверено_ДД.MM.ГГГГ_в_ЧЧ:ММ.pdf`
