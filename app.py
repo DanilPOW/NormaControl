@@ -1,8 +1,8 @@
 import gradio as gr
 import os
 import tempfile
+import time
 from scripts.tree_analyzer import analyzer
-
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
@@ -29,10 +29,9 @@ def process_pdf_file(pdf_file):
     """Обработка загруженного PDF файла"""
     cleanup_old_files(TEMP_DIR)
     if not pdf_file:
-        # Скрыть download_btn при ошибке
-        return None, gr.update(visible=False, value=None), "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен"
+        # Скрыть download_btn и предупреждение при ошибке
+        return None, gr.update(visible=False, value=None), gr.update(visible=False), "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен"
     try:
-        try:
         if not os.path.exists(TEMP_DIR):
             os.makedirs(TEMP_DIR)
         # Копируем файл во временную папку с уникальным именем
@@ -51,15 +50,15 @@ def process_pdf_file(pdf_file):
                 result['admin_logs']
             )
         else:
-            # Скрыть download_btn при ошибке
+            # Скрыть download_btn и предупреждение при ошибке
             return (
-                None, gr.update(visible=False, value=None),
+                None, gr.update(visible=False, value=None), gr.update(visible=False),
                 result['user_message'],
                 result['admin_logs']
             )
     except Exception as e:
         error_msg = f"Произошла ошибка при обработке файла: {e}"
-        return None, gr.update(visible=False, value=None), error_msg, f"ERROR: {e}"
+        return None, gr.update(visible=False, value=None), gr.update(visible=False), error_msg, f"ERROR: {e}"
 
 def authenticate_admin(password):
     if password == os.getenv("ADMIN_PW", "secret123"):
@@ -68,7 +67,7 @@ def authenticate_admin(password):
         return gr.update(visible=False)
 
 with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.themes.Soft()) as iface:
-    gr.Markdown("# 📄 Анализатор документов в соотвествии с ГОСТ 7.32-2017")
+    gr.Markdown("# 📄 Анализатор документов в соответствии с ГОСТ 7.32-2017")
     gr.Markdown("Загрузите PDF файл для проверки файла")
 
     with gr.Row():
@@ -96,7 +95,7 @@ with gr.Blocks(title="Анализатор кавычек в PDF", theme=gr.them
                 size="lg"
             )
             warning_msg = gr.Markdown(
-                "⚠️ <span style='color: #D32F2F;'>**Рекомендуем открывать итоговый PDF-файл именно в программе Adobe Acrobat Reader.<br> В браузерах возможны проблемы с отображением аннотаций!**</span>",
+                "⚠️ <span style='color: #D32F2F;'>Рекомендуем открывать итоговый PDF-файл именно в программе Adobe Acrobat Reader.<br>В браузерах возможны проблемы с отображением аннотаций!</span>",
                 elem_id="download-comment",
                 visible=False  # Скрыто по умолчанию
             )
