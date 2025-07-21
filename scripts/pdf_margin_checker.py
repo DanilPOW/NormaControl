@@ -30,7 +30,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     for k, v in zip(['left', 'right', 'top', 'bottom'], [left, right, top, bottom]):
         required = margin_pt[k]
         # Для правого поля: ошибка только если поле меньше нормы!
-        if k == "right":
+        if k in ["right", "bottom"]:
             ok = v >= required - tolerance  # только "меньше нормы" — ошибка
         else:
             ok = abs(v - required) <= tolerance  # для остальных как раньше (можно добавить отдельную логику)
@@ -44,7 +44,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     admin_lines = []
     error_lines = []
     for side, info in verdict.items():
-        mark = "✅" if info["ok"] else "❌"
+        mark = "" if info["ok"] else ""
         user_lines.append(f"{side.title()}: {info['actual_cm']} см (норма: {info['required_cm']} см) — {mark}")
         admin_lines.append(f"{side}: {info['actual_cm']} см (норма: {info['required_cm']} см) — {'OK' if info['ok'] else 'FAIL'}")
         if not info["ok"]:
@@ -57,7 +57,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         )
         user_summary = "Нарушены поля ГОСТ 7.32-2017.\n" + "\n".join(user_lines)
     else:
-        user_summary = "✅ Все поля соответствуют ГОСТ 7.32-2017.\n" + "\n".join(user_lines)
+        user_summary = "Все поля соответствуют ГОСТ 7.32-2017.\n" + "\n".join(user_lines)
 
     admin_details = "\n".join(admin_lines)
     return {"user_summary": user_summary, "admin_details": admin_details}
