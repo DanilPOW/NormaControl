@@ -5,7 +5,7 @@ import time
 import fitz  # PyMuPDF
 from scripts.tree_analyzer import analyzer
 from scripts.pdf_margin_checker import check_margins_and_annotate, MARGIN_PT, MARGINS_CM
-from scripts.pdf_handler import PDFHandler as pdf_handler
+from scripts.pdf_handler import PDFHandler
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
@@ -28,13 +28,7 @@ def cleanup_old_files(folder: str, max_age_seconds: int = 24*60*60):
         print(f"🧹 Удалено старых файлов: {removed}")
 
 def process_pdf_file(pdf_path: str):
-    """
-    1) Копирует загруженный pdf в наш TEMP_DIR
-    2) Открывает pdf один раз и передает в оба анализатора
-    3) Возвращает tuple для Gradio: (gr.File, download_btn, warning_msg, user_notes, admin_logs)
-    """
     cleanup_old_files(TEMP_DIR)
-
     hide_btn = gr.update(visible=False, value=None)
     hide_warn = gr.update(visible=False)
 
@@ -49,27 +43,36 @@ def process_pdf_file(pdf_path: str):
         dst.write(src.read())
     basename = os.path.splitext(os.path.basename(pdf_path))[0]
 
-    # ОТКРЫВАЕМ PDF ОДИН РАЗ
     pdf_doc = fitz.open(tmp_path)
+    from datetime import datetime
+    now = datetime.now()
+    out_filename = f"{basename}_Проверено_{now.strftime('%d.%m.%Y')}_в_{now.strftime('%H:%M')}.pdf"
+    out_path = os.path.join(TEMP_DIR, out_filename)
 
-    # --- АНАЛИЗ КАВЫЧЕК ---
-    analysis = analyzer.analyze_document(pdf_doc, pdf_handler)
-    viol_count = analysis['annotations_count']
-    quote_user_message = analyzer._generate_user_report(viol_count)
-    quote_admin_logs = analyzer._generate_admin_logs(
-        analysis['violations'], input_path=tmp_path, output_path=out_path
-    )
-    
-    # --- АНАЛИЗ ПОЛЕЙ ---
-    margins = check_margins_and_annotate(pdf_doc)
-    margin_user = margins['user_summary']
-    margin_admin = margins['admin_details']
-    
-    # --- СОХРАНЯЕМ PDF ---
-    pdf_doc.save(out_path)
-    pdf_doc.close()
-    
-    # --- СОБИРАЕМ ОТЧЁТЫ ---
+    with PDFHandler() as pdf_handler:
+        pdf_handler.document = pdf_doc
+        pdf_handler.input_path = tmp_path
+
+        analysis = analyzer.analyze_document(pdf_doc, pdf_handler)
+        if 'violations' not in analysis:
+            error_msg = analysis.get('error_message', 'Ошибка при анализе кавычек.')
+            pdf_doc.close()
+            return None, hide_btn, hide_warn, error_msg, error_msg
+
+        viol_count = analysis['annotations_count']
+        quote_user_message = analyzer._generate_user_report(viol_count)
+        quote_admin_logs = analyzer._generate_admin_logs(
+            analysis['violations'], input_path=tmp_path, output_path=out_path
+        )
+        
+        margins = check_margins_and_annotate(pdf_doc)
+        margin_user = margins['user_summary']
+        margin_admin = margins['admin_details']
+
+        pdf_doc.save(out_path)
+
+    pdf_doc.close()  # Вне блока with (можно не дублировать, если уверен, что не будет return внутри with)
+
     user_notes = (
         "# Проверка кавычек:\n"
         f"{quote_user_message}\n\n"
@@ -81,7 +84,6 @@ def process_pdf_file(pdf_path: str):
         "[MarginCheck]\n"
         f"{margin_admin}"
     )
-
     return (
         out_path,
         gr.update(visible=True, value=out_path),
