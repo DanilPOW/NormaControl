@@ -5,6 +5,7 @@ import time
 import fitz  # PyMuPDF
 from scripts.tree_analyzer import analyzer
 from scripts.pdf_margin_checker import check_margins_and_annotate, MARGIN_PT, MARGINS_CM
+from scripts.pdf_handler import PDFHandler
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
