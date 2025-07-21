@@ -3,14 +3,44 @@ import os
 import tempfile
 from scripts.tree_analyzer import analyzer
 
+
+TEMP_DIR = "/opt/gradio-app/tmp"
+
+def cleanup_old_files(folder, max_age_seconds=24 * 60 * 60):
+    """Удаляет файлы старше max_age_seconds"""
+    now = time.time()
+    removed = 0
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+    for filename in os.listdir(folder):
+        filepath = os.path.join(folder, filename)
+        if os.path.isfile(filepath):
+            age = now - os.path.getmtime(filepath)
+            if age > max_age_seconds:
+                try:
+                    os.remove(filepath)
+                    removed += 1
+                except Exception as e:
+                    print(f"⚠️ Ошибка удаления {filepath}: {e}")
+    if removed:
+        print(f"🧹 Очистка временных файлов: удалено {removed}")
+
 def process_pdf_file(pdf_file):
     """Обработка загруженного PDF файла"""
+    cleanup_old_files(TEMP_DIR)
     if not pdf_file:
         # Скрыть download_btn при ошибке
         return None, gr.update(visible=False, value=None), "Пожалуйста, загрузите PDF файл", "ERROR: Файл не загружен"
     try:
-        temp_dir = tempfile.mkdtemp()
-        result = analyzer.process_pdf(pdf_file.name, temp_dir)
+        try:
+        if not os.path.exists(TEMP_DIR):
+            os.makedirs(TEMP_DIR)
+        # Копируем файл во временную папку с уникальным именем
+        ext = os.path.splitext(pdf_file.name)[-1]
+        temp_path = os.path.join(TEMP_DIR, f"{next(tempfile._get_candidate_names())}{ext}")
+        with open(pdf_file.name, "rb") as fsrc, open(temp_path, "wb") as fdst:
+            fdst.write(fsrc.read())
+        result = analyzer.process_pdf(temp_path, TEMP_DIR)
         if result['status'] == 'success':
             output_path = result['output_path']
             return (
