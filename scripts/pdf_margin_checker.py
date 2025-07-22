@@ -60,13 +60,14 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 "ok": ok
             }
 
+        error_pages = set()
         # Сводим результаты по странице
         error_this_page = []
         for side, info in verdict.items():
             mark = "✅" if info["ok"] else "❌"
-            user_lines.append(
+            '''user_lines.append(
                 f"Страница {page_num}, {side.title()}: {info['actual_cm']} см (норма: {info['required_cm']} см) — {mark}"
-            )
+            )'''
             admin_lines.append(
                 f"page_{page_num}, {side}: {info['actual_cm']} см (норма: {info['required_cm']} см) — {'OK' if info['ok'] else 'FAIL'}"
             )
@@ -80,6 +81,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 "❗ Нарушены требования к полям:\n" + "\n".join(error_this_page)
             )
             error_lines.append(f"Стр. {page_num}: " + "; ".join(error_this_page))
+            error_pages.add(page_num)
 
     # Формируем итоговые сообщения
     user_summary = ""
@@ -98,7 +100,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         )
     else:
         user_summary += "✅ Все поля на всех страницах соответствуют ГОСТ 7.32-2017.\n"
-    user_summary += "\n".join(user_lines)
+    #user_summary += "\n".join(user_lines)
 
     admin_details += "\n".join(admin_lines)
     return {"user_summary": user_summary, "admin_details": admin_details}
