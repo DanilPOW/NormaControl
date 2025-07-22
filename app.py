@@ -88,9 +88,9 @@ def process_pdf_file(pdf_path: str):
         user_notes,
         admin_logs
     )
-
+"""
 def authenticate_admin(pw: str):
-    return gr.update(visible=(pw == os.getenv("ADMIN_PW","secret123")))
+    return gr.update(visible=(pw == os.getenv("ADMIN_PW","secret123")))"""
 
 with gr.Blocks(title="Анализатор документов на соответствие ГОСТ 7.32-2017", theme=gr.themes.Soft()) as iface:
     gr.Markdown("# 📄 Проверка документов на соответствие ГОСТ 7.32-2017")
@@ -124,9 +124,9 @@ with gr.Blocks(title="Анализатор документов на соотв�
             lines=6, interactive=False, visible=False
         )
 
-    with gr.Row():
+    """with gr.Row():
         admin_pw = gr.Textbox(label="Пароль администратора", type="password")
-        login_btn = gr.Button("Войти как администратор", variant="secondary")
+        login_btn = gr.Button("Войти как администратор", variant="secondary")"""
 
     # привязываем колбэки
     check_btn.click(
@@ -134,11 +134,11 @@ with gr.Blocks(title="Анализатор документов на соотв�
         inputs=[pdf_input],
         outputs=[pdf_output, download_btn, warning_msg, user_notes, admin_logs]
     )
-    login_btn.click(
+    """login_btn.click(
         fn=authenticate_admin,
         inputs=[admin_pw],
         outputs=[admin_logs]
-    )
+    )"""
 
     with gr.Accordion("ℹ️ Информация о проверке", open=False):
         gr.Markdown("""
