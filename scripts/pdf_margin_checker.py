@@ -66,10 +66,15 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         if has_error:
             error_pages.add(page_num)
             # Аннотация только для PDF, для пользователя не отображается текстом
-            page.add_text_annot(
+            annotation = page.add_text_annot(
                 fitz.Point(page_rect.x0 + 40, page_rect.y0 + 80),
                 "Поля оформлены неверно"
             )
+            annotation.set_info(
+                title="СЕРВИС НОРОКОНТРОЛЯ",
+                content="Поля оформлены неверно"
+                        )
+            annotation.update()
 
     # Формируем итоговые сообщения для пользователя
     user_summary = ""
