@@ -121,7 +121,7 @@ with gr.Blocks(title="Анализатор документов на соотв�
     with gr.Row():
         admin_logs = gr.Textbox(
             label="Админ-логи",
-            lines=6, interactive=False, visible=False
+            lines=6, interactive=False
         )
 
     """with gr.Row():
