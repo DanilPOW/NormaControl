@@ -104,8 +104,7 @@ class PDFHandler:
                 for i, rect in enumerate(quote_instances):
                     try:
                         full_annotation_text = (
-                            'Кавычки указаны не верно, используйте кавычки «ёлочки».\n'
-                            f'Найден символ: "{quote_char}" (U+{ord(quote_char):04X})'
+                            'Кавычки указаны не верно, используйте кавычки «ёлочки».'
                         )
                         annotation = page.add_text_annot(
                             rect.tl,
