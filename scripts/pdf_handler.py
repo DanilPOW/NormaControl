@@ -115,7 +115,6 @@ class PDFHandler:
                             title="СЕРВИС НОРОКОНТРОЛЯ",
                             content=full_annotation_text
                         )
-                        annotation.set_colors(stroke=[1, 0, 0])
                         annotation.update()
                         
                         annotations_added += 1
