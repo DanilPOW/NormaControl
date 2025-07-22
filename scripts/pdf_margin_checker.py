@@ -14,10 +14,15 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         # Проверка ориентации
         if page_rect.width > page_rect.height:
             landscape_pages.append(page_num)
-            page.add_text_annot(
+            comment = page.add_text_annot(
                 fitz.Point(page_rect.x0 + 40, page_rect.y0 + 40),
                 "Неверная ориентация страницы"
             )
+            comment.set_info(
+                title="Сервис нормоконтроля",
+                content="Неверная ориентация страницы"
+                        )
+            comment.update()
 
         # Проверка содержимого
         blocks = page.get_text("dict")["blocks"]
