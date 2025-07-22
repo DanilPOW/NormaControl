@@ -71,7 +71,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 "Поля оформлены неверно"
             )
             annotation.set_info(
-                title="СЕРВИС НОРОКОНТРОЛЯ",
+                title="Сервис нормоконтроля",
                 content="Поля оформлены неверно"
                         )
             annotation.update()
