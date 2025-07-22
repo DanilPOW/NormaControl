@@ -4,11 +4,9 @@ MARGINS_CM = {'left': 3, 'right': 1.5, 'top': 2, 'bottom': 2}
 MARGIN_PT = {k: v * 28.35 for k, v in MARGINS_CM.items()}
 
 def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARGINS_CM, tolerance=3):
-    user_lines = []
     admin_lines = []
-    error_lines = []
     landscape_pages = []
-    margins_errors = {}
+    error_pages = set()
 
     for page_num, page in enumerate(pdf_document, 1):
         page_rect = page.rect
@@ -18,7 +16,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
             landscape_pages.append(page_num)
             page.add_text_annot(
                 fitz.Point(page_rect.x0 + 40, page_rect.y0 + 40),
-                "❌ Ошибка: Страница альбомной ориентации (ГОСТ 7.32-2017 требует вертикальной ориентации)."
+                "Неверная ориентация страницы"
             )
 
         # Проверка содержимого
@@ -34,7 +32,6 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 content_rects.append(fitz.Rect(b["bbox"]))
 
         if not content_rects:
-            user_lines.append(f"Страница {page_num}: ❌ Нет содержимого для анализа полей.")
             admin_lines.append(f"page_{page_num}: Нет содержимого для анализа.")
             continue
 
@@ -47,9 +44,9 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         bottom = page_rect.y1 - union.y1
 
         verdict = {}
+        has_error = False
         for k, v in zip(['left', 'right', 'top', 'bottom'], [left, right, top, bottom]):
             required = margin_pt[k]
-            # Для правого и нижнего поля: ошибка только если поле меньше нормы!
             if k in ["right", "bottom"]:
                 ok = v >= required - tolerance
             else:
@@ -59,48 +56,33 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 "required_cm": margin_cm[k],
                 "ok": ok
             }
-
-        error_pages = set()
-        # Сводим результаты по странице
-        error_this_page = []
-        for side, info in verdict.items():
-            mark = "✅" if info["ok"] else "❌"
-            '''user_lines.append(
-                f"Страница {page_num}, {side.title()}: {info['actual_cm']} см (норма: {info['required_cm']} см) — {mark}"
-            )'''
+            # Подробные логи только для админа
             admin_lines.append(
-                f"page_{page_num}, {side}: {info['actual_cm']} см (норма: {info['required_cm']} см) — {'OK' if info['ok'] else 'FAIL'}"
+                f"page_{page_num}, {k}: {verdict[k]['actual_cm']} см (норма: {verdict[k]['required_cm']} см) — {'OK' if verdict[k]['ok'] else 'FAIL'}"
             )
-            if not info["ok"]:
-                error_this_page.append(f"{side.title()}: {info['actual_cm']} см (норма: {info['required_cm']} см)")
+            if not ok:
+                has_error = True
 
-        # Если на странице есть ошибки — аннотируем
-        if error_this_page:
+        if has_error:
+            error_pages.add(page_num)
+            # Аннотация только для PDF, для пользователя не отображается текстом
             page.add_text_annot(
                 fitz.Point(page_rect.x0 + 40, page_rect.y0 + 80),
-                "❗ Нарушены требования к полям:\n" + "\n".join(error_this_page)
+                "Поля оформлены неверно"
             )
-            error_lines.append(f"Стр. {page_num}: " + "; ".join(error_this_page))
-            error_pages.add(page_num)
 
-    # Формируем итоговые сообщения
+    # Формируем итоговые сообщения для пользователя
     user_summary = ""
-    admin_details = ""
     if landscape_pages:
         user_summary += (
-            f"❌ В документе обнаружены альбомные (горизонтальные) страницы: {landscape_pages}.\n"
-            "ГОСТ 7.32-2017 требует вертикальной (книжной) ориентации!\n"
+            f"В документе обнаружены альбомные (горизонтальные) страницы: {landscape_pages}.\n"
         )
-        admin_details += f"Альбомные страницы: {landscape_pages}\n"
-
-    if error_lines:
+    if error_pages:
         user_summary += (
-            "❗ В документе нарушены требования к полям ГОСТ 7.32-2017:\n"
-            + "\n".join(error_lines) + "\n"
+            f"В документе нарушены требования к полям ГОСТ 7.32-2017 на страницах: {sorted(error_pages)}.\n"
         )
-    else:
-        user_summary += "✅ Все поля на всех страницах соответствуют ГОСТ 7.32-2017.\n"
-    #user_summary += "\n".join(user_lines)
+    if not error_pages and not landscape_pages:
+        user_summary += "Все поля на всех страницах соответствуют ГОСТ 7.32-2017.\n"
 
-    admin_details += "\n".join(admin_lines)
-    return {"user_summary": user_summary, "admin_details": admin_details}
+    admin_details = "\n".join(admin_lines)
+    return {"user_summary": user_summary.strip(), "admin_details": admin_details}
