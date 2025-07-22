@@ -112,7 +112,7 @@ class PDFHandler:
                             full_annotation_text
                         )
                         annotation.set_info(
-                            title="СЕРВИС НОРОКОНТРОЛЯ",
+                            title="Сервис нормоконтроля",
                             content=full_annotation_text
                         )
                         annotation.update()
