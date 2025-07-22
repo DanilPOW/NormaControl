@@ -176,16 +176,15 @@ class PDFQuoteAnalyzer:
                 'annotations_count': 0
             }
     
-    def _generate_user_report(self, count):
-        """Генерация отчета для пользователя"""
+    def _generate_short_user_report(self, violations):
+        count = len(violations)
         if count == 0:
-            return "✅ В документе не обнаружено нарушений с кавычками."
-        elif count == 1:
-            return f"⚠️ В документе обнаружен {count} случай нарушения кавычек. Проверьте аннотации в PDF."
-        elif 2 <= count <= 4:
-            return f"⚠️ В документе обнаружено {count} случая нарушений кавычек. Проверьте аннотации в PDF."
+            return " В документе не обнаружено нарушений с кавычками."
+        pages = sorted(set([v['page'] for v in violations]))
+        if count == 1:
+            return f" Найдено 1 нарушение кавычек (стр. {pages[0]})."
         else:
-            return f"⚠️ В документе обнаружено {count} случаев нарушений кавычек. Проверьте аннотации в PDF."
+            return f" Найдено {count} нарушений кавычек на страницах: {', '.join(map(str, pages))}."
     
     def _generate_admin_logs(self, violations, input_path, output_path):
         """Генерация логов для администраторов"""
