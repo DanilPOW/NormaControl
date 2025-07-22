@@ -92,7 +92,7 @@ def process_pdf_file(pdf_path: str):
 def authenticate_admin(pw: str):
     return gr.update(visible=(pw == os.getenv("ADMIN_PW","secret123")))"""
 
-with gr.Blocks(title="Анализатор документов на соответствие ГОСТ 7.32-2017", theme=gr.themes.Soft()) as iface:
+with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as iface:
     gr.Markdown("# 📄 Проверка документов на соответствие ГОСТ 7.32-2017")
     gr.Markdown("Загрузите PDF для проверки документа")
 
