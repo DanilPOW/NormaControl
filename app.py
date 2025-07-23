@@ -91,7 +91,7 @@ def process_pdf_file(pdf_path: str):
         gr.update(visible=True, value=out_path),
         gr.update(visible=True),
         user_notes,
-        admin_logs
+        admin_logs,
         gr.update(visible=True)
     )
 """
