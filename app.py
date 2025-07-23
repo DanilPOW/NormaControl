@@ -110,16 +110,16 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
         with gr.Column():
             pdf_output = gr.File(label="Стандартное скачивание", interactive=True)
             with gr.Row():
-            download_btn = gr.DownloadButton(
-                label="📥 Скачать проверенный документ",
-                visible=False,
-                size="lg"
+                download_btn = gr.DownloadButton(
+                    label="📥 Скачать проверенный документ",
+                    visible=False,
+                    size="lg"
+                )
+                next_btn = gr.Button("🔄 Проверить следующий документ", visible=False, variant="secondary", size="lg")
+            warning_msg = gr.Markdown(
+                "⚠️ <span style='color:#E58383;'>Рекомендуем открывать PDF в Adobe Acrobat Reader —<br>в некоторых браузерах комментарии могут отображаться некорректно.</span>",
+                visible=False
             )
-            next_btn = gr.Button("🔄 Проверить следующий документ", visible=False, variant="secondary", size="lg")
-        warning_msg = gr.Markdown(
-            "⚠️ <span style='color:#E58383;'>Рекомендуем открывать PDF в Adobe Acrobat Reader —<br>в некоторых браузерах комментарии могут отображаться некорректно.</span>",
-            visible=False
-        )
                 
     with gr.Row():
         user_notes = gr.Textbox(
