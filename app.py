@@ -139,7 +139,7 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
     check_btn.click(
         fn=process_pdf_file,
         inputs=[pdf_input],
-        outputs=[pdf_output, download_btn, warning_msg, user_notes, admin_logs]
+        outputs=[pdf_output, download_btn, warning_msg, user_notes, admin_logs, next_btn]
     )
     """login_btn.click(
         fn=authenticate_admin,
@@ -150,7 +150,7 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
     next_btn.click(
     fn=reset_form,
     inputs=[],
-    outputs=[pdf_output, download_btn, warning_msg, user_notes, admin_logs]
+    outputs=[pdf_output, download_btn, warning_msg, user_notes, admin_logs, next_btn]
     )
 
     with gr.Accordion("ℹ️ Информация о проверке", open=False):
