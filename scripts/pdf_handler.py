@@ -203,7 +203,7 @@ class PDFHandler:
             date_str = current_time.strftime("%d.%m.%Y")
             time_str = current_time.strftime("%H:%M")
             
-            output_filename = f"{basename} Провеееерено {date_str} в {time_str}.pdf"
+            output_filename = f"{basename} Проверено {date_str} в {time_str}.pdf"
             output_path = os.path.join(output_dir, output_filename)
             
             self.document.save(output_path)
