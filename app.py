@@ -70,12 +70,7 @@ def process_pdf_file(pdf_path: str):
 
         pdf_doc.save(out_path)
 
-    user_notes = (
-        "# Проверка кавычек:\n"
-        f"{quote_user_message}\n\n"
-        "# Проверка полей:\n"
-        f"{margin_user}"
-    )
+    user_notes = f"{quote_user_message}\n{margin_user}"
     admin_logs = (
         quote_admin_logs + "\n\n"
         "[MarginCheck]\n"
