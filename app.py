@@ -30,6 +30,7 @@ def cleanup_old_files(folder: str, max_age_seconds: int = 24*60*60):
 def reset_form():
     return (
         None,  # pdf_output
+        None,
         gr.update(visible=False),  # download_btn
         gr.update(visible=False),  # warning_msg
         "",  # user_notes
@@ -91,6 +92,7 @@ def process_pdf_file(pdf_path: str):
         gr.update(visible=True),
         user_notes,
         admin_logs
+        gr.update(visible=True)
     )
 """
 def authenticate_admin(pw: str):
@@ -111,7 +113,7 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
                 visible=False,
                 size="lg"
             )
-            next_btn = gr.Button("Проверить следующий документ", variant="secondary", size="lg")
+            next_btn = gr.Button("Проверить следующий документ", visible=False, variant="secondary", size="lg")
             warning_msg = gr.Markdown(
                 "⚠️ <span style='color:#E58383;'>Рекомендуем открывать PDF в Adobe Acrobat Reader —<br>в некоторых браузерах комментарии могут отображаться некорректно.</span>",
                 visible=False
