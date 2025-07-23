@@ -184,7 +184,7 @@ class PDFQuoteAnalyzer:
         if count == 1:
             return f"⚠️Проверка кавычек: обнаружено 1 нарушение кавычек (странице {pages[0]})."
         else:
-            return f⚠️"Проверка кавычек: обнаружено {count} нарушений кавычек на страницах: {', '.join(map(str, pages))}."
+            return f"⚠️Проверка кавычек: обнаружено {count} нарушений кавычек на страницах: {', '.join(map(str, pages))}."
     
     def _generate_admin_logs(self, violations, input_path, output_path):
         """Генерация логов для администраторов"""
