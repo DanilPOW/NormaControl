@@ -85,11 +85,11 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     user_summary = ""
     if error_pages:
         user_summary += (
-            f"⚠️Проверка полей: обнаружены нарушения на страницах: {sorted(error_pages)}.\n"
+            f"⚠️Проверка полей: обнаружены нарушения на страницах: {', '.join(map(str, sorted(error_pages)))}.\n"
         )
     if landscape_pages:
         user_summary += (
-            f"⚠️В документе обнаружены горизонтальные страницы: {landscape_pages}."
+            f"⚠️В документе обнаружены горизонтальные страницы: {', '.join(map(str, landscape_pages))}."
         )
     if not error_pages and not landscape_pages:
         user_summary += "✅Проверка полей"
