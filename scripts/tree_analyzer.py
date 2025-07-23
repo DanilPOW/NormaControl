@@ -2,6 +2,7 @@ import re
 import logging
 from datetime import datetime
 import os
+from pdf_margin_checker import plural_ru
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -181,10 +182,11 @@ class PDFQuoteAnalyzer:
         if count == 0:
             return "✅Проверка кавычек"
         pages = sorted(set([v['page'] for v in violations]))
+        word = plural_ru(count, ('нарушение', 'нарушения', 'нарушений'))
         if count == 1:
-            return f"⚠️Проверка кавычек: обнаружено 1 нарушение кавычек (странице {pages[0]})."
+            return f"⚠️Проверка кавычек: обнаружено 1 {word} кавычек (на странице {pages[0]})."
         else:
-            return f"⚠️Проверка кавычек: обнаружено {count} нарушений кавычек на страницах: {', '.join(map(str, pages))}."
+            return f"⚠️Проверка кавычек: обнаружено {count} {word} кавычек на страницах: {', '.join(map(str, pages))}."
     
     def _generate_admin_logs(self, violations, input_path, output_path):
         """Генерация логов для администраторов"""
@@ -260,7 +262,7 @@ class PDFQuoteAnalyzer:
                 
                 # Генерируем отчеты
                 violations_count = analysis_result['violations_count']
-                user_message = self._generate_user_report(violations_count)
+                user_message = self._generate_short_user_report(violations_count)
                 admin_logs = self._generate_admin_logs(
                     analysis_result['violations'], 
                     input_path, 
