@@ -102,6 +102,7 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
                 visible=False,
                 size="lg"
             )
+            next_btn = gr.Button("Проверить следующий документ", variant="secondary", size="lg")
             warning_msg = gr.Markdown(
                 "⚠️ <span style='color:#E58383;'>Рекомендуем открывать PDF в Adobe Acrobat Reader —<br>в некоторых браузерах комментарии могут отображаться некорректно.</span>",
                 visible=False
