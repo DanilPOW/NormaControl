@@ -97,6 +97,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     # Формируем итоговые сообщения для пользователя
     user_summary = ""
     if error_pages:
+        count = len(error_pages)
         user_summary += (
             f"⚠️Проверка полей: обнаружено {count} {plural_ru(count, ('нарушение','нарушения','нарушений'))} "
             f"на страницах: {', '.join(map(str, sorted(error_pages)))}.\n"
