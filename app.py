@@ -140,7 +140,7 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
         outputs=[admin_logs]
     )"""
 
-    with gr.Accordion("ℹ️ Информация о проверке", open=False):
+    with gr.Accordion("ℹ️ Инфформация о проверке", open=False):
         gr.Markdown("""
         - Проверка кавычек
         - Проверка, что элементы не выходят за поля. *Проверка, что поля шире пока не реализована.
