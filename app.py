@@ -46,7 +46,7 @@ def process_pdf_file(pdf_path: str):
     pdf_doc = fitz.open(tmp_path)
     from datetime import datetime
     now = datetime.now()
-    out_filename = f"{basename}_Проверено_{now.strftime('%d.%m.%Y')}_в_{now.strftime('%H:%M')}.pdf"
+    out_filename = f"{basename} Проверено {now.strftime('%d.%m.%Y')} в {now.strftime('%H:%M')}.pdf"
     out_path = os.path.join(TEMP_DIR, out_filename)
 
     with PDFHandler() as pdf_handler:
@@ -140,7 +140,7 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
         outputs=[admin_logs]
     )"""
 
-    with gr.Accordion("ℹ️ Инфформация о проверке", open=False):
+    with gr.Accordion("ℹ️ Информация о проверке", open=False):
         gr.Markdown("""
         - Проверка кавычек
         - Проверка, что элементы не выходят за поля. *Проверка, что поля шире пока не реализована.
