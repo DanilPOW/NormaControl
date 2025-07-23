@@ -27,6 +27,15 @@ def cleanup_old_files(folder: str, max_age_seconds: int = 24*60*60):
     if removed:
         print(f"🧹 Удалено старых файлов: {removed}")
 
+def reset_form():
+    return (
+        None,  # pdf_output
+        gr.update(visible=False),  # download_btn
+        gr.update(visible=False),  # warning_msg
+        "",  # user_notes
+        ""   # admin_logs
+    )
+
 def process_pdf_file(pdf_path: str):
     cleanup_old_files(TEMP_DIR)
     hide_btn = gr.update(visible=False, value=None)
@@ -135,6 +144,12 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
         inputs=[admin_pw],
         outputs=[admin_logs]
     )"""
+
+    next_btn.click(
+    fn=reset_form,
+    inputs=[],
+    outputs=[pdf_output, download_btn, warning_msg, user_notes, admin_logs]
+    )
 
     with gr.Accordion("ℹ️ Информация о проверке", open=False):
         gr.Markdown("""
