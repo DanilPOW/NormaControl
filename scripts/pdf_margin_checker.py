@@ -85,14 +85,14 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     user_summary = ""
     if landscape_pages:
         user_summary += (
-            f"В документе обнаружены альбомные (горизонтальные) страницы: {landscape_pages}.\n"
+            f"⚠️В документе обнаружены горизонтальные страницы: {landscape_pages}."
         )
     if error_pages:
         user_summary += (
-            f"В документе нарушены требования к полям ГОСТ 7.32-2017 на страницах: {sorted(error_pages)}.\n"
+            f"⚠️Проверка полей: обнаружены нарушения на страницах: {sorted(error_pages)}."
         )
     if not error_pages and not landscape_pages:
-        user_summary += "Все поля на всех страницах соответствуют ГОСТ 7.32-2017.\n"
+        user_summary += "✅Проверка полей"
 
     admin_details = "\n".join(admin_lines)
     return {"user_summary": user_summary.strip(), "admin_details": admin_details}
