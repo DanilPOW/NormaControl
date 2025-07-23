@@ -3,6 +3,19 @@ import fitz
 MARGINS_CM = {'left': 3, 'right': 1.5, 'top': 2, 'bottom': 2}
 MARGIN_PT = {k: v * 28.35 for k, v in MARGINS_CM.items()}
 
+def plural_ru(n, forms):
+    # forms = ('нарушение', 'нарушения', 'нарушений')
+    n = abs(n) % 100
+    n1 = n % 10
+    if 10 < n < 20:
+        return forms[2]
+    if 1 < n1 < 5:
+        return forms[1]
+    if n1 == 1:
+        return forms[0]
+    return forms[2]
+
+
 def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARGINS_CM, tolerance=3):
     admin_lines = []
     landscape_pages = []
@@ -85,8 +98,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     user_summary = ""
     if error_pages:
         user_summary += (
-            f"⚠️Проверка полей: обнаружено {len(error_pages)} "
-            f"{'нарушение' if len(error_pages)==1 else 'нарушения' if 2<=len(error_pages)<=4 else 'нарушений'} "
+            f"⚠️Проверка полей: обнаружено {count} {plural_ru(count, ('нарушение','нарушения','нарушений'))} "
             f"на страницах: {', '.join(map(str, sorted(error_pages)))}.\n"
         )
     if landscape_pages:
