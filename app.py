@@ -108,7 +108,7 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
                 size="lg"
             )
             warning_msg = gr.Markdown(
-                "⚠️ <span style='color:#E58383;'>Рекомендуем открывать PDF в Adobe Acrobat Reader —<br>в браузерах аннотации могут отображаться некорректно.</span>",
+                "⚠️ <span style='color:#E58383;'>Рекомендуем открывать PDF в Adobe Acrobat Reader —<br>в некоторых браузерах комментарии могут отображаться некорректно.</span>",
                 visible=False
             )
 
