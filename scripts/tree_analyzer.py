@@ -2,11 +2,22 @@ import re
 import logging
 from datetime import datetime
 import os
-from pdf_margin_checker import plural_ru
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def plural_ru(n, forms):
+    # forms = ('нарушение', 'нарушения', 'нарушений')
+    n = abs(n) % 100
+    n1 = n % 10
+    if 10 < n < 20:
+        return forms[2]
+    if 1 < n1 < 5:
+        return forms[1]
+    if n1 == 1:
+        return forms[0]
+    return forms[2]
 
 class PDFQuoteAnalyzer:
     """Класс для анализа кавычек в PDF документах"""
