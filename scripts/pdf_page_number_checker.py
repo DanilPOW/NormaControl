@@ -152,7 +152,7 @@ def check_page_numbering_and_annotate(pdf_document,
         count = len(error_pages)
         user_summary += (
             f"⚠️Проверка нумерации: обнаружено {count} {plural_ru(count, ('нарушение','нарушения','нарушений'))} "
-            f"на страницах: {', '.join(map(str, error_pages))}.\n"
+            f"на страницах: {', '.join(map(str, error_pages))}."
         )
         if 1 in error_pages:
             user_summary += "\n⚠️На титульном листе найден номер страницы — по ГОСТ номер не должен отображаться на титульнике."
