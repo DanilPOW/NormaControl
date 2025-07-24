@@ -15,8 +15,8 @@ def plural_ru(n, forms):
 
 
 def check_page_numbering_and_annotate(pdf_document, 
-                                      bottom_zone_mm=15, 
-                                      center_tolerance_mm=5):
+                                      bottom_zone_mm=25, 
+                                      center_tolerance_mm=10):
     """
     Проверяет номера страниц по ГОСТ 7.32-2017 и оставляет аннотации на страницах с нарушениями.
     Возвращает user_summary, admin_details.
