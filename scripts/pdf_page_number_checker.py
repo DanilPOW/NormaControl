@@ -14,6 +14,44 @@ def plural_ru(n, forms):
     return forms[2]
 
 
+def get_page_number_candidates(page, height, width, bottom_zone_mm):
+    def mm_to_pt(mm): return mm * 2.834646
+    candidates = []
+    # Слова (words)
+    for x0, y0, x1, y1, text, *rest in page.get_text("words"):
+        if text.isdigit() and 1 <= len(text) <= 3:
+            if (height - y1) <= mm_to_pt(bottom_zone_mm):
+                center_x = (x0 + x1) / 2
+                center_dev = abs(center_x - width / 2)
+                candidates.append({
+                    "text": text,
+                    "center_x": center_x,
+                    "center_dev": center_dev,
+                    "bbox": (x0, y0, x1, y1)
+                })
+    # Спаны (spans)
+    blocks = page.get_text("dict")["blocks"]
+    for b in blocks:
+        if b["type"] == 0:
+            for line in b.get("lines", []):
+                for span in line.get("spans", []):
+                    text = span.get("text", "")
+                    if text.isdigit() and 1 <= len(text) <= 3:
+                        y1 = span["bbox"][3]
+                        if (height - y1) <= mm_to_pt(bottom_zone_mm):
+                            x0, y0, x1, y1 = span["bbox"]
+                            center_x = (x0 + x1) / 2
+                            center_dev = abs(center_x - width / 2)
+                            # Не дублируем кандидатов из words
+                            if not any(abs(center_x - c["center_x"]) < 0.5 and abs(y1 - c["bbox"][3]) < 0.5 for c in candidates):
+                                candidates.append({
+                                    "text": text,
+                                    "center_x": center_x,
+                                    "center_dev": center_dev,
+                                    "bbox": (x0, y0, x1, y1)
+                                })
+    return candidates
+
 def check_page_numbering_and_annotate(pdf_document, 
                                       bottom_zone_mm=25, 
                                       center_tolerance_mm=10):
@@ -32,23 +70,7 @@ def check_page_numbering_and_annotate(pdf_document,
         page_num = idx + 1
         width = page.rect.width
         height = page.rect.height
-
-        words = page.get_text("words")
-        #print(words)
-        candidates = []
-        for x0, y0, x1, y1, text, *rest in words:
-            if not (text.isdigit() and 1 <= len(text) <= 3):
-                continue
-            # Только нижняя зона
-            if (height - y1) <= mm_to_pt(bottom_zone_mm):
-                center_x = (x0 + x1) / 2
-                center_dev = abs(center_x - width / 2)
-                candidates.append({
-                    "text": text,
-                    "center_x": center_x,
-                    "center_dev": center_dev,
-                    "bbox": (x0, y0, x1, y1)
-                })
+        candidates = get_page_number_candidates(page, height, width, bottom_zone_mm)
 
         issues = []
 
