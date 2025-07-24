@@ -34,6 +34,7 @@ def check_page_numbering_and_annotate(pdf_document,
         height = page.rect.height
 
         words = page.get_text("words")
+        print(words)
         candidates = []
         for x0, y0, x1, y1, text, *rest in words:
             if not (text.isdigit() and 1 <= len(text) <= 3):
