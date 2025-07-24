@@ -31,6 +31,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
 
     for page_num, page in enumerate(pdf_document, 1):
         page_rect = page.rect
+        height = page_rect.height
 
         # Проверка ориентации
         if page_rect.width > page_rect.height:
@@ -45,17 +46,28 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                         )
             comment.update()
 
-        words = page.get_text("words")
-        print(words)
         number_bboxes = []
-        height = page_rect.height
-        for x0, y0, x1, y1, text, *rest in words:
+        # 1. Поиск по words
+        for x0, y0, x1, y1, text, *rest in page.get_text("words"):
             if text.isdigit() and 1 <= len(text) <= 3:
                 if (height - y1) <= mm_to_pt(BOTTOM_ZONE_MM):
                     number_bboxes.append(fitz.Rect(x0, y0, x1, y1))
+        # 2. Поиск по spans
+        blocks = page.get_text("dict")["blocks"]
+        for b in blocks:
+            if b["type"] == 0:
+                for line in b.get("lines", []):
+                    for span in line.get("spans", []):
+                        text = span.get("text", "")
+                        if text.isdigit() and 1 <= len(text) <= 3:
+                            y1 = span["bbox"][3]
+                            if (height - y1) <= mm_to_pt(BOTTOM_ZONE_MM):
+                                x0, y0, x1, y1 = span["bbox"]
+                                # Исключить дубли, если уже есть в number_bboxes
+                                if not any(fitz.Rect(x0, y0, x1, y1).intersects(nb) for nb in number_bboxes):
+                                    number_bboxes.append(fitz.Rect(x0, y0, x1, y1))
         
         # Проверка содержимого
-        blocks = page.get_text("dict")["blocks"]
         content_rects = []
         for b in blocks:
             if b["type"] == 0:
