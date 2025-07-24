@@ -1,4 +1,5 @@
 import fitz
+import time
 
 MARGINS_CM = {'left': 3, 'right': 1.5, 'top': 2, 'bottom': 2}
 MARGIN_PT = {k: v * 28.35 for k, v in MARGINS_CM.items()}
