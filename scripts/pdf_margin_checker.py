@@ -25,7 +25,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     def mm_to_pt(mm):
         return mm * 2.834646
 
-    BOTTOM_ZONE_MM = 15  # Нижняя зона для поиска номеров страниц
+    BOTTOM_ZONE_MM = 20  # Нижняя зона для поиска номеров страниц
     
     total_start = time.perf_counter()
 
