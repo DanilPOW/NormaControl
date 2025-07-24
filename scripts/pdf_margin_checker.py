@@ -46,6 +46,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
             comment.update()
 
         words = page.get_text("words")
+        print(words)
         number_bboxes = []
         height = page_rect.height
         for x0, y0, x1, y1, text, *rest in words:
