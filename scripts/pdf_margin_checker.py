@@ -21,6 +21,8 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     landscape_pages = []
     error_pages = set()
 
+    total_start = time.perf_counter()
+
     for page_num, page in enumerate(pdf_document, 1):
         page_rect = page.rect
 
@@ -93,7 +95,10 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 content="Поля оформлены неверно"
                         )
             annotation.update()
-
+    
+    total_elapsed = time.perf_counter() - total_start  # конец проверки
+    admin_lines.append(f" Проверка всех полей заняла: {total_elapsed:.3f} сек.")
+    
     # Формируем итоговые сообщения для пользователя
     user_summary = ""
     if error_pages:
