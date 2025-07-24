@@ -19,7 +19,9 @@ def plural_ru(n, forms):
 
 def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARGINS_CM, tolerance=3):
     admin_lines = []
-    landscape_pages = []
+    landscape_pages = [] 
+    landscape_pages_ok = []
+    landscape_pages_error = []
     error_pages = set()
 
     def mm_to_pt(mm):
@@ -33,6 +35,8 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         page_rect = page.rect
         height = page_rect.height
 
+        is_landscape = page_rect.width > page_rect.height
+        
         # Проверка ориентации
         if page_rect.width > page_rect.height:
             landscape_pages.append(page_num)
@@ -119,7 +123,12 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 content="Поля оформлены неверно"
                         )
             annotation.update()
-    
+        if is_landscape:
+            if has_error:
+                landscape_pages_error.append(page_num)
+            else:
+                landscape_pages_ok.append(page_num)
+
     total_elapsed = time.perf_counter() - total_start  # конец проверки
     admin_lines.append(f" Проверка всех полей заняла: {total_elapsed:.3f} сек.")
     
@@ -132,9 +141,12 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
             f"на страницах: {', '.join(map(str, sorted(error_pages)))}.\n"
         )
     if landscape_pages:
-        user_summary += (
-            f"⚠️В документе обнаружены горизонтальные страницы: {', '.join(map(str, landscape_pages))}."
-        )
+        msg = f"⚠️В документе обнаружены горизонтальные страницы: {', '.join(map(str, landscape_pages))}."
+        if landscape_pages_ok and not landscape_pages_error:
+            msg += " Поля соответствуют ГОСТ."
+        elif landscape_pages_error:
+            msg += " Обнаружены ошибки полей на страницах: " + ", ".join(map(str, landscape_pages_error)) + "."
+        user_summary += msg
     if not error_pages and not landscape_pages:
         user_summary += "✅Проверка полей"
 
