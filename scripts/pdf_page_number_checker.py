@@ -1,5 +1,19 @@
 import fitz
 
+
+def plural_ru(n, forms):
+    # forms = ('нарушение', 'нарушения', 'нарушений')
+    n = abs(n) % 100
+    n1 = n % 10
+    if 10 < n < 20:
+        return forms[2]
+    if 1 < n1 < 5:
+        return forms[1]
+    if n1 == 1:
+        return forms[0]
+    return forms[2]
+
+
 def check_page_numbering_and_annotate(pdf_document, 
                                       bottom_zone_mm=15, 
                                       center_tolerance_mm=5):
