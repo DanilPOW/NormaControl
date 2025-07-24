@@ -22,6 +22,11 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     landscape_pages = []
     error_pages = set()
 
+    def mm_to_pt(mm):
+        return mm * 2.834646
+
+    BOTTOM_ZONE_MM = 15  # Нижняя зона для поиска номеров страниц
+    
     total_start = time.perf_counter()
 
     for page_num, page in enumerate(pdf_document, 1):
@@ -40,6 +45,14 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                         )
             comment.update()
 
+        words = page.get_text("words")
+        number_bboxes = []
+        height = page_rect.height
+        for x0, y0, x1, y1, text, *rest in words:
+            if text.isdigit() and 1 <= len(text) <= 3:
+                if (height - y1) <= mm_to_pt(BOTTOM_ZONE_MM):
+                    number_bboxes.append(fitz.Rect(x0, y0, x1, y1))
+        
         # Проверка содержимого
         blocks = page.get_text("dict")["blocks"]
         content_rects = []
@@ -47,10 +60,16 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
             if b["type"] == 0:
                 for line in b.get("lines", []):
                     for span in line.get("spans", []):
-                        bbox = span["bbox"]
-                        content_rects.append(fitz.Rect(bbox))
+                        bbox = fitz.Rect(span["bbox"])
+                        # Пропустить, если bbox пересекается с номером страницы
+                        if any(bbox.intersects(nb) for nb in number_bboxes):
+                            continue
+                        content_rects.append(bbox)
             elif b["type"] == 1:
-                content_rects.append(fitz.Rect(b["bbox"]))
+                bbox = fitz.Rect(b["bbox"])
+                if any(bbox.intersects(nb) for nb in number_bboxes):
+                    continue
+                content_rects.append(bbox)
 
         if not content_rects:
             admin_lines.append(f"page_{page_num}: Нет содержимого для анализа.")
