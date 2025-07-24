@@ -47,46 +47,37 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
             comment.update()
 
         number_bboxes = []
-        # 1. Поиск по words
-        for x0, y0, x1, y1, text, *rest in page.get_text("words"):
-            if text.isdigit() and 1 <= len(text) <= 3:
-                if (height - y1) <= mm_to_pt(BOTTOM_ZONE_MM):
-                    number_bboxes.append(fitz.Rect(x0, y0, x1, y1))
-        # 2. Поиск по spans
         blocks = page.get_text("dict")["blocks"]
         for b in blocks:
             if b["type"] == 0:
                 for line in b.get("lines", []):
                     for span in line.get("spans", []):
-                        text = span.get("text", "")
-                        if text.isdigit() and 1 <= len(text) <= 3:
-                            y1 = span["bbox"][3]
-                            if (height - y1) <= mm_to_pt(BOTTOM_ZONE_MM):
-                                x0, y0, x1, y1 = span["bbox"]
-                                # Исключить дубли, если уже есть в number_bboxes
-                                if not any(fitz.Rect(x0, y0, x1, y1).intersects(nb) for nb in number_bboxes):
-                                    number_bboxes.append(fitz.Rect(x0, y0, x1, y1))
-        
-        # Проверка содержимого
+                        bbox = fitz.Rect(span["bbox"])
+                        y1 = bbox.y1
+                        if (height - y1) <= mm_to_pt(BOTTOM_ZONE_MM):
+                            number_bboxes.append(bbox)
+            elif b["type"] == 1:
+                bbox = fitz.Rect(b["bbox"])
+                y1 = bbox.y1
+                if (height - y1) <= mm_to_pt(BOTTOM_ZONE_MM):
+                    number_bboxes.append(bbox)
+
+        # 2. Теперь основной контент: пропускаем то, что в списке "number_bboxes"
         content_rects = []
         for b in blocks:
             if b["type"] == 0:
                 for line in b.get("lines", []):
                     for span in line.get("spans", []):
                         bbox = fitz.Rect(span["bbox"])
-                        # Пропустить, если bbox пересекается с номером страницы
-                        if any(bbox.intersects(nb) for nb in number_bboxes):
+                        # Пропускаем, если bbox ниже 20 мм
+                        if any(abs(bbox.y0 - nb.y0) < 1 and abs(bbox.y1 - nb.y1) < 1 for nb in number_bboxes):
                             continue
                         content_rects.append(bbox)
             elif b["type"] == 1:
                 bbox = fitz.Rect(b["bbox"])
-                if any(bbox.intersects(nb) for nb in number_bboxes):
+                if any(abs(bbox.y0 - nb.y0) < 1 and abs(bbox.y1 - nb.y1) < 1 for nb in number_bboxes):
                     continue
                 content_rects.append(bbox)
-
-        if not content_rects:
-            admin_lines.append(f"page_{page_num}: Нет содержимого для анализа.")
-            continue
 
         union = fitz.Rect(content_rects[0])
         for r in content_rects[1:]:
