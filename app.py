@@ -6,6 +6,7 @@ import fitz  # PyMuPDF
 from scripts.tree_analyzer import analyzer
 from scripts.pdf_margin_checker import check_margins_and_annotate, MARGIN_PT, MARGINS_CM
 from scripts.pdf_handler import PDFHandler
+from scripts.pdf_page_number_checker import check_page_numbering_and_annotate
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
@@ -79,13 +80,17 @@ def process_pdf_file(pdf_path: str):
         margin_user = margins['user_summary']
         margin_admin = margins['admin_details']
 
+        page_numbers = check_page_numbering_and_annotate(pdf_doc)
+        page_num_user = page_numbers['user_summary']
+        page_num_admin = page_numbers['admin_details']
+
         pdf_doc.save(out_path)
 
-    user_notes = f"{quote_user_message}\n{margin_user}"
+    user_notes = f"{quote_user_message}\n{margin_user}\n{page_num_user}"
     admin_logs = (
         quote_admin_logs + "\n\n"
-        "[MarginCheck]\n"
-        f"{margin_admin}"
+        "[MarginCheck]\n" + margin_admin +
+        "\n\n[PageNumbering]\n" + page_num_admin
     )
     return (
         out_path,
