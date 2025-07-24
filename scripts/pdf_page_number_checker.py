@@ -132,7 +132,7 @@ def check_page_numbering_and_annotate(pdf_document,
             f"на страницах: {', '.join(map(str, error_pages))}.\n"
         )
     if not error_pages:
-        user_summary = "✅Проверка нумерации: все номера страниц соответствуют ГОСТ 7.32-2017."
+        user_summary = "✅Проверка нумерации"
 
     admin_details = "\n".join(admin_lines)
     return {"user_summary": user_summary.strip(), "admin_details": admin_details}
