@@ -145,13 +145,16 @@ def check_page_numbering_and_annotate(pdf_document,
             # === НОВОЕ: проверка шрифта/размера ===
             if "Times" not in font_name or not (12 <= font_size <= 14):
                 issues.append(f"Шрифт '{font_name}' {font_size:.1f}pt — ожидается Times New Roman 12–14pt.")
-                page.add_text_annot(
+                annot = page.add_text_annot(
                     rect.tl,
                     "Шрифт номера страницы должен быть Times New Roman 12–14pt"
-                ).set_info(
-                    title="Сервис нормоконтроля",
-                    content="ГОСТ: Шрифт номера страницы Times New Roman, размер 12–14pt"
-                ).update()
+                )
+                if annot:
+                    annot.set_info(
+                        title="Сервис нормоконтроля",
+                        content="ГОСТ: Шрифт номера страницы Times New Roman, размер 12–14pt"
+                    )
+                    annot.update()
             
             if len(candidates) > 1:
                 nums = [c["text"] for c in candidates]
