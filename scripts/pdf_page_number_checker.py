@@ -48,7 +48,9 @@ def get_page_number_candidates(page, height, width, bottom_zone_mm):
                                     "text": text,
                                     "center_x": center_x,
                                     "center_dev": center_dev,
-                                    "bbox": (x0, y0, x1, y1)
+                                    "bbox": (x0, y0, x1, y1),
+                                    "font":       span.get("font", ""),
+                                    "size":       span.get("size", 0)
                                 })
     return candidates
 
@@ -113,6 +115,8 @@ def check_page_numbering_and_annotate(pdf_document,
             best = min(candidates, key=lambda c: c["center_dev"])
             actual_num = best["text"]
             rect = fitz.Rect(*best["bbox"])
+            font_name = best.get("font", "")
+            font_size = best.get("size", 0)
 
             if actual_num != expected_num:
                 issues.append(f"Найден номер '{actual_num}', ожидается '{expected_num}'.")
@@ -138,6 +142,17 @@ def check_page_numbering_and_annotate(pdf_document,
                 )
                 annotation.update()
 
+            # === НОВОЕ: проверка шрифта/размера ===
+            if "Times" not in font_name or not (12 <= font_size <= 14):
+                issues.append(f"Шрифт '{font_name}' {font_size:.1f}pt — ожидается Times New Roman 12–14pt.")
+                page.add_text_annot(
+                    rect.tl,
+                    "Шрифт номера страницы должен быть Times New Roman 12–14pt"
+                ).set_info(
+                    title="Сервис нормоконтроля",
+                    content="ГОСТ: Шрифт номера страницы Times New Roman, размер 12–14pt"
+                ).update()
+            
             if len(candidates) > 1:
                 nums = [c["text"] for c in candidates]
                 issues.append(f"Найдено несколько цифровых блоков {nums} внизу, возможна ошибка вёрстки.")
