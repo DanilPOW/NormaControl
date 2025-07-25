@@ -73,6 +73,7 @@ def check_page_numbering_and_annotate(pdf_document,
         width = page.rect.width
         height = page.rect.height
         candidates = get_page_number_candidates(page, height, width, bottom_zone_mm)
+        print(f"Страница {page_num} кандидаты: {candidates}")
 
         issues = []
 
