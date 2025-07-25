@@ -1,5 +1,7 @@
 import fitz
 
+def is_times_new_roman(font):
+                return "times" in font.lower()
 
 def plural_ru(n, forms):
     # forms = ('нарушение', 'нарушения', 'нарушений')
@@ -142,15 +144,6 @@ def check_page_numbering_and_annotate(pdf_document,
                     content="ГОСТ: Номер страницы должен быть строго по центру"
                 )
                 annotation.update()
-
-            def is_times_new_roman(font):
-                font = font.lower()
-                # Самые частые варианты из MS Word, LibreOffice, PDF
-                return (
-                    "timesnewroman" in font
-                    or "times new roman" in font
-                    or "timesnewromanpsmt" in font  # иногда бывает так
-                )
             
             # === НОВОЕ: проверка шрифта/размера ===
             if not is_times_new_roman(font_name) or not (12 <= font_size <= 14):
