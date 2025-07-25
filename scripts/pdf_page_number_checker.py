@@ -143,8 +143,17 @@ def check_page_numbering_and_annotate(pdf_document,
                 )
                 annotation.update()
 
+            def is_times_new_roman(font):
+                font = font.lower()
+                # Самые частые варианты из MS Word, LibreOffice, PDF
+                return (
+                    "timesnewroman" in font
+                    or "times new roman" in font
+                    or "timesnewromanpsmt" in font  # иногда бывает так
+                )
+            
             # === НОВОЕ: проверка шрифта/размера ===
-            if "Times" not in font_name or not (12 <= font_size <= 14):
+            if not is_times_new_roman(font_name) or not (12 <= font_size <= 14):
                 issues.append(f"Шрифт '{font_name}' {font_size:.1f}pt — ожидается Times New Roman 12–14pt.")
                 annot = page.add_text_annot(
                     rect.tl,
