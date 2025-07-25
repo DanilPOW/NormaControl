@@ -18,7 +18,7 @@ def get_page_number_candidates(page, height, width, bottom_zone_mm):
     def mm_to_pt(mm): return mm * 2.834646
     candidates = []
     # Слова (words)
-    for x0, y0, x1, y1, text, *rest in page.get_text("words"):
+    '''for x0, y0, x1, y1, text, *rest in page.get_text("words"):
         if text.isdigit() and 1 <= len(text) <= 3:
             if (height - y1) <= mm_to_pt(bottom_zone_mm):
                 center_x = (x0 + x1) / 2
@@ -28,7 +28,7 @@ def get_page_number_candidates(page, height, width, bottom_zone_mm):
                     "center_x": center_x,
                     "center_dev": center_dev,
                     "bbox": (x0, y0, x1, y1),
-                })
+                })'''
     # Спаны (spans)
     blocks = page.get_text("dict")["blocks"]
     for b in blocks:
@@ -42,16 +42,14 @@ def get_page_number_candidates(page, height, width, bottom_zone_mm):
                             x0, y0, x1, y1 = span["bbox"]
                             center_x = (x0 + x1) / 2
                             center_dev = abs(center_x - width / 2)
-                            # Не дублируем кандидатов из words
-                            if not any(abs(center_x - c["center_x"]) < 0.5 and abs(y1 - c["bbox"][3]) < 0.5 for c in candidates):
-                                candidates.append({
+                            candidates.append({
                                     "text": text,
                                     "center_x": center_x,
                                     "center_dev": center_dev,
                                     "bbox": (x0, y0, x1, y1),
                                     "font":       span.get("font", ""),
                                     "size":       span.get("size", 0)
-                                })
+                            })
     return candidates
 
 def check_page_numbering_and_annotate(pdf_document, 
