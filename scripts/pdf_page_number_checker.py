@@ -55,7 +55,7 @@ def get_page_number_candidates(page, height, width, bottom_zone_mm):
     return candidates
 
 def check_page_numbering_and_annotate(pdf_document, 
-                                      bottom_zone_mm=25, 
+                                      bottom_zone_mm=50, 
                                       center_tolerance_mm=10):
     """
     Проверяет номера страниц по ГОСТ 7.32-2017 и оставляет аннотации на страницах с нарушениями.
