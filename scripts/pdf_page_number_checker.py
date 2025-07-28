@@ -40,14 +40,15 @@ def get_page_number_candidates(page, height, width, bottom_zone_mm, debug_log=No
                     if debug_log is not None:
                         debug_log.append(f"[SPAN] {span}")
                     text = span.get("text", "")
-                    if text.isdigit() and 1 <= len(text) <= 3:
+                    text_clean = text.strip()
+                    if text_clean.isdigit() and 1 <= len(text_clean) <= 3:
                         y1 = span["bbox"][3]
                         if (height - y1) <= mm_to_pt(bottom_zone_mm):
                             x0, y0, x1, y1 = span["bbox"]
                             center_x = (x0 + x1) / 2
                             center_dev = abs(center_x - width / 2)
                             candidates.append({
-                                    "text": text,
+                                    "text": text_clean,
                                     "center_x": center_x,
                                     "center_dev": center_dev,
                                     "bbox": (x0, y0, x1, y1),
