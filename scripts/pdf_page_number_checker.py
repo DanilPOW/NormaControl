@@ -3,6 +3,19 @@ import fitz
 def is_times_new_roman(font):
                 return "times" in font.lower()
 
+def get_bottom_zone_spans(page, height, bottom_zone_mm):
+    def mm_to_pt(mm): return mm * 2.834646
+    spans_in_bottom = []
+    blocks = page.get_text("dict")["blocks"]
+    for b in blocks:
+        if b["type"] == 0:
+            for line in b.get("lines", []):
+                for span in line.get("spans", []):
+                    y1 = span["bbox"][3]
+                    if (height - y1) <= mm_to_pt(bottom_zone_mm):
+                        spans_in_bottom.append(span)
+    return spans_in_bottom
+
 def plural_ru(n, forms):
     # forms = ('нарушение', 'нарушения', 'нарушений')
     n = abs(n) % 100
@@ -58,10 +71,6 @@ def get_page_number_candidates(page, height, width, bottom_zone_mm):
 def check_page_numbering_and_annotate(pdf_document, 
                                       bottom_zone_mm=25, 
                                       center_tolerance_mm=10):
-    """
-    Проверяет номера страниц по ГОСТ 7.32-2017 и оставляет аннотации на страницах с нарушениями.
-    Возвращает user_summary, admin_details.
-    """
     admin_lines = []
     error_pages = []
     total_pages = len(pdf_document)
@@ -79,6 +88,7 @@ def check_page_numbering_and_annotate(pdf_document,
         )
 
         issues = []
+        expected_num = str(page_num)
 
         # Титульный лист
         if page_num == 1:
@@ -100,11 +110,8 @@ def check_page_numbering_and_annotate(pdf_document,
                 admin_lines.append(f"page_{page_num}: " + "; ".join(issues))
             continue
 
-        expected_num = str(page_num)
-
         if not candidates:
             issues.append("Номер страницы не найден в нижней зоне.")
-            # Аннотация внизу страницы (справа)
             annotation = page.add_text_annot(
                 fitz.Point(width - 100, height - mm_to_pt(bottom_zone_mm)),
                 "Не найден номер страницы в нижней части"
@@ -115,13 +122,14 @@ def check_page_numbering_and_annotate(pdf_document,
             )
             annotation.update()
         else:
-            # Берём самый центрированный
+            # Берём самый центрированный как номер страницы
             best = min(candidates, key=lambda c: c["center_dev"])
             actual_num = best["text"]
             rect = fitz.Rect(*best["bbox"])
             font_name = best.get("font", "")
             font_size = best.get("size", 0)
 
+            # Проверка номера
             if actual_num != expected_num:
                 issues.append(f"Найден номер '{actual_num}', ожидается '{expected_num}'.")
                 annotation = page.add_text_annot(
@@ -134,6 +142,7 @@ def check_page_numbering_and_annotate(pdf_document,
                 )
                 annotation.update()
 
+            # Проверка центра
             if best["center_dev"] > mm_to_pt(center_tolerance_mm):
                 issues.append(f"Номер '{actual_num}' не по центру (отклонение {best['center_dev']:.1f} pt).")
                 annotation = page.add_text_annot(
@@ -145,8 +154,8 @@ def check_page_numbering_and_annotate(pdf_document,
                     content="ГОСТ: Номер страницы должен быть строго по центру"
                 )
                 annotation.update()
-            
-            # === НОВОЕ: проверка шрифта/размера ===
+
+            # Проверка шрифта/размера
             if not is_times_new_roman(font_name) or not (12 <= font_size <= 14.1):
                 issues.append(f"Шрифт '{font_name}' {font_size:.1f}pt — требуется любой вариант Times New Roman, размер 12–14pt.")
                 annot = page.add_text_annot(
@@ -163,6 +172,26 @@ def check_page_numbering_and_annotate(pdf_document,
             if len(candidates) > 1:
                 nums = [c["text"] for c in candidates]
                 issues.append(f"Найдено несколько цифровых блоков {nums} внизу, возможна ошибка вёрстки.")
+
+            # ---- Проверка на пустую строку после номера ----
+            spans_in_bottom = get_bottom_zone_spans(page, height, bottom_zone_mm)
+            for i, span in enumerate(spans_in_bottom):
+                text_clean = span.get("text", "").strip()
+                if text_clean == actual_num:
+                    if i + 1 < len(spans_in_bottom):
+                        next_span = spans_in_bottom[i + 1]
+                        if next_span.get("text", "").strip() == "":
+                            issues.append("После номера страницы обнаружена пустая строка (спан).")
+                            annotation = page.add_text_annot(
+                                fitz.Point(next_span["bbox"][0], next_span["bbox"][1]),
+                                "Пустая строка после номера страницы"
+                            )
+                            annotation.set_info(
+                                title="Сервис нормоконтроля",
+                                content="ГОСТ: После номера страницы не должно быть пустых строк!"
+                            )
+                            annotation.update()
+                    break  # Проверяем только первое совпадение номера
 
         if issues:
             error_pages.append(page_num)
@@ -183,3 +212,4 @@ def check_page_numbering_and_annotate(pdf_document,
 
     admin_details = "\n".join(admin_lines)
     return {"user_summary": user_summary.strip(), "admin_details": admin_details}
+
