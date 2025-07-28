@@ -16,7 +16,7 @@ def plural_ru(n, forms):
     return forms[2]
 
 
-def get_page_number_candidates(page, height, width, bottom_zone_mm, debug_log=None):
+def get_page_number_candidates(page, height, width, bottom_zone_mm):
     def mm_to_pt(mm): return mm * 2.834646
     candidates = []
     # Слова (words)
@@ -37,8 +37,6 @@ def get_page_number_candidates(page, height, width, bottom_zone_mm, debug_log=No
         if b["type"] == 0:
             for line in b.get("lines", []):
                 for span in line.get("spans", []):
-                    if debug_log is not None:
-                        debug_log.append(f"[SPAN] {span}")
                     text = span.get("text", "")
                     text_clean = text.strip()
                     if text_clean.isdigit() and 1 <= len(text_clean) <= 3:
@@ -75,10 +73,7 @@ def check_page_numbering_and_annotate(pdf_document,
         page_num = idx + 1
         width = page.rect.width
         height = page.rect.height
-        debug_log = []
-        candidates = get_page_number_candidates(page, height, width, bottom_zone_mm, debug_log)
-        admin_lines.append(f"[page_{page_num}] СПАНЫ В НИЖНЕЙ ЗОНЕ:")
-        admin_lines.extend(debug_log)
+        candidates = get_page_number_candidates(page, height, width, bottom_zone_mm)
         admin_lines.append(
             f"[page_{page_num}] Кандидаты: {candidates}"
         )
