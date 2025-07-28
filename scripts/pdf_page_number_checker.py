@@ -16,11 +16,11 @@ def plural_ru(n, forms):
     return forms[2]
 
 
-def get_page_number_candidates(page, height, width, bottom_zone_mm):
+def get_page_number_candidates(page, height, width, bottom_zone_mm, debug_log=None):
     def mm_to_pt(mm): return mm * 2.834646
     candidates = []
     # Слова (words)
-    for x0, y0, x1, y1, text, *rest in page.get_text("words"):
+    '''for x0, y0, x1, y1, text, *rest in page.get_text("words"):
         if text.isdigit() and 1 <= len(text) <= 3:
             if (height - y1) <= mm_to_pt(bottom_zone_mm):
                 center_x = (x0 + x1) / 2
@@ -30,13 +30,15 @@ def get_page_number_candidates(page, height, width, bottom_zone_mm):
                     "center_x": center_x,
                     "center_dev": center_dev,
                     "bbox": (x0, y0, x1, y1),
-                })
+                })'''
     # Спаны (spans)
     blocks = page.get_text("dict")["blocks"]
     for b in blocks:
         if b["type"] == 0:
             for line in b.get("lines", []):
                 for span in line.get("spans", []):
+                    if debug_log is not None:
+                        debug_log.append(f"[SPAN] {span}")
                     text = span.get("text", "")
                     if text.isdigit() and 1 <= len(text) <= 3:
                         y1 = span["bbox"][3]
@@ -72,7 +74,10 @@ def check_page_numbering_and_annotate(pdf_document,
         page_num = idx + 1
         width = page.rect.width
         height = page.rect.height
-        candidates = get_page_number_candidates(page, height, width, bottom_zone_mm)
+        debug_log = []
+        candidates = get_page_number_candidates(page, height, width, bottom_zone_mm, debug_log)
+        admin_lines.append(f"[page_{page_num}] СПАНЫ В НИЖНЕЙ ЗОНЕ:")
+        admin_lines.extend(debug_log)
         admin_lines.append(
             f"[page_{page_num}] Кандидаты: {candidates}"
         )
