@@ -91,9 +91,27 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         top = union.y0 - page_rect.y0
         bottom = page_rect.y1 - union.y1
 
+        if is_landscape:
+            # ГОСТ: левое (3см) — это top, верхнее (2см) — это right, правое (2см) — это bottom, нижнее (2см) — это left
+            visual_fields = {
+                'left': top,
+                'right': bottom,
+                'top': right,
+                'bottom': left
+            }
+        else:
+            visual_fields = {
+                'left': left,
+                'right': right,
+                'top': top,
+                'bottom': bottom
+            }
+
+
         verdict = {}
         has_error = False
-        for k, v in zip(['left', 'right', 'top', 'bottom'], [left, right, top, bottom]):
+        for k in ['left', 'right', 'top', 'bottom']:
+            v = visual_fields[k]
             required = margin_pt[k]
             if k in ["right", "bottom"]:
                 ok = v >= required - tolerance
@@ -104,7 +122,6 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 "required_cm": margin_cm[k],
                 "ok": ok
             }
-            # Подробные логи только для админа
             admin_lines.append(
                 f"page_{page_num}, {k}: {verdict[k]['actual_cm']} см (норма: {verdict[k]['required_cm']} см) — {'OK' if verdict[k]['ok'] else 'FAIL'}"
             )
