@@ -102,7 +102,7 @@ def check_page_numbering_and_annotate(pdf_document,
                     )
                     annotation.set_info(
                         title="Сервис нормоконтроля",
-                        content="ГОСТ: Номер страницы не допускается на титульном листе"
+                        content="Номер страницы не допускается на титульном листе"
                     )
                     annotation.update()
             if issues:
@@ -118,7 +118,7 @@ def check_page_numbering_and_annotate(pdf_document,
             )
             annotation.set_info(
                 title="Сервис нормоконтроля",
-                content="ГОСТ: Внизу страницы должен быть номер"
+                content="Внизу страницы должен быть номер"
             )
             annotation.update()
         else:
@@ -165,7 +165,7 @@ def check_page_numbering_and_annotate(pdf_document,
                 if annot:
                     annot.set_info(
                         title="Сервис нормоконтроля",
-                        content="ГОСТ: Шрифт номера страницы Times New Roman, размер 12–14pt"
+                        content="Шрифт номера страницы должен быть Times New Roman 12–14pt"
                     )
                     annot.update()
             
@@ -188,7 +188,7 @@ def check_page_numbering_and_annotate(pdf_document,
                             )
                             annotation.set_info(
                                 title="Сервис нормоконтроля",
-                                content="ГОСТ: После номера страницы не должно быть пустых строк!"
+                                content="После номера страницы не должно быть пустых строк."
                             )
                             annotation.update()
                     break  # Проверяем только первое совпадение номера
@@ -206,7 +206,7 @@ def check_page_numbering_and_annotate(pdf_document,
             f"на страницах: {', '.join(map(str, error_pages))}."
         )
         if 1 in error_pages:
-            user_summary += "\n⚠️На титульном листе найден номер страницы — по ГОСТ номер не должен отображаться на титульнике."
+            user_summary += "\n⚠️На титульном листе найден номер страницы."
     if not error_pages:
         user_summary = "✅Проверка нумерации"
 
