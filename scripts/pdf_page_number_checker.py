@@ -151,7 +151,7 @@ def check_page_numbering_and_annotate(pdf_document,
                 num_issues.append(f"Ожидается номер '{expected_num}' (найден '{actual_num}').")
             # Проверка центра
             if best["center_dev"] > mm_to_pt(center_tolerance_mm):
-                num_issues.append(f"Номер не по центру (отклонение {best['center_dev']:.1f} pt).")
+                num_issues.append("Номер не по центру.")
 
             # Проверка шрифта/размера
             if not is_times_new_roman(font_name) or not (12 <= font_size <= 14.1):
