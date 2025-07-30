@@ -36,11 +36,16 @@ def check_double_spaces(pdf_document):
                     if double_idx != -1:
                         has_double_space = True
                         admin_lines.append(f"[page_{page_num}] Двойной пробел в строке: «{line_text}»")
+                        # -- Поиск спана, где двойной пробел
                         char_count = 0
                         for span in spans:
                             span_text = span.get("text", "")
                             span_len = len(span_text)
                             if char_count <= double_idx < char_count + span_len:
+                                # Нашли спан с двойным пробелом!
+                                # Примерно первая координата двойного пробела
+                                rel_pos = double_idx - char_count
+                                # Возьмём левый край спана (точнее нельзя без fonttools, но обычно ок)
                                 x, y, _, _ = span["bbox"]
                                 annotation = page.add_text_annot(
                                     fitz.Point(x, y),
@@ -57,12 +62,13 @@ def check_double_spaces(pdf_document):
             error_pages.append(page_num)
 
     spans_log = log_all_spans(pdf_document)
+    admin_details = ("\n".join(admin_lines) if admin_lines else "Двойных пробелов не найдено.") + \
+                    "\n\n==== Все спаны ====\n" + spans_log
+
     if error_pages:
         user_summary = (
             f"⚠️Обнаружены двойные пробелы на страницах: {', '.join(map(str, error_pages))}."
         )
     else:
         user_summary = "✅Двойные пробелы не обнаружены"
-    admin_details = ("\n".join(admin_lines) if admin_lines else "Двойных пробелов не найдено.") + \
-                    "\n\n==== Все спаны ====\n" + spans_log
     return {"user_summary": user_summary, "admin_details": admin_details}
