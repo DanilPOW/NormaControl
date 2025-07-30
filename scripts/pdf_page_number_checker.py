@@ -3,6 +3,25 @@ import fitz
 def is_times_new_roman(font):
                 return "times" in font.lower()
 
+def get_work_area_center(page_rect, is_landscape):
+    width = page_rect.width
+    height = page_rect.height
+    if is_landscape:
+        left = 2 * 28.35
+        right = 2 * 28.35
+        top = 3 * 28.35
+        bottom = 1.5 * 28.35
+    else:
+        left = 3 * 28.35
+        right = 1.5 * 28.35
+        top = 2 * 28.35
+        bottom = 2 * 28.35
+    work_width = width - left - right
+    work_height = height - top - bottom
+    center_x = left + work_width / 2
+    center_y = top + work_height / 2
+    return center_x, center_y
+
 def get_bottom_zone_spans(page, height, bottom_zone_mm):
     def mm_to_pt(mm): return mm * 2.834646
     spans_in_bottom = []
@@ -57,7 +76,8 @@ def get_page_number_candidates(page, height, width, bottom_zone_mm):
                         if (height - y1) <= mm_to_pt(bottom_zone_mm):
                             x0, y0, x1, y1 = span["bbox"]
                             center_x = (x0 + x1) / 2
-                            center_dev = abs(center_x - width / 2)
+                            center_x_work, _ = get_work_area_center(page.rect, width > height)
+                            center_dev = abs(center_x - center_x_work)
                             candidates.append({
                                     "text": text_clean,
                                     "center_x": center_x,
