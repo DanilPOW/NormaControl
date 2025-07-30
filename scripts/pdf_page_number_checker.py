@@ -129,49 +129,22 @@ def check_page_numbering_and_annotate(pdf_document,
             font_name = best.get("font", "")
             font_size = best.get("size", 0)
 
+            num_issues = []
+            
             # Проверка номера
             if actual_num != expected_num:
-                issues.append(f"Найден номер '{actual_num}', ожидается '{expected_num}'.")
-                annotation = page.add_text_annot(
-                    rect.tl,
-                    f"Ожидается номер '{expected_num}'"
-                )
-                annotation.set_info(
-                    title="Сервис нормоконтроля",
-                    content=f"ГОСТ: Номер страницы должен быть '{expected_num}'"
-                )
-                annotation.update()
-
+                num_issues.append(f"Ожидается номер '{expected_num}' (найден '{actual_num}').")
             # Проверка центра
             if best["center_dev"] > mm_to_pt(center_tolerance_mm):
-                issues.append(f"Номер '{actual_num}' не по центру (отклонение {best['center_dev']:.1f} pt).")
-                annotation = page.add_text_annot(
-                    rect.tl,
-                    "Номер страницы не по центру"
-                )
-                annotation.set_info(
-                    title="Сервис нормоконтроля",
-                    content="ГОСТ: Номер страницы должен быть строго по центру"
-                )
-                annotation.update()
+                num_issues.append(f"Номер не по центру (отклонение {best['center_dev']:.1f} pt).")
 
             # Проверка шрифта/размера
             if not is_times_new_roman(font_name) or not (12 <= font_size <= 14.1):
-                issues.append(f"Шрифт '{font_name}' {font_size:.1f}pt — требуется любой вариант Times New Roman, размер 12–14pt.")
-                annot = page.add_text_annot(
-                    rect.tl,
-                    "Шрифт номера страницы должен быть Times New Roman 12–14pt"
-                )
-                if annot:
-                    annot.set_info(
-                        title="Сервис нормоконтроля",
-                        content="Шрифт номера страницы должен быть Times New Roman 12–14pt"
-                    )
-                    annot.update()
+                num_issues.append(f"Шрифт: '{font_name}' {font_size:.1f}pt — требуется Times New Roman 12–14pt.")
             
             if len(candidates) > 1:
                 nums = [c["text"] for c in candidates]
-                issues.append(f"Найдено несколько цифровых блоков {nums} внизу, возможна ошибка вёрстки.")
+                num_issues.append(f"Найдено несколько цифровых блоков: {nums}.")
 
             # ---- Проверка на пустую строку после номера ----
             spans_in_bottom = get_bottom_zone_spans(page, height, bottom_zone_mm)
@@ -181,21 +154,23 @@ def check_page_numbering_and_annotate(pdf_document,
                     if i + 1 < len(spans_in_bottom):
                         next_span = spans_in_bottom[i + 1]
                         if next_span.get("text", "").strip() == "":
-                            issues.append("После номера страницы обнаружена пустая строка (спан).")
-                            annotation = page.add_text_annot(
-                                fitz.Point(next_span["bbox"][0], next_span["bbox"][1]),
-                                "Пустая строка после номера страницы"
-                            )
-                            annotation.set_info(
-                                title="Сервис нормоконтроля",
-                                content="После номера страницы не должно быть пустых строк."
-                            )
-                            annotation.update()
+                            num_issues.append("После номера страницы обнаружена пустая строка (спан).")
                     break  # Проверяем только первое совпадение номера
 
-        if issues:
-            error_pages.append(page_num)
-            admin_lines.append(f"page_{page_num}: " + "; ".join(issues))
+        if num_issues:
+                issues.extend(num_issues)  # для логов/отчёта
+                error_pages.append(page_num)
+                admin_lines.append(f"page_{page_num}: " + "; ".join(num_issues))
+                ann_text = "Ошибки оформления номера страницы:\n" + "\n".join(num_issues)
+                annotation = page.add_text_annot(
+                    rect.tl,
+                    ann_text
+                )
+                annotation.set_info(
+                    title="Сервис нормоконтроля",
+                    content=ann_text
+                )
+                annotation.update()
 
     # Итоговые сообщения для пользователя
     user_summary = ""
