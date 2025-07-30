@@ -1,6 +1,5 @@
 import fitz
 
-
 def log_all_spans(pdf_document):
     logs = []
     for idx, page in enumerate(pdf_document):
@@ -24,6 +23,14 @@ def log_all_spans(pdf_document):
 def check_double_spaces(pdf_document):
     admin_lines = []
     error_pages = []
+    # список нестандартных пробелов (можно дополнять)
+    to_normal = [
+        "\u00A0",  # no-break space
+        "\u2002",  # en space
+        "\u2003",  # em space
+        "\u2009",  # thin space
+        "\u202F",  # narrow no-break space
+    ]
     for idx, page in enumerate(pdf_document):
         page_num = idx + 1
         has_double_space = False
@@ -33,6 +40,9 @@ def check_double_spaces(pdf_document):
                 for line in b.get("lines", []):
                     spans = line.get("spans", [])
                     line_text = "".join([span.get("text", "") for span in spans])
+                    # нормализуем строку: все нестандартные пробелы → обычный пробел
+                    for char in to_normal:
+                        line_text = line_text.replace(char, " ")
                     double_idx = line_text.find("  ")
                     if double_idx != -1:
                         has_double_space = True
@@ -44,9 +54,7 @@ def check_double_spaces(pdf_document):
                             span_len = len(span_text)
                             if char_count <= double_idx < char_count + span_len:
                                 # Нашли спан с двойным пробелом!
-                                # Примерно первая координата двойного пробела
                                 rel_pos = double_idx - char_count
-                                # Возьмём левый край спана (точнее нельзя без fonttools, но обычно ок)
                                 x, y, _, _ = span["bbox"]
                                 annotation = page.add_text_annot(
                                     fitz.Point(x, y),
