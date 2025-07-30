@@ -73,6 +73,8 @@ def check_page_numbering_and_annotate(pdf_document,
                                       center_tolerance_mm=10):
     admin_lines = []
     error_pages = []
+    missing_numbers = []
+    found_any_number = False
     total_pages = len(pdf_document)
 
     def mm_to_pt(mm):
@@ -111,17 +113,10 @@ def check_page_numbering_and_annotate(pdf_document,
             continue
 
         if not candidates:
-            issues.append("Номер страницы не найден в нижней зоне.")
-            annotation = page.add_text_annot(
-                fitz.Point(width - 100, height - mm_to_pt(bottom_zone_mm)),
-                "Не найден номер страницы в нижней части"
-            )
-            annotation.set_info(
-                title="Сервис нормоконтроля",
-                content="Внизу страницы должен быть номер"
-            )
-            annotation.update()
+            missing_numbers.append(page_num)
+            continue  # пока не добавляем аннотацию
         else:
+            found_any_number = True
             # Берём самый центрированный как номер страницы
             best = min(candidates, key=lambda c: c["center_dev"])
             actual_num = best["text"]
@@ -172,6 +167,23 @@ def check_page_numbering_and_annotate(pdf_document,
                 )
                 annotation.update()
 
+
+    if not found_any_number and missing_numbers:
+        error_pages.extend(missing_numbers)
+        admin_lines.append("Ни на одной из страниц (кроме титульной) не найден номер страницы.")
+        # Аннотация только на второй странице
+        page2 = pdf_document[1]
+        width2 = page2.rect.width
+        height2 = page2.rect.height
+        annotation = page2.add_text_annot(
+            fitz.Point(width2 / 2 - 50, height2 - mm_to_pt(bottom_zone_mm)),
+            "Нет нумерации страниц"
+        )
+        annotation.set_info(
+            title="Сервис нормоконтроля",
+            content="Ни на одной из страниц (кроме титульного листа) не обнаружена нумерация страниц по ГОСТ."
+        )
+        annotation.update()                                    
     # Итоговые сообщения для пользователя
     user_summary = ""
     if error_pages:
