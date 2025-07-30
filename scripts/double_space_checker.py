@@ -70,5 +70,5 @@ def check_double_spaces(pdf_document):
             f"⚠️Обнаружены двойные пробелы на страницах: {', '.join(map(str, error_pages))}."
         )
     else:
-        user_summary = "✅Двойные пробелы не обнаружены"
+        user_summary = "✅Проверка на двойные пробелы"
     return {"user_summary": user_summary, "admin_details": admin_details}
