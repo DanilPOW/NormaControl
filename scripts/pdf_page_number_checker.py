@@ -201,7 +201,7 @@ def check_page_numbering_and_annotate(pdf_document,
         )
         annotation.set_info(
             title="Сервис нормоконтроля",
-            content="Ни на одной из страниц (кроме титульного листа) не обнаружена нумерация страниц по ГОСТ."
+            content="Отсутствует нумерация страниц."
         )
         annotation.update()                                    
     # Итоговые сообщения для пользователя
