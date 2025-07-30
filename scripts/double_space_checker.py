@@ -6,34 +6,40 @@ def check_double_spaces(pdf_document):
     for idx, page in enumerate(pdf_document):
         page_num = idx + 1
         has_double_space = False
-        blocks = page.get_text("dict")["blocks"]
+        blocks = page.get_text("dict").get("blocks", [])
         for b in blocks:
-            if b["type"] == 0:
+            if b.get("type") == 0:
                 for line in b.get("lines", []):
-                    line_text = "".join([span.get("text", "") for span in line.get("spans", [])])
-                    if "  " in line_text:
+                    spans = line.get("spans", [])
+                    line_text = "".join([span.get("text", "") for span in spans])
+                    double_idx = line_text.find("  ")
+                    if double_idx != -1:
                         has_double_space = True
                         admin_lines.append(f"[page_{page_num}] Двойной пробел в строке: «{line_text}»")
+                        # -- Поиск спана, где двойной пробел
+                        char_count = 0
+                        for span in spans:
+                            span_text = span.get("text", "")
+                            span_len = len(span_text)
+                            if char_count <= double_idx < char_count + span_len:
+                                # Нашли спан с двойным пробелом!
+                                # Примерно первая координата двойного пробела
+                                rel_pos = double_idx - char_count
+                                # Возьмём левый край спана (точнее нельзя без fonttools, но обычно ок)
+                                x, y, _, _ = span["bbox"]
+                                annotation = page.add_text_annot(
+                                    fitz.Point(x, y),
+                                    "Двойной пробел"
+                                )
+                                annotation.set_info(
+                                    title="Сервис нормоконтроля",
+                                    content=f"В этом месте строки найден двойной пробел: «{line_text.strip()}»"
+                                )
+                                annotation.update()
+                                break
+                            char_count += span_len
         if has_double_space:
             error_pages.append(page_num)
-            # Аннотируем первую строку с двойным пробелом
-            for b in blocks:
-                if b["type"] == 0:
-                    for line in b.get("lines", []):
-                        line_text = "".join([span.get("text", "") for span in line.get("spans", [])])
-                        if "  " in line_text:
-                            x0, y0, x1, y1 = line["bbox"]
-                            annotation = page.add_text_annot(
-                                fitz.Point(x0, y0),
-                                "Двойной пробел обнаружен"
-                            )
-                            annotation.set_info(
-                                title="Сервис нормоконтроля",
-                                content=f"В строке найден двойной пробел: «{line_text.strip()}»"
-                            )
-                            annotation.update()
-                            break
-                    break
 
     if error_pages:
         user_summary = (
