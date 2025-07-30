@@ -62,11 +62,13 @@ def check_double_spaces(pdf_document):
         if has_double_space:
             error_pages.append(page_num)
 
+    spans_log = log_all_spans(pdf_document)
     if error_pages:
         user_summary = (
             f"⚠️Обнаружены двойные пробелы на страницах: {', '.join(map(str, error_pages))}."
         )
     else:
         user_summary = "✅Двойные пробелы не обнаружены"
-    admin_details = "\n".join(admin_lines) if admin_lines else "Двойных пробелов не найдено."
+    admin_details = ("\n".join(admin_lines) if admin_lines else "Двойных пробелов не найдено.") + \
+                    "\n\n==== Все спаны ====\n" + spans_log
     return {"user_summary": user_summary, "admin_details": admin_details}
