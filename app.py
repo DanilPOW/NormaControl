@@ -7,6 +7,7 @@ from scripts.tree_analyzer import analyzer
 from scripts.pdf_margin_checker import check_margins_and_annotate, MARGIN_PT, MARGINS_CM
 from scripts.pdf_handler import PDFHandler
 from scripts.pdf_page_number_checker import check_page_numbering_and_annotate
+from scripts.double_space_checker import check_double_spaces
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
@@ -84,13 +85,18 @@ def process_pdf_file(pdf_path: str):
         page_num_user = page_numbers['user_summary']
         page_num_admin = page_numbers['admin_details']
 
+        double_spaces = check_double_spaces(pdf_doc)
+        double_space_user = double_spaces['user_summary']
+        double_space_admin = double_spaces['admin_details']
+
         pdf_doc.save(out_path)
 
-    user_notes = f"{quote_user_message}\n{margin_user}\n{page_num_user}"
+    user_notes = f"{quote_user_message}\n{margin_user}\n{page_num_user}\n{double_space_user}"
     admin_logs = (
         quote_admin_logs + "\n\n"
         "[MarginCheck]\n" + margin_admin +
-        "\n\n[PageNumbering]\n" + page_num_admin
+        "\n\n[PageNumbering]\n" + page_num_admin +
+        "\n\n[DoubleSpaceCheck]\n" + double_space_admin
     )
     return (
         out_path,
@@ -173,7 +179,8 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
         - Проверка кавычек
         - Проверка, что элементы не выходят за поля. *Проверка, что поля шире пока не реализована.
         - Проверка нумерации страниц
-
+        - Проверка на двойные пробелы
+        
         Формат выходного файла:
         `<ИсходноеИмя>_Проверено_DD.MM.YYYY_в_HH:MM.pdf`
         """)
