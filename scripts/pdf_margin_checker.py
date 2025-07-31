@@ -5,7 +5,6 @@ MARGINS_CM = {'left': 3, 'right': 1.5, 'top': 2, 'bottom': 2}
 MARGIN_PT = {k: v * 28.35 for k, v in MARGINS_CM.items()}
 
 def plural_ru(n, forms):
-    # forms = ('нарушение', 'нарушения', 'нарушений')
     n = abs(n) % 100
     n1 = n % 10
     if 10 < n < 20:
@@ -15,7 +14,6 @@ def plural_ru(n, forms):
     if n1 == 1:
         return forms[0]
     return forms[2]
-
 
 def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARGINS_CM, tolerance=3):
     admin_lines = []
@@ -28,7 +26,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         return mm * 2.834646
 
     BOTTOM_ZONE_MM = 25  # Нижняя зона для поиска номеров страниц
-    
+
     total_start = time.perf_counter()
 
     for page_num, page in enumerate(pdf_document, 1):
@@ -36,7 +34,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         height = page_rect.height
 
         is_landscape = page_rect.width > page_rect.height
-        
+
         # Проверка ориентации
         if page_rect.width > page_rect.height:
             landscape_pages.append(page_num)
@@ -47,7 +45,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
             comment.set_info(
                 title="Сервис нормоконтроля",
                 content="Неверная ориентация страницы"
-                        )
+            )
             comment.update()
 
         number_bboxes = []
@@ -66,12 +64,15 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 if (height - y1) <= mm_to_pt(BOTTOM_ZONE_MM):
                     number_bboxes.append(bbox)
 
-        # 2. Теперь основной контент: пропускаем то, что в списке "number_bboxes"
+        # Новый фильтр: только видимые (непустые и не пробельные) спаны!
         content_rects = []
         for b in blocks:
             if b["type"] == 0:
                 for line in b.get("lines", []):
                     for span in line.get("spans", []):
+                        text = span.get("text", "")
+                        if not text.strip():
+                            continue  # Пропускаем пустые и пробельные спаны
                         bbox = fitz.Rect(span["bbox"])
                         # Пропускаем, если bbox ниже 20 мм
                         if any(abs(bbox.y0 - nb.y0) < 1 and abs(bbox.y1 - nb.y1) < 1 for nb in number_bboxes):
@@ -83,6 +84,9 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                     continue
                 content_rects.append(bbox)
 
+        if not content_rects:
+            continue  # Нет контента, пропускаем
+
         union = fitz.Rect(content_rects[0])
         for r in content_rects[1:]:
             union |= r
@@ -92,7 +96,6 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         bottom = page_rect.y1 - union.y1
 
         if is_landscape:
-            # ГОСТ: левое (3см) — это top, верхнее (2см) — это right, правое (2см) — это bottom, нижнее (2см) — это left
             visual_fields = {
                 'left': top,
                 'right': bottom,
@@ -106,7 +109,6 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 'top': top,
                 'bottom': bottom
             }
-
 
         verdict = {}
         has_error = False
@@ -130,7 +132,6 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
 
         if has_error:
             error_pages.add(page_num)
-            # Аннотация только для PDF, для пользователя не отображается текстом
             annotation = page.add_text_annot(
                 fitz.Point(page_rect.x0 + 40, page_rect.y0 + 80),
                 "Поля оформлены неверно"
@@ -138,7 +139,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
             annotation.set_info(
                 title="Сервис нормоконтроля",
                 content="Поля оформлены неверно"
-                        )
+            )
             annotation.update()
         if is_landscape:
             if has_error:
@@ -146,10 +147,9 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
             else:
                 landscape_pages_ok.append(page_num)
 
-    total_elapsed = time.perf_counter() - total_start  # конец проверки
+    total_elapsed = time.perf_counter() - total_start
     admin_lines.append(f" Проверка всех полей заняла: {total_elapsed:.3f} сек.")
-    
-    # Формируем итоговые сообщения для пользователя
+
     user_summary = ""
     if error_pages:
         count = len(error_pages)
