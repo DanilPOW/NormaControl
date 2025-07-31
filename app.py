@@ -8,6 +8,7 @@ from scripts.pdf_margin_checker import check_margins_and_annotate, MARGIN_PT, MA
 from scripts.pdf_handler import PDFHandler
 from scripts.pdf_page_number_checker import check_page_numbering_and_annotate
 from scripts.double_space_checker import check_double_spaces
+from scripts.image_checker import check_images
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
@@ -89,14 +90,19 @@ def process_pdf_file(pdf_path: str):
         double_space_user = double_spaces['user_summary']
         double_space_admin = double_spaces['admin_details']
 
+        image_results = check_images(pdf_doc)
+        image_user = image_results['user_summary']
+        image_admin = image_results['admin_details']
+
         pdf_doc.save(out_path)
 
-    user_notes = f"{quote_user_message}\n{margin_user}\n{page_num_user}\n{double_space_user}"
+    user_notes = f"{quote_user_message}\n{margin_user}\n{page_num_user}\n{double_space_user}\n{image_user}"
     admin_logs = (
         quote_admin_logs + "\n\n"
         "[MarginCheck]\n" + margin_admin +
         "\n\n[PageNumbering]\n" + page_num_admin +
-        "\n\n[DoubleSpaceCheck]\n" + double_space_admin
+        "\n\n[DoubleSpaceCheck]\n" + double_space_admin +
+        "\n\n[ImageCheck]\n" + image_admin
     )
     return (
         out_path,
