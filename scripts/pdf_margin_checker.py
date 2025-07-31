@@ -64,33 +64,40 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                     number_bboxes.append(bbox)
 
         # Список видимых непустых спанов (для диагностики правого поля)
-        visible_spans = []
-
+        visible_blocks = []
         content_rects = []
+
         for b in blocks:
             if b["type"] == 0:
-                for line in b.get("lines", []):
-                    for span in line.get("spans", []):
-                        text = span.get("text", "")
-                        if not text.strip():
-                            continue
-                        bbox = fitz.Rect(span["bbox"])
-                        if any(abs(bbox.y0 - nb.y0) < 1 and abs(bbox.y1 - nb.y1) < 1 for nb in number_bboxes):
-                            continue
-                        content_rects.append(bbox)
-                        # Для лога правого поля:
-                        visible_spans.append({
-                            "text": text,
-                            "bbox": bbox
-                        })
-            elif b["type"] == 1:
-                bbox = fitz.Rect(b["bbox"])
-                if any(abs(bbox.y0 - nb.y0) < 1 and abs(bbox.y1 - nb.y1) < 1 for nb in number_bboxes):
+                block_bbox = fitz.Rect(b["bbox"])
+                block_text = b.get("lines", [])
+                # Собираем полный текст блока (объединяя строки и спаны)
+                text_lines = []
+                for line in block_text:
+                    line_text = "".join([span.get("text", "") for span in line.get("spans", [])])
+                    text_lines.append(line_text.strip())
+                full_text = " ".join(text_lines).strip()
+                if not full_text:
                     continue
-                content_rects.append(bbox)
+                # фильтр номеров страниц
+                if any(abs(block_bbox.y0 - nb.y0) < 1 and abs(block_bbox.y1 - nb.y1) < 1 for nb in number_bboxes):
+                    continue
+                content_rects.append(block_bbox)
+                visible_blocks.append({
+                    "text": full_text[:60],  # для лога, обрезать длинные блоки
+                    "bbox": block_bbox
+                })
+            # для типа 1 (рисунки) — тоже можно добавить, если нужно (обычно не нужно для расчёта текстового поля)
 
         if not content_rects:
             continue
+
+        # Берём крайний правый блок для лога
+        if visible_blocks:
+            rightmost_block = max(visible_blocks, key=lambda b: b["bbox"].x1)
+            admin_lines.append(
+                f"[page_{page_num}] Крайний правый блок: '{rightmost_block['text']}' x1={rightmost_block['bbox'].x1:.2f} (стр. ширина={page_rect.width:.2f})"
+            )
 
         union = fitz.Rect(content_rects[0])
         for r in content_rects[1:]:
@@ -99,14 +106,6 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         right = page_rect.x1 - union.x1
         top = union.y0 - page_rect.y0
         bottom = page_rect.y1 - union.y1
-
-        # --- ЛОГ КРАЙНЕГО ПРАВОГО СПАНА ---
-        if visible_spans:
-            rightmost_span = max(visible_spans, key=lambda s: s["bbox"].x1)
-            admin_lines.append(
-                f"[page_{page_num}] Крайний правый спан: '{rightmost_span['text']}' x1={rightmost_span['bbox'].x1:.2f} (стр. ширина={page_rect.width:.2f})"
-            )
-        # -----------------------------------
 
         if is_landscape:
             visual_fields = {
