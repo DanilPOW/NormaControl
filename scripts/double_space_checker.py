@@ -1,26 +1,5 @@
 import fitz
 
-def log_all_spans(pdf_document):
-    pass
-    '''logs = []
-    for idx, page in enumerate(pdf_document):
-        page_num = idx + 1
-        logs.append(f"\n===== Страница {page_num} =====")
-        blocks = page.get_text("dict").get("blocks", [])
-        for b_idx, b in enumerate(blocks):
-            if b.get("type") == 0:
-                for l_idx, line in enumerate(b.get("lines", [])):
-                    for s_idx, span in enumerate(line.get("spans", [])):
-                        text = span.get("text", "")
-                        bbox = span.get("bbox", [])
-                        font = span.get("font", "")
-                        size = span.get("size", "")
-                        logs.append(
-                            f"[page {page_num}] block {b_idx} line {l_idx} span {s_idx}: "
-                            f"text='{text}' bbox={bbox} font='{font}' size={size}"
-                        )
-    return "\n".join(logs)'''
-
 def check_double_spaces(pdf_document):
     admin_lines = []
     error_pages = []
@@ -62,9 +41,7 @@ def check_double_spaces(pdf_document):
         if has_double_space:
             error_pages.append(page_num)
 
-    spans_log = log_all_spans(pdf_document)
-    admin_details = ("\n".join(admin_lines) if admin_lines else "Двойных пробелов не найдено.") + \
-                    "\n\n==== Все спаны ====\n" + spans_log
+    admin_details = ("\n".join(admin_lines) if admin_lines else "Двойных пробелов не найдено.")
 
     if error_pages:
         user_summary = (
