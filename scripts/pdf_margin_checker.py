@@ -35,7 +35,6 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
 
         is_landscape = page_rect.width > page_rect.height
 
-        # Проверка ориентации
         if page_rect.width > page_rect.height:
             landscape_pages.append(page_num)
             comment = page.add_text_annot(
@@ -64,7 +63,9 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 if (height - y1) <= mm_to_pt(BOTTOM_ZONE_MM):
                     number_bboxes.append(bbox)
 
-        # Новый фильтр: только видимые (непустые и не пробельные) спаны!
+        # Список видимых непустых спанов (для диагностики правого поля)
+        visible_spans = []
+
         content_rects = []
         for b in blocks:
             if b["type"] == 0:
@@ -72,12 +73,16 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                     for span in line.get("spans", []):
                         text = span.get("text", "")
                         if not text.strip():
-                            continue  # Пропускаем пустые и пробельные спаны
+                            continue
                         bbox = fitz.Rect(span["bbox"])
-                        # Пропускаем, если bbox ниже 20 мм
                         if any(abs(bbox.y0 - nb.y0) < 1 and abs(bbox.y1 - nb.y1) < 1 for nb in number_bboxes):
                             continue
                         content_rects.append(bbox)
+                        # Для лога правого поля:
+                        visible_spans.append({
+                            "text": text,
+                            "bbox": bbox
+                        })
             elif b["type"] == 1:
                 bbox = fitz.Rect(b["bbox"])
                 if any(abs(bbox.y0 - nb.y0) < 1 and abs(bbox.y1 - nb.y1) < 1 for nb in number_bboxes):
@@ -85,7 +90,7 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
                 content_rects.append(bbox)
 
         if not content_rects:
-            continue  # Нет контента, пропускаем
+            continue
 
         union = fitz.Rect(content_rects[0])
         for r in content_rects[1:]:
@@ -94,6 +99,14 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
         right = page_rect.x1 - union.x1
         top = union.y0 - page_rect.y0
         bottom = page_rect.y1 - union.y1
+
+        # --- ЛОГ КРАЙНЕГО ПРАВОГО СПАНА ---
+        if visible_spans:
+            rightmost_span = max(visible_spans, key=lambda s: s["bbox"].x1)
+            admin_lines.append(
+                f"[page_{page_num}] Крайний правый спан: '{rightmost_span['text']}' x1={rightmost_span['bbox'].x1:.2f} (стр. ширина={page_rect.width:.2f})"
+            )
+        # -----------------------------------
 
         if is_landscape:
             visual_fields = {
