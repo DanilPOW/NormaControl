@@ -1,7 +1,8 @@
 import fitz
 
 def log_all_spans(pdf_document):
-    logs = []
+    pass
+    '''logs = []
     for idx, page in enumerate(pdf_document):
         page_num = idx + 1
         logs.append(f"\n===== Страница {page_num} =====")
@@ -18,7 +19,7 @@ def log_all_spans(pdf_document):
                             f"[page {page_num}] block {b_idx} line {l_idx} span {s_idx}: "
                             f"text='{text}' bbox={bbox} font='{font}' size={size}"
                         )
-    return "\n".join(logs)
+    return "\n".join(logs)'''
 
 def check_double_spaces(pdf_document):
     admin_lines = []
