@@ -15,7 +15,7 @@ def plural_ru(n, forms):
         return forms[0]
     return forms[2]
 
-def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARGINS_CM, tolerance=3):
+def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARGINS_CM, tolerance=5):
     admin_lines = []
     landscape_pages = [] 
     landscape_pages_ok = []
