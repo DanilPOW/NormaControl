@@ -64,8 +64,8 @@ def check_images(pdf_document):
     )
     
     if error_pages:
-        user_summary = f"⚠️ Картинки вне полей или не по центру: страницы {', '.join(map(str, error_pages))}"
+        user_summary = f"⚠️Проверка рисунков: обнаружены нарушения на страницах {', '.join(map(str, error_pages))}"
     else:
-        user_summary = "✅ Нарушений по картинкам не найдено"
+        user_summary = "✅Проверка рисунков"
     
     return {"user_summary": user_summary, "admin_details": admin_details}
