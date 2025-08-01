@@ -22,10 +22,14 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     landscape_pages_error = []
     error_pages = set()
 
+    BOTTOM_ZONE_MM = 25
+    def mm_to_pt(mm): return mm * 2.834646
+
     total_start = time.perf_counter()
 
     for page_num, page in enumerate(pdf_document, 1):
         page_rect = page.rect
+        height = page_rect.height
         is_landscape = page_rect.width > page_rect.height
 
         if is_landscape:
@@ -41,7 +45,17 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
             comment.update()
 
         words = page.get_text("words")
-        word_rects = [fitz.Rect(w[0], w[1], w[2], w[3]) for w in words if w[4].strip()]
+
+        # --- Исключаем номера страниц (цифры в нижней зоне) ---
+        filtered_words = [
+            w for w in words
+            if not (
+                (height - w[3]) <= mm_to_pt(BOTTOM_ZONE_MM) and w[4].strip().isdigit()
+            )
+            and w[4].strip()
+        ]
+
+        word_rects = [fitz.Rect(w[0], w[1], w[2], w[3]) for w in filtered_words]
 
         if not word_rects:
             continue
