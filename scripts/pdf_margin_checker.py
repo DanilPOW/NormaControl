@@ -22,20 +22,13 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
     landscape_pages_error = []
     error_pages = set()
 
-    def mm_to_pt(mm):
-        return mm * 2.834646
-
-    BOTTOM_ZONE_MM = 25  # Нижняя зона для поиска номеров страниц
-
     total_start = time.perf_counter()
 
     for page_num, page in enumerate(pdf_document, 1):
         page_rect = page.rect
-        height = page_rect.height
-
         is_landscape = page_rect.width > page_rect.height
 
-        if page_rect.width > page_rect.height:
+        if is_landscape:
             landscape_pages.append(page_num)
             comment = page.add_text_annot(
                 fitz.Point(page_rect.x0 + 40, page_rect.y0 + 40),
@@ -47,80 +40,28 @@ def check_margins_and_annotate(pdf_document, margin_pt=MARGIN_PT, margin_cm=MARG
             )
             comment.update()
 
-        number_bboxes = []
-        blocks = page.get_text("dict")["blocks"]
-        for b in blocks:
-            if b["type"] == 0:
-                for line in b.get("lines", []):
-                    for span in line.get("spans", []):
-                        bbox = fitz.Rect(span["bbox"])
-                        y1 = bbox.y1
-                        if (height - y1) <= mm_to_pt(BOTTOM_ZONE_MM):
-                            number_bboxes.append(bbox)
-            elif b["type"] == 1:
-                bbox = fitz.Rect(b["bbox"])
-                y1 = bbox.y1
-                if (height - y1) <= mm_to_pt(BOTTOM_ZONE_MM):
-                    number_bboxes.append(bbox)
+        words = page.get_text("words")
+        word_rects = [fitz.Rect(w[0], w[1], w[2], w[3]) for w in words if w[4].strip()]
 
-        # Список видимых непустых спанов (для диагностики правого поля)
-        visible_blocks = []
-        content_rects = []
-
-        for b in blocks:
-            if b["type"] == 0:
-                block_bbox = fitz.Rect(b["bbox"])
-                block_text = b.get("lines", [])
-                # Собираем полный текст блока (объединяя строки и спаны)
-                text_lines = []
-                for line in block_text:
-                    line_text = "".join([span.get("text", "") for span in line.get("spans", [])])
-                    text_lines.append(line_text.strip())
-                full_text = " ".join(text_lines).strip()
-                if not full_text:
-                    continue
-                # фильтр номеров страниц
-                if any(abs(block_bbox.y0 - nb.y0) < 1 and abs(block_bbox.y1 - nb.y1) < 1 for nb in number_bboxes):
-                    continue
-                content_rects.append(block_bbox)
-                visible_blocks.append({
-                    "text": full_text[:60],  # для лога, обрезать длинные блоки
-                    "bbox": block_bbox
-                })
-            # для типа 1 (рисунки) — тоже можно добавить, если нужно (обычно не нужно для расчёта текстового поля)
-
-        if not content_rects:
+        if not word_rects:
             continue
 
-        # Берём крайний правый блок для лога
-        if visible_blocks:
-            rightmost_block = max(visible_blocks, key=lambda b: b["bbox"].x1)
-            admin_lines.append(
-                f"[page_{page_num}] Крайний правый блок: '{rightmost_block['text']}' x1={rightmost_block['bbox'].x1:.2f} (стр. ширина={page_rect.width:.2f})"
-            )
-
-        union = fitz.Rect(content_rects[0])
-        for r in content_rects[1:]:
+        # Объединяем все bbox в один union-rect
+        union = word_rects[0]
+        for r in word_rects[1:]:
             union |= r
+
         left = union.x0 - page_rect.x0
         right = page_rect.x1 - union.x1
         top = union.y0 - page_rect.y0
         bottom = page_rect.y1 - union.y1
 
-        if is_landscape:
-            visual_fields = {
-                'left': top,
-                'right': bottom,
-                'top': right,
-                'bottom': left
-            }
-        else:
-            visual_fields = {
-                'left': left,
-                'right': right,
-                'top': top,
-                'bottom': bottom
-            }
+        visual_fields = {
+            'left': left,
+            'right': right,
+            'top': top,
+            'bottom': bottom
+        }
 
         verdict = {}
         has_error = False
