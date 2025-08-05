@@ -39,7 +39,7 @@ def check_images(pdf_document):
                     errors.append("Рисунок должен быть выровнен по центру без абзацного отступа")
                 if errors:
                     has_error = True
-                    msg = f"[page_{page_num}] Нарушения у рисунка: {'; '.join(errors)}; bbox={bbox}"
+                    msg = f"Нарушения у рисунка: {'; '.join(errors)}"
                     admin_lines.append(msg)
                     annot = page.add_text_annot(fitz.Point(x0, y0), "\n".join(errors))
                     annot.set_info(
