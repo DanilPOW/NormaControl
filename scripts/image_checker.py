@@ -36,10 +36,10 @@ def check_images(pdf_document):
                 work_center = LEFT_MARGIN_PT + work_width / 2
                 img_center = (x0 + x1) / 2
                 if abs(img_center - work_center) > 2:
-                    errors.append("Изображение не по центру относительно полей")
+                    errors.append("Рисунок должен быть выровнен по центру без абзацного отступа")
                 if errors:
                     has_error = True
-                    msg = f"[page_{page_num}] Нарушения у картинки: {'; '.join(errors)}; bbox={bbox}"
+                    msg = f"[page_{page_num}] Нарушения у рисунка: {'; '.join(errors)}; bbox={bbox}"
                     admin_lines.append(msg)
                     annot = page.add_text_annot(fitz.Point(x0, y0), "\n".join(errors))
                     annot.set_info(
