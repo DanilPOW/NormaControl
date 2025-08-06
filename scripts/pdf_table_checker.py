@@ -30,8 +30,13 @@ def check_tables(pdf_path, pdf_document):
 
             errors = []
             # Проверка выхода за поля
-            if x0 < LEFT_MARGIN_PT or x1 > page_width - RIGHT_MARGIN_PT or \
-               y0 < TOP_MARGIN_PT or y1 > page_height - BOTTOM_MARGIN_PT:
+            
+            if (
+                x0 < LEFT_MARGIN_PT - TOLERANCE_PT or
+                x1 > page_width - RIGHT_MARGIN_PT + TOLERANCE_PT or
+                y0 < TOP_MARGIN_PT - TOLERANCE_PT or
+                y1 > page_height - BOTTOM_MARGIN_PT + TOLERANCE_PT
+            ):
                 errors.append("Таблица выходит за пределы полей")
 
             # Проверка центрирования по горизонтали
