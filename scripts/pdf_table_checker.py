@@ -4,6 +4,7 @@ LEFT_MARGIN_PT = 3 * 28.35
 RIGHT_MARGIN_PT = 1.5 * 28.35
 TOP_MARGIN_PT = 2 * 28.35
 BOTTOM_MARGIN_PT = 2 * 28.35
+TOLERANCE_PT = 2
 
 def check_tables(pdf_path, pdf_document):
     admin_lines = []
