@@ -108,7 +108,7 @@ def process_pdf_file(pdf_path: str):
         "\n\n[PageNumbering]\n" + page_num_admin +
         "\n\n[DoubleSpaceCheck]\n" + double_space_admin +
         "\n\n[TableCheck]\n" + table_admin +
-        "\n\n[ImageCheck]\n" + image_admin +
+        "\n\n[ImageCheck]\n" + image_admin 
     )
     return (
         out_path,
