@@ -1,6 +1,6 @@
 import fitz  # PyMuPDF
 import pdfplumber
-import camelot
+#import camelot
 import os
 
 def find_tables_pymupdf(pdf_path):
@@ -65,7 +65,7 @@ def find_tables_pdfplumber(pdf_path):
         logs.append(f"[pdfplumber] Ошибка: {str(e)}")
     return "\n".join(logs)
 
-def find_tables_camelot(pdf_path):
+'''def find_tables_camelot(pdf_path):
     """Ищет таблицы с помощью Camelot."""
     logs = []
     try:
@@ -80,7 +80,7 @@ def find_tables_camelot(pdf_path):
             logs.append(f"[Camelot-Stream] Стр. {t.page}: таблица (bbox={t._bbox})")
     except Exception as e:
         logs.append(f"[Camelot] Ошибка: {str(e)}")
-    return "\n".join(logs)
+    return "\n".join(logs)'''
 
 def run_all_table_detectors(pdf_path):
     """Выводит сводный лог по всем способам поиска таблиц."""
@@ -89,6 +89,6 @@ def run_all_table_detectors(pdf_path):
     logs.append(find_tables_pymupdf(pdf_path))
     logs.append("\n======= pdfplumber =======")
     logs.append(find_tables_pdfplumber(pdf_path))
-    logs.append("\n======= Camelot =======")
-    logs.append(find_tables_camelot(pdf_path))
+    #logs.append("\n======= Camelot =======")
+    #logs.append(find_tables_camelot(pdf_path))
     return "\n".join(logs)
