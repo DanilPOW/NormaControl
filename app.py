@@ -9,6 +9,7 @@ from scripts.pdf_handler import PDFHandler
 from scripts.pdf_page_number_checker import check_page_numbering_and_annotate
 from scripts.double_space_checker import check_double_spaces
 from scripts.image_checker import check_images
+from scripts.table_detector import run_all_table_detectors
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
@@ -102,7 +103,8 @@ def process_pdf_file(pdf_path: str):
         "[MarginCheck]\n" + margin_admin +
         "\n\n[PageNumbering]\n" + page_num_admin +
         "\n\n[DoubleSpaceCheck]\n" + double_space_admin +
-        "\n\n[ImageCheck]\n" + image_admin
+        "\n\n[ImageCheck]\n" + image_admin +
+        "\n\n[TableDetection]\n" + run_all_table_detectors(tmp_path)
     )
     return (
         out_path,
