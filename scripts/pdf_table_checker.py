@@ -1,4 +1,5 @@
 import camelot
+import time
 
 LEFT_MARGIN_PT = 3 * 28.35
 RIGHT_MARGIN_PT = 1.5 * 28.35
@@ -11,6 +12,8 @@ def check_tables(pdf_path, pdf_document):
     error_pages = set()
     total_tables = 0
     page_table_dict = {}
+
+    t_start = time.perf_counter()
 
     try:
         tables = camelot.read_pdf(pdf_path, flavor="lattice", pages="all")
@@ -56,6 +59,9 @@ def check_tables(pdf_path, pdf_document):
                 msg += " | ✅Таблица корректно расположена"
                 admin_lines.append(msg)
 
+        t_end = time.perf_counter()
+        duration = t_end - t_start
+
         if error_pages:
             user_summary = f"⚠️ Проверка таблиц: обнаружены нарушения на страницах {', '.join(map(str, sorted(error_pages)))}"
         else:
@@ -71,7 +77,8 @@ def check_tables(pdf_path, pdf_document):
 
         admin_details = (
             counts_summary +
-            ("\n\n" + "\n".join(admin_lines) if admin_lines else "\nНарушений по таблицам не найдено.")
+            ("\n\n" + "\n".join(admin_lines) if admin_lines else "\nНарушений по таблицам не найдено.") +
+            f"\n\n⏱ Время анализа таблиц: {duration:.2f} сек."
         )
 
         return {"user_summary": user_summary, "admin_details": admin_details}
