@@ -1,5 +1,4 @@
 import camelot
-import fitz
 
 LEFT_MARGIN_PT = 3 * 28.35
 RIGHT_MARGIN_PT = 1.5 * 28.35
@@ -10,12 +9,11 @@ def check_tables(pdf_path, pdf_document):
     admin_lines = []
     error_pages = set()
     total_tables = 0
-    page_table_counts = []
+    page_table_dict = {}
 
     try:
         tables = camelot.read_pdf(pdf_path, flavor="lattice", pages="all")
         total_tables = len(tables)
-        page_table_dict = {}
 
         # Считаем кол-во таблиц на каждой странице
         for t in tables:
@@ -47,19 +45,16 @@ def check_tables(pdf_path, pdf_document):
                 msg += " | " + "; ".join(errors)
                 admin_lines.append(msg)
                 error_pages.add(page_num)
-                # Можно добавить аннотацию на страницу (опционально):
-                # page.add_text_annot(fitz.Point(x0, y0), "\n".join(errors))
+                # (опционально) page.add_text_annot(fitz.Point(x0, y0), "\n".join(errors))
             else:
                 msg += " | ✅Таблица корректно расположена"
                 admin_lines.append(msg)
 
-        # Для user_summary: коротко, есть ли нарушения
         if error_pages:
             user_summary = f"⚠️ Проверка таблиц: обнаружены нарушения на страницах {', '.join(map(str, sorted(error_pages)))}"
         else:
             user_summary = "✅ Проверка таблиц: нарушений не найдено"
 
-        # Детализация по таблицам
         page_counts_lines = [
             f"Страница {pg}: таблиц {count}" for pg, count in sorted(page_table_dict.items())
         ]
