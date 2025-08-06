@@ -1,3 +1,5 @@
 gradio
 python-docx==1.2.0
 PyMuPDF
+pdfplumber
+camelot
