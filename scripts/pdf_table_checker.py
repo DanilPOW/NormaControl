@@ -61,6 +61,7 @@ def check_tables(pdf_path, pdf_document):
     t_end_camelot = time.perf_counter()
     camelot_time = t_end_camelot - t_start_camelot
 
+    
     # PDFPLUMBER
     t_start_plumber = time.perf_counter()
     plumber_tables_total = 0
@@ -68,15 +69,45 @@ def check_tables(pdf_path, pdf_document):
     try:
         with pdfplumber.open(pdf_path) as pdf:
             for page_idx, page in enumerate(pdf.pages):
-                hlines = page.lines
-                vlines = [l for l in hlines if abs(l['x0']-l['x1']) < 1]
-                hlines = [l for l in hlines if abs(l['y0']-l['y1']) < 1]
-                # Простая эвристика: если есть хотя бы 2 горизонтальных и 2 вертикальных линии — вероятно таблица
-                if len(hlines) >= 2 and len(vlines) >= 2:
+                # Считаем линии, прямоугольники, кривые
+                hlines = [l for l in page.lines if abs(l['y0'] - l['y1']) < 1]
+                vlines = [l for l in page.lines if abs(l['x0'] - l['x1']) < 1]
+                rects = page.rects
+                curves = page.curves
+                found_by_graph = False
+
+                # По графическим объектам
+                if len(hlines) + len(vlines) + len(rects) + len(curves) >= 4:
                     plumber_tables_total += 1
                     plumber_lines.append(
-                        f"[pdfplumber][Стр. {page_idx+1}]: Найдена таблица ({len(hlines)} гориз. линий, {len(vlines)} верт. линий)"
+                        f"[pdfplumber][Стр. {page_idx+1}]: Найдена граф. сетка (lines={len(hlines)+len(vlines)}, rects={len(rects)}, curves={len(curves)})"
                     )
+                    found_by_graph = True
+
+                # По регулярности текста (если не нашли графикой)
+                if not found_by_graph:
+                    words = page.extract_words()
+                    if len(words) < 6:
+                        plumber_lines.append(f"[pdfplumber][Стр. {page_idx+1}]: Мало текста, таблица не найдена")
+                        continue
+                    xs = sorted(set(round(float(w['x0'])/3)*3 for w in words))
+                    ys = sorted(set(round(float(w['top'])/3)*3 for w in words))
+                    ncols = len(xs)
+                    nrows = len(ys)
+                    if ncols >= 3 and nrows >= 3:
+                        hits_per_row = [
+                            sum(1 for w in words if abs(round(float(w['top'])/3)*3 - y) < 2)
+                            for y in ys
+                        ]
+                        if min(hits_per_row) >= 2:
+                            plumber_tables_total += 1
+                            plumber_lines.append(
+                                f"[pdfplumber][Стр. {page_idx+1}]: Найдена таблица по тексту ({ncols} столбцов, {nrows} строк)"
+                            )
+                        else:
+                            plumber_lines.append(f"[pdfplumber][Стр. {page_idx+1}]: Таблица не найдена (по тексту)")
+                    else:
+                        plumber_lines.append(f"[pdfplumber][Стр. {page_idx+1}]: Таблица не найдена (по тексту)")
     except Exception as e:
         plumber_lines.append(f"[pdfplumber] Ошибка: {str(e)}")
 
