@@ -1,5 +1,6 @@
 import camelot
 import time
+import pdfplumber
 
 LEFT_MARGIN_PT = 3 * 28.35
 RIGHT_MARGIN_PT = 1.5 * 28.35
@@ -13,13 +14,11 @@ def check_tables(pdf_path, pdf_document):
     total_tables = 0
     page_table_dict = {}
 
-    t_start = time.perf_counter()
-
+    # CAMEL0T
+    t_start_camelot = time.perf_counter()
     try:
         tables = camelot.read_pdf(pdf_path, flavor="lattice", pages="all")
         total_tables = len(tables)
-
-        # Считаем кол-во таблиц на каждой странице
         for t in tables:
             page_idx = int(t.page)
             page_table_dict.setdefault(page_idx, 0)
@@ -32,8 +31,6 @@ def check_tables(pdf_path, pdf_document):
             x0, y0, x1, y1 = t._bbox
 
             errors = []
-            # Проверка выхода за поля
-            
             if (
                 x0 < LEFT_MARGIN_PT - TOLERANCE_PT or
                 x1 > page_width - RIGHT_MARGIN_PT + TOLERANCE_PT or
@@ -42,48 +39,66 @@ def check_tables(pdf_path, pdf_document):
             ):
                 errors.append("Таблица выходит за пределы полей")
 
-            # Проверка центрирования по горизонтали
             work_width = page_width - LEFT_MARGIN_PT - RIGHT_MARGIN_PT
             work_center = LEFT_MARGIN_PT + work_width / 2
             tbl_center = (x0 + x1) / 2
             if abs(tbl_center - work_center) > 2:
                 errors.append("Таблица не по центру относительно полей")
 
-            msg = f"[Стр. {page_num}] bbox={t._bbox}"
+            msg = f"[Camelot][Стр. {page_num}] bbox={t._bbox}"
             if errors:
                 msg += " | " + "; ".join(errors)
                 admin_lines.append(msg)
                 error_pages.add(page_num)
-                # (опционально) page.add_text_annot(fitz.Point(x0, y0), "\n".join(errors))
             else:
                 msg += " | ✅Таблица корректно расположена"
                 admin_lines.append(msg)
-
-        t_end = time.perf_counter()
-        duration = t_end - t_start
-
-        if error_pages:
-            user_summary = f"⚠️ Проверка таблиц: обнаружены нарушения на страницах {', '.join(map(str, sorted(error_pages)))}"
-        else:
-            user_summary = "✅ Проверка таблиц: нарушений не найдено"
-
-        page_counts_lines = [
-            f"Страница {pg}: таблиц {count}" for pg, count in sorted(page_table_dict.items())
-        ]
-        counts_summary = (
-            f"Найдено {total_tables} таблиц в документе\n" +
-            "\n".join(page_counts_lines)
-        )
-
-        admin_details = (
-            counts_summary +
-            ("\n\n" + "\n".join(admin_lines) if admin_lines else "\nНарушений по таблицам не найдено.") +
-            f"\n\n⏱ Время анализа таблиц: {duration:.2f} сек."
-        )
-
-        return {"user_summary": user_summary, "admin_details": admin_details}
+        camelot_ok = True
     except Exception as e:
-        return {
-            "user_summary": "Ошибка при анализе таблиц.",
-            "admin_details": f"[Camelot] Ошибка: {str(e)}"
-        }
+        admin_lines.append(f"[Camelot] Ошибка: {str(e)}")
+        camelot_ok = False
+
+    t_end_camelot = time.perf_counter()
+    camelot_time = t_end_camelot - t_start_camelot
+
+    # PDFPLUMBER
+    t_start_plumber = time.perf_counter()
+    plumber_tables_total = 0
+    plumber_lines = []
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_idx, page in enumerate(pdf.pages):
+                hlines = page.lines
+                vlines = [l for l in hlines if abs(l['x0']-l['x1']) < 1]
+                hlines = [l for l in hlines if abs(l['y0']-l['y1']) < 1]
+                # Простая эвристика: если есть хотя бы 2 горизонтальных и 2 вертикальных линии — вероятно таблица
+                if len(hlines) >= 2 and len(vlines) >= 2:
+                    plumber_tables_total += 1
+                    plumber_lines.append(
+                        f"[pdfplumber][Стр. {page_idx+1}]: Найдена таблица ({len(hlines)} гориз. линий, {len(vlines)} верт. линий)"
+                    )
+    except Exception as e:
+        plumber_lines.append(f"[pdfplumber] Ошибка: {str(e)}")
+
+    t_end_plumber = time.perf_counter()
+    plumber_time = t_end_plumber - t_start_plumber
+
+    # Формируем финальные логи
+    camelot_status = "успешно" if camelot_ok else "с ошибкой"
+    admin_details = (
+        f"[Camelot] Найдено {total_tables} таблиц ({camelot_status}) за {camelot_time:.2f} сек.\n"
+        + "\n".join(admin_lines)
+        + "\n\n"
+        + f"[pdfplumber] Найдено {plumber_tables_total} страниц с таблицами за {plumber_time:.2f} сек.\n"
+        + "\n".join(plumber_lines)
+    )
+
+    # Формируем user_summary по Camelot
+    if error_pages:
+        user_summary = (
+            f"⚠️ Проверка таблиц (Camelot): нарушения на страницах {', '.join(map(str, sorted(error_pages)))}"
+        )
+    else:
+        user_summary = "✅ Проверка таблиц (Camelot): нарушений не найдено"
+
+    return {"user_summary": user_summary, "admin_details": admin_details}
