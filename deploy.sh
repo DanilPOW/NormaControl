@@ -8,7 +8,7 @@ systemctl stop gradio-app
 git pull origin main
 
 # Активация виртуального окружения
-source venv/bin/activate
+source venv310/bin/activate
 
 # Обновление зависимостей
 pip install -r requirements.txt
