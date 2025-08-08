@@ -8,7 +8,7 @@ TOP_MARGIN_PT = 2 * 28.35
 BOTTOM_MARGIN_PT = 2 * 28.35
 TOLERANCE_PT = 2
 
-def check_tables(pdf_path, pdf_document, start_page=1):
+def check_tables(pdf_path, pdf_document, start_page=2):
     admin_lines = []
     error_pages = set()
 
