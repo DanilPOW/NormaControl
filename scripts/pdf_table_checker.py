@@ -22,14 +22,26 @@ def check_tables(pdf_path, pdf_document):
                 vlines = [l for l in page.lines if abs(l['x0'] - l['x1']) < 1]
                 rects = page.rects
                 curves = page.curves
-                if len(hlines) + len(vlines) + len(rects) + len(curves) >= 4:
+
+                total_graphics = len(hlines) + len(vlines) + len(rects) + len(curves)
+
+                # Логируем все страницы, где есть графические объекты
+                if total_graphics >= 4:
                     plumber_table_pages.append(page_idx)
+                    admin_lines.append(
+                        f"[pdfplumber][Стр. {page_idx}] Найдено графических объектов: "
+                        f"{total_graphics} (гор. линий: {len(hlines)}, верт. линий: {len(vlines)}, "
+                        f"прямоугольников: {len(rects)}, кривых: {len(curves)})"
+                    )
+
     except Exception as e:
         admin_lines.append(f"[pdfplumber] Ошибка: {str(e)}")
-    t_end_plumber = time.perf_counter()
 
+    t_end_plumber = time.perf_counter()
     plumber_time = t_end_plumber - t_start_plumber
-    admin_lines.append(f"[pdfplumber] Найдено {len(plumber_table_pages)} страниц с таблицами за {plumber_time:.2f} сек.")
+    admin_lines.append(
+        f"[pdfplumber] Всего найдено {len(plumber_table_pages)} страниц с таблицами за {plumber_time:.2f} сек."
+    )
 
     # ЭТАП 2 — Запускаем Camelot только на найденных страницах
     camelot_tables_count = 0
@@ -70,10 +82,12 @@ def check_tables(pdf_path, pdf_document):
                 admin_lines.append(msg)
         except Exception as e:
             admin_lines.append(f"[Camelot] Ошибка: {str(e)}")
-    t_end_camelot = time.perf_counter()
 
+    t_end_camelot = time.perf_counter()
     camelot_time = t_end_camelot - t_start_camelot
-    admin_lines.append(f"[Camelot] Обработано {camelot_tables_count} таблиц за {camelot_time:.2f} сек.")
+    admin_lines.append(
+        f"[Camelot] Обработано {camelot_tables_count} таблиц за {camelot_time:.2f} сек."
+    )
 
     # Формируем user_summary
     if error_pages:
