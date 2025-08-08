@@ -26,7 +26,7 @@ def check_tables(pdf_path, pdf_document):
                 total_graphics = len(hlines) + len(vlines) + len(rects) + len(curves)
 
                 # Логируем все страницы, где есть графические объекты
-                if total_graphics >= 4:
+                if total_graphics >= 10:
                     plumber_table_pages.append(page_idx)
                     admin_lines.append(
                         f"[pdfplumber][Стр. {page_idx}] Найдено графических объектов: "
