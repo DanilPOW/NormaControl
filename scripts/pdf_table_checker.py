@@ -17,7 +17,7 @@ def check_tables(pdf_path, pdf_document):
     plumber_table_pages = []
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            for page_idx, page in enumerate(pdf.pages, start=1):
+            for page_idx, page in enumerate(pdf.pages, start=2):
                 hlines = [l for l in page.lines if abs(l['y0'] - l['y1']) < 1]
                 vlines = [l for l in page.lines if abs(l['x0'] - l['x1']) < 1]
                 rects = page.rects
