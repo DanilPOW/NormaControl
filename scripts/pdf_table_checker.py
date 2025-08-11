@@ -12,12 +12,11 @@ TOLERANCE_PT = 2
 def check_tables(pdf_path, pdf_document, start_page=2):
     admin_lines = []
     error_pages = set()
-    table_bboxes_by_page = {}  # NEW: {page_num: [(x0,y0,x1,y1), ...]}
+    table_bboxes_by_page = {}  # <--- важно
 
     total_pages = len(pdf_document)
 
-    # ЭТАП 1 — быстрый отбор страниц через pdfplumber
-    t_start_plumber = time.perf_counter()
+    t0 = time.perf_counter()
     plumber_table_pages = []
     try:
         with pdfplumber.open(pdf_path) as pdf:
@@ -33,50 +32,40 @@ def check_tables(pdf_path, pdf_document, start_page=2):
                     plumber_table_pages.append(page_idx)
                     admin_lines.append(
                         f"[pdfplumber][Стр. {page_idx}] Графических объектов: {total_graphics} "
-                        f"(гор. линии: {len(hlines)}, верт. линии: {len(vlines)}, "
-                        f"прямоугольники: {len(rects)}, кривые: {len(curves)})"
+                        f"(гор.:{len(hlines)}, верт.:{len(vlines)}, прям.:{len(rects)}, крив.:{len(curves)})"
                     )
     except Exception as e:
-        admin_lines.append(f"[pdfplumber] Ошибка: {str(e)}")
+        admin_lines.append(f"[pdfplumber] Ошибка: {e}")
+    admin_lines.append(f"[pdfplumber] Найдено {len(plumber_table_pages)} страниц с таблицами за {time.perf_counter()-t0:.2f} сек.")
 
-    t_end_plumber = time.perf_counter()
-    admin_lines.append(
-        f"[pdfplumber] Найдено {len(plumber_table_pages)} страниц с таблицами за {t_end_plumber - t_start_plumber:.2f} сек."
-    )
-
-    # ЭТАП 2 — детекция таблиц Camelot'ом на выбранных страницах
+    t1 = time.perf_counter()
     camelot_tables_count = 0
-    t_start_camelot = time.perf_counter()
     if plumber_table_pages:
         valid_pages = [p for p in plumber_table_pages if 1 <= p <= total_pages]
         if valid_pages:
-            pages_str = ",".join(map(str, valid_pages))
             try:
-                tables = camelot.read_pdf(pdf_path, flavor="lattice", pages=pages_str)
+                tables = camelot.read_pdf(pdf_path, flavor="lattice", pages=",".join(map(str, valid_pages)))
                 camelot_tables_count = len(tables)
-
                 for t in tables:
                     page_num = int(t.page)
                     page = pdf_document[page_num - 1]
                     page_width, page_height = page.rect.width, page.rect.height
                     x0, y0, x1, y1 = t._bbox
 
-                    # Сохраняем bbox таблицы для исключения векторов позже
+                    # копим bbox таблиц
                     table_bboxes_by_page.setdefault(page_num, []).append((x0, y0, x1, y1))
 
                     errors = []
-                    if (
-                        x0 < LEFT_MARGIN_PT - TOLERANCE_PT or
+                    if (x0 < LEFT_MARGIN_PT - TOLERANCE_PT or
                         x1 > page_width - RIGHT_MARGIN_PT + TOLERANCE_PT or
                         y0 < TOP_MARGIN_PT - TOLERANCE_PT or
-                        y1 > page_height - BOTTOM_MARGIN_PT + TOLERANCE_PT
-                    ):
+                        y1 > page_height - BOTTOM_MARGIN_PT + TOLERANCE_PT):
                         errors.append("Таблица выходит за пределы полей")
 
-                    work_width = page_width - LEFT_MARGIN_PT - RIGHT_MARGIN_PT
-                    work_center = LEFT_MARGIN_PT + work_width / 2
-                    tbl_center = (x0 + x1) / 2
-                    if abs(tbl_center - work_center) > 2:
+                    work_w = page_width - LEFT_MARGIN_PT - RIGHT_MARGIN_PT
+                    work_cx = LEFT_MARGIN_PT + work_w/2
+                    tbl_cx = (x0 + x1)/2
+                    if abs(tbl_cx - work_cx) > 2:
                         errors.append("Таблица не по центру относительно полей")
 
                     msg = f"[Camelot][Стр. {page_num}] bbox={t._bbox}"
@@ -87,18 +76,14 @@ def check_tables(pdf_path, pdf_document, start_page=2):
                         msg += " | ✅Таблица корректно расположена"
                     admin_lines.append(msg)
             except Exception as e:
-                admin_lines.append(f"[Camelot] Ошибка: {str(e)}")
+                admin_lines.append(f"[Camelot] Ошибка: {e}")
+    admin_lines.append(f"[Camelot] Обработано {camelot_tables_count} таблиц за {time.perf_counter()-t1:.2f} сек.")
 
-    t_end_camelot = time.perf_counter()
-    admin_lines.append(f"[Camelot] Обработано {camelot_tables_count} таблиц за {t_end_camelot - t_start_camelot:.2f} сек.")
-
-    if error_pages:
-        user_summary = f"⚠️ Проверка таблиц: нарушения на страницах {', '.join(map(str, sorted(error_pages)))}"
-    else:
-        user_summary = "✅ Проверка таблиц: нарушений не найдено"
+    user_summary = (f"⚠️ Проверка таблиц: нарушения на страницах {', '.join(map(str, sorted(error_pages)))}"
+                    if error_pages else "✅ Проверка таблиц: нарушений не найдено")
 
     return {
         "user_summary": user_summary,
         "admin_details": "\n".join(admin_lines),
-        "table_bboxes_by_page": table_bboxes_by_page,  # NEW
+        "table_bboxes_by_page": table_bboxes_by_page,   # <--- важно
     }
