@@ -94,8 +94,9 @@ def process_pdf_file(pdf_path: str):
         table_results = check_tables(tmp_path, pdf_doc)
         table_user = table_results['user_summary']
         table_admin = table_results['admin_details']
+        table_bboxes_by_page = table_results.get('table_bboxes_by_page', {})
 
-        image_results = check_images(pdf_doc)
+        image_results = check_images(pdf_doc, pdf_path=tmp_path, table_bboxes_by_page=table_bboxes_by_page, debug_draw=False)
         image_user = image_results['user_summary']
         image_admin = image_results['admin_details']
 
