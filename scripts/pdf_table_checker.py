@@ -53,7 +53,10 @@ def check_tables(pdf_path, pdf_document, start_page=2):
                     x0, y0, x1, y1 = t._bbox
 
                     # копим bbox таблиц
-                    table_bboxes_by_page.setdefault(page_num, []).append((x0, y0, x1, y1))
+                    table_bboxes_by_page.setdefault(page_num, []).append((
+                        float(x0), float(y0), float(x1), float(y1)
+                    ))
+
 
                     errors = []
                     if (x0 < LEFT_MARGIN_PT - TOLERANCE_PT or
