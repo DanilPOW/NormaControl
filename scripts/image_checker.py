@@ -49,32 +49,43 @@ def cluster_bboxes(bboxes, max_dist=6):
 # ======== PyMuPDF: сбор векторных bbox ========
 def _mupdf_vector_bboxes(page):
     """
-    Собираем bbox для каждого векторного примитива страницы
-    через page.get_drawings(). Возвращаем список bbox’ов (x0,y0,x1,y1).
+    Сбор bbox для каждого векторного примитива через page.get_drawings().
+    Возвращает список (x0,y0,x1,y1).
     """
     bboxes = []
-
     try:
-        drawings = page.get_drawings()  # список словарей
+        drawings = page.get_drawings()
     except Exception:
         return bboxes
 
     for d in drawings:
-        # 1) Простые прямоугольники могут иметь d['rect']
+        # Если есть готовый прямоугольник — используем его
         rect = d.get("rect")
         if rect is not None:
             bboxes.append((rect.x0, rect.y0, rect.x1, rect.y1))
             continue
 
-        # 2) Общий случай: пробегаем по items и собираем точки
         xs, ys = [], []
         for it in d.get("items", []):
+            # it может быть dict разных типов: lines, beziers, curves, etc.
             pts = it.get("points")
-            if not pts:
+            if pts:
+                for p in pts:
+                    # p может быть (x,y) или fitz.Point
+                    try:
+                        x, y = p
+                    except Exception:
+                        x, y = float(p.x), float(p.y)
+                    xs.append(float(x))
+                    ys.append(float(y))
                 continue
-            for (x, y) in pts:
-                xs.append(x)
-                ys.append(y)
+
+            # некоторые элементы имеют x0,y0,x1,y1 напрямую
+            x0 = it.get("x0"); y0 = it.get("y0"); x1 = it.get("x1"); y1 = it.get("y1")
+            if None not in (x0, y0, x1, y1):
+                xs.extend([float(x0), float(x1)])
+                ys.extend([float(y0), float(y1)])
+
         if xs and ys:
             bboxes.append((min(xs), min(ys), max(xs), max(ys)))
 
@@ -197,8 +208,8 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             if debug_draw:
                 ra = fitz.Rect(x0, y0, x1, y1)
                 rect_annot = page.add_rect_annot(ra)
-                rect_annot.set_colors(stroke=(1, 0, 0))
-                rect_annot.set_border(width=0.5)
+                rect_annot.set_colors(stroke=(1, 0, 0))  # красная обводка (RGB 1,0,0)
+                rect_annot.set_border(width=1)           # толщина 1 pt вместо 0.5
                 rect_annot.update()
 
         if has_error:
