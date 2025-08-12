@@ -207,10 +207,8 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             # Отладочная рамка вокруг кластера
             if debug_draw:
                 ra = fitz.Rect(x0, y0, x1, y1)
-                rect_annot = page.add_rect_annot(ra)
-                rect_annot.set_colors(stroke=(1, 0, 0))  # красная обводка (RGB 1,0,0)
-                rect_annot.set_border(width=1)           # толщина 1 pt вместо 0.5
-                rect_annot.update()
+                # рисуем в контент страницы — красный контур, без заливки
+                page.draw_rect(ra, color=(1, 0, 0), width=1)  # width в пунктах
 
         if has_error:
             error_pages.append(page_num)
