@@ -24,29 +24,18 @@ def bbox_of_curve(c):
     ys = [p[1] for p in c["pts"]]
     return (float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys)))
 
-def bbox_from_mupdf_draw(d):
-    """d['rect'] — минимальный охватывающий bbox у PyMuPDF drawing."""
-    rect = d.get("rect")
-    if rect is None:
-        # запасной вариант: собрать точки из items
-        xs, ys = [], []
-        for it in d.get("items", []):
-            # it: (op, points, color, ...) — точки бывают списком fitz.Point
-            pts = it[1]
-            for p in pts:
-                xs.append(p.x if hasattr(p, "x") else p[0])
-                ys.append(p.y if hasattr(p, "y") else p[1])
-        if not xs or not ys:
-            return None
-        return (min(xs), min(ys), max(xs), max(ys))
-    return (rect.x0, rect.y0, rect.x1, rect.y1)
+def bbox_from_points(pts):
+    if not pts:
+        return None
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return (min(xs), min(ys), max(xs), max(ys))
 
 def bbox_union(b1, b2):
     return (min(b1[0], b2[0]), min(b1[1], b2[1]),
             max(b1[2], b2[2]), max(b1[3], b2[3]))
 
 def bbox_distance(b1, b2):
-    # Евклидово расстояние между рамками (0, если пересекаются)
     ax0, ay0, ax1, ay1 = b1
     bx0, by0, bx1, by1 = b2
     dx = max(0, max(bx0 - ax1, ax0 - bx1))
@@ -54,65 +43,64 @@ def bbox_distance(b1, b2):
     return math.hypot(dx, dy)
 
 def bboxes_intersect(b1, b2, tol=2):
-    # Пересекаются ли два bbox (с небольшим допуском)
     return not (b1[2] < b2[0] - tol or b1[0] > b2[2] + tol or
                 b1[3] < b2[1] - tol or b1[1] > b2[3] + tol)
-
-def cluster_bboxes(bboxes, max_dist=6):
-    # Простая агломеративная кластеризация bbox-ов по близости
-    bboxes = bboxes[:]
-    clusters = []
-    while bboxes:
-        cur = bboxes.pop(0)
-        changed = True
-        while changed:
-            changed = False
-            for other in bboxes[:]:
-                if bbox_distance(cur, other) <= max_dist:
-                    cur = bbox_union(cur, other)
-                    bboxes.remove(other)
-                    changed = True
-        clusters.append(cur)
-    return clusters
 
 def is_bullet_candidate(
     b,
     page_width,
-    max_size_pt=8,                    # небольшой размер
-    left_band_x0=LEFT_MARGIN_PT - 20, # полоса слева от поля
-    left_band_x1=LEFT_MARGIN_PT + 50  # полоса внутри поля
+    max_size_pt=8,
+    left_band_x0=LEFT_MARGIN_PT - 20,
+    left_band_x1=LEFT_MARGIN_PT + 50
 ):
-    # Маркеры-«пули» обычно маленькие и находятся слева у начала строки
     w = abs(b[2] - b[0])
     h = abs(b[3] - b[1])
     return (w <= max_size_pt and h <= max_size_pt and
             b[0] >= left_band_x0 and b[2] <= left_band_x1)
 
+def drawing_bbox_mupdf(drawing):
+    """
+    Грубая оценка bbox для объекта из page.get_drawings().
+    Собираем точки из элементов ('l','re','c','m') и считаем по ним bbox.
+    """
+    pts = []
+    for it in drawing.get("items", []):
+        try:
+            op = it[0]
+            if op == "l":            # ('l', p1, p2)
+                p1, p2 = it[1], it[2]
+                pts.extend([p1, p2])
+            elif op == "re":         # ('re', x, y, w, h)
+                x, y, w, h = it[1], it[2], it[3], it[4]
+                pts.extend([(x, y), (x+w, y), (x, y+h), (x+w, y+h)])
+            elif op == "c":          # ('c', p1, p2, p3)
+                p1, p2, p3 = it[1], it[2], it[3]
+                pts.extend([p1, p2, p3])
+            elif op == "m":          # ('m', p)
+                p = it[1]
+                pts.append(p)
+            # Другие оп-коды ('q','Q','h','f','S' и т.д.) для bbox не нужны
+        except Exception:
+            continue
+    return bbox_from_points(pts)
+
 
 # ========== main ==========
 def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_draw=False):
     """
-    Проверка графики:
-      1) Растровые изображения (через PyMuPDF):
-         - проверка выхода за поля;
-         - проверка центрирования по рабочему полю.
-      2) Векторная графика:
-         - pdfplumber: линии/прямоугольники/кривые;
-         - PyMuPDF: page.get_drawings() (все векторные path/rect/curve);
-         - исключаем всё, что пересекается с bbox-ами таблиц;
-         - исключаем маркеры списков (маленькие слева);
-         - сгруппируем оставшиеся в кластеры и проверим по тем же правилам.
+    РЕЖИМ СРАВНЕНИЯ ВЕКТОРОВ:
+      • Не объединяем и не валидируем векторные объекты — только считаем,
+        что нашёл pdfplumber и что нашёл PyMuPDF (до/после фильтрации).
+      • По желанию рисуем рамки:
+          - pdfplumber — СИНИЕ
+          - PyMuPDF — ЗЕЛЁНЫЕ
 
-    В админ-лог пишем по страницам:
-      - сколько элементов нашёл pdfplumber;
-      - сколько элементов нашёл PyMuPDF;
-      - сколько осталось после фильтров и сколько получилось кластеров.
+    Что продолжаем проверять:
+      • Растровые изображения — правила полей/центрирования (как раньше).
 
-    Параметры:
-      pdf_document            - fitz.Document (PyMuPDF)
-      pdf_path                - путь к PDF (нужен для pdfplumber, чтобы прочитать векторные элементы)
-      table_bboxes_by_page    - {page_num: [(x0,y0,x1,y1), ...]} из pdf_table_checker
-      debug_draw              - если True, рисуем рамки вокруг векторных кластеров (аннотации)
+    Возвращаемое:
+      user_summary / admin_details — с суммарной статистикой по растру
+      и пометками [VectorSummaryPlumber]/[VectorSummaryMuPDF] по страницам.
     """
     if table_bboxes_by_page is None:
         table_bboxes_by_page = {}
@@ -120,51 +108,25 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
     admin_lines = []
     error_pages = []
     total_raster_images = 0
-    page_raster_counts = []  # [(page_num, count)]
+    page_raster_counts = []
 
-    # --- Соберём векторные bbox-ы двумя способами ---
-    plumber_vec_by_page = {}  # {page: [bbox, ...]}
-    mupdf_vec_by_page   = {}  # {page: [bbox, ...]}
-
-    # 2.1 pdfplumber
+    # --- Подготовка: заранее прочитаем plumber-страницы (если pdf_path дан)
+    plumber_pages = None
     if pdf_path:
         try:
-            with pdfplumber.open(pdf_path) as pdfp:
-                for page_idx, p in enumerate(pdfp.pages, start=1):
-                    all_vec = (
-                        [bbox_of_line(l)  for l in p.lines] +
-                        [bbox_of_rect(r)  for r in p.rects] +
-                        [bbox_of_curve(c) for c in p.curves]
-                    )
-                    plumber_vec_by_page[page_idx] = all_vec
+            pl = pdfplumber.open(pdf_path)
+            plumber_pages = pl.pages
         except Exception as e:
-            admin_lines.append(f"[image_checker] pdfplumber error: {e}")
+            admin_lines.append(f"[image_checker] pdfplumber open error: {e}")
+            plumber_pages = None
 
-    # 2.2 PyMuPDF drawings
-    try:
-        for idx, page in enumerate(pdf_document):
-            page_num = idx + 1
-            vec_boxes = []
-            try:
-                drawings = page.get_drawings()  # список dict
-                for d in drawings:
-                    b = bbox_from_mupdf_draw(d)
-                    if b is None:
-                        continue
-                    vec_boxes.append(b)
-            except Exception as de:
-                admin_lines.append(f"[image_checker] get_drawings error on page {page_num}: {de}")
-            mupdf_vec_by_page[page_num] = vec_boxes
-    except Exception as e:
-        admin_lines.append(f"[image_checker] MuPDF drawings walk error: {e}")
-
-    # --- Идём по страницам, проверяем растровые + векторные кластеры ---
+    # --- Идём по страницам
     for idx, page in enumerate(pdf_document):
         page_num = idx + 1
         pw, ph = page.rect.width, page.rect.height
         has_error = False
 
-        # 1) Растровые изображения (blocks type == 1)
+        # 1) РАСТР: проверки как раньше
         raster_count = 0
         try:
             for block in page.get_text("dict").get("blocks", []):
@@ -198,92 +160,93 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         total_raster_images += raster_count
         page_raster_counts.append((page_num, raster_count))
 
-        # 2) Векторные «рисунки» (клaстеры)
-        # сырые ббоксы
-        raw_pl = plumber_vec_by_page.get(page_num, [])
-        raw_mu = mupdf_vec_by_page.get(page_num, [])
+        # 2) ВЕКТОРА: считаем отдельно pdfplumber и PyMuPDF (без объединения/кластеризации/проверок)
+        # 2.1 pdfplumber
+        plumber_raw = 0
+        plumber_filtered = 0
+        if plumber_pages and 0 <= idx < len(plumber_pages):
+            try:
+                p = plumber_pages[idx]
+                all_vec_pl = (
+                    [bbox_of_line(l)  for l in p.lines] +
+                    [bbox_of_rect(r)  for r in p.rects] +
+                    [bbox_of_curve(c) for c in p.curves]
+                )
+                plumber_raw = len(all_vec_pl)
 
-        # лог исходных количеств
-        pl_count_raw = len(raw_pl)
-        mu_count_raw = len(raw_mu)
+                tbl_bboxes = table_bboxes_by_page.get(page_num, [])
+                filtered_pl = []
+                for b in all_vec_pl:
+                    if any(bboxes_intersect(b, tb, tol=TOLERANCE_PT) for tb in tbl_bboxes):
+                        continue
+                    if is_bullet_candidate(b, p.width):
+                        continue
+                    # отсечь крошечный мусор
+                    w = b[2] - b[0]
+                    h = b[3] - b[1]
+                    if w < 0.5 and h < 0.5:
+                        continue
+                    filtered_pl.append(b)
+                plumber_filtered = len(filtered_pl)
 
-        # исключаем всё, что пересекается с таблицами
-        tbl_bboxes = table_bboxes_by_page.get(page_num, [])
+                # Нарисовать (синие)
+                if debug_draw:
+                    for b in filtered_pl:
+                        ra = fitz.Rect(*b)
+                        rect_annot = page.add_rect_annot(ra)
+                        rect_annot.set_colors(stroke=(0, 0, 1))
+                        rect_annot.set_border(width=0.5)
+                        rect_annot.update()
 
-        def filter_with_tables(bboxes):
-            out = []
-            for b in bboxes:
-                if not any(bboxes_intersect(b, tb, tol=TOLERANCE_PT) for tb in tbl_bboxes):
-                    out.append(b)
-            return out
+                admin_lines.append(
+                    f"[VectorSummaryPlumber][Стр. {page_num}] pdfplumber: {plumber_raw} raw → {plumber_filtered} filtered"
+                )
+            except Exception as e:
+                admin_lines.append(f"[image_checker] plumber vector pass error on page {page_num}: {e}")
 
-        filtered_pl = filter_with_tables(raw_pl)
-        filtered_mu = filter_with_tables(raw_mu)
-
-        # исключаем маркеры списков + совсем мелкий мусор
-        def filter_bullets_and_noise(bboxes, page_width):
-            out = []
-            for b in bboxes:
-                if is_bullet_candidate(b, page_width):
+        # 2.2 PyMuPDF
+        mupdf_raw = 0
+        mupdf_filtered = 0
+        try:
+            drawings = page.get_drawings()
+            # получаем bbox для каждого drawing
+            bxs = []
+            for d in drawings:
+                b = drawing_bbox_mupdf(d)
+                if b is None:
                     continue
-                w, h = b[2] - b[0], b[3] - b[1]
+                bxs.append(b)
+            mupdf_raw = len(bxs)
+
+            tbl_bboxes = table_bboxes_by_page.get(page_num, [])
+            filtered_mu = []
+            for b in bxs:
+                if any(bboxes_intersect(b, tb, tol=TOLERANCE_PT) for tb in tbl_bboxes):
+                    continue
+                # приблизительный аналог буллет-фильтра
+                if is_bullet_candidate(b, pw):
+                    continue
+                w = b[2] - b[0]
+                h = b[3] - b[1]
                 if w < 0.5 and h < 0.5:
                     continue
-                out.append(b)
-            return out
+                filtered_mu.append(b)
+            mupdf_filtered = len(filtered_mu)
 
-        filtered_pl = filter_bullets_and_noise(filtered_pl, pw)
-        filtered_mu = filter_bullets_and_noise(filtered_mu, pw)
-
-        # объединим оба источника
-        combined_vecs = filtered_pl + filtered_mu
-
-        clusters = []
-        if combined_vecs:
-            clusters = cluster_bboxes(combined_vecs, max_dist=6)
-
-            # проверяем кластеры
-            for b in clusters:
-                x0, y0, x1, y1 = b
-                # отсечём совсем маленькие кластеры
-                if (x1 - x0) < 8 and (y1 - y0) < 8:
-                    continue
-
-                errs = []
-                # Выход за поля
-                if (x0 < LEFT_MARGIN_PT or x1 > pw - RIGHT_MARGIN_PT or
-                    y0 < TOP_MARGIN_PT or  y1 > ph - BOTTOM_MARGIN_PT):
-                    errs.append("Графический объект выходит за поля")
-
-                # Центрирование по рабочему полю
-                work_w  = pw - LEFT_MARGIN_PT - RIGHT_MARGIN_PT
-                work_cx = LEFT_MARGIN_PT + work_w / 2
-                obj_cx  = (x0 + x1) / 2
-                if abs(obj_cx - work_cx) > 2:
-                    errs.append("Графический объект должен быть выровнен по центру без абзацного отступа")
-
-                if errs:
-                    has_error = True
-                    msg = f"[Стр. {page_num}] Векторный объект: " + "; ".join(errs)
-                    admin_lines.append(msg)
-                    ann = page.add_text_annot(fitz.Point(x0, y0), "\n".join(errs))
-                    ann.set_info(title="Сервис нормоконтроля", content=msg)
-                    ann.update()
-
-                # отладочная рамка вокруг кластера
-                if debug_draw:
-                    ra = fitz.Rect(x0, y0, x1, y1)
+            # Нарисовать (зелёные)
+            if debug_draw:
+                for b in filtered_mu:
+                    ra = fitz.Rect(*b)
                     rect_annot = page.add_rect_annot(ra)
-                    rect_annot.set_colors(stroke=(1, 0, 0))
+                    rect_annot.set_colors(stroke=(0, 1, 0))
                     rect_annot.set_border(width=0.5)
                     rect_annot.update()
 
-        # лог по странице (векторная часть)
-        admin_lines.append(
-            f"[VectorSummary][Стр. {page_num}] pdfplumber: {pl_count_raw} raw → {len(filtered_pl)} filtered; "
-            f"PyMuPDF: {mu_count_raw} raw → {len(filtered_mu)} filtered; "
-            f"clusters: {len(clusters)}"
-        )
+            admin_lines.append(
+                f"[VectorSummaryMuPDF][Стр. {page_num}] PyMuPDF: {mupdf_raw} raw → {mupdf_filtered} filtered"
+            )
+        except Exception as e:
+            admin_lines.append(f"[image_checker] mupdf vector pass error on page {page_num}: {e}")
 
         if has_error:
             error_pages.append(page_num)
@@ -297,13 +260,20 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
 
     admin_details = (
         counts_summary +
-        ("\n\n" + "\n".join(admin_lines) if admin_lines else "\nНарушений по графике не найдено.")
+        ("\n\n" + "\n".join(admin_lines) if admin_lines else "\nВекторная сводка пуста.")
     )
 
     if error_pages:
         user_summary = f"⚠️Проверка рисунков: нарушения на страницах {', '.join(map(str, sorted(error_pages)))}"
     else:
-        user_summary = "✅Проверка рисунков"
+        user_summary = "✅Проверка рисунков (растр) • Вектор — режим сравнения (без проверок)"
+
+    # Закрыть pdfplumber, если открывали
+    try:
+        if plumber_pages:
+            pl.close()
+    except Exception:
+        pass
 
     return {
         "user_summary": user_summary,
