@@ -24,6 +24,23 @@ def bbox_of_curve(c):
     ys = [p[1] for p in c["pts"]]
     return (float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys)))
 
+def bbox_from_mupdf_draw(d):
+    """d['rect'] — минимальный охватывающий bbox у PyMuPDF drawing."""
+    rect = d.get("rect")
+    if rect is None:
+        # запасной вариант: собрать точки из items
+        xs, ys = [], []
+        for it in d.get("items", []):
+            # it: (op, points, color, ...) — точки бывают списком fitz.Point
+            pts = it[1]
+            for p in pts:
+                xs.append(p.x if hasattr(p, "x") else p[0])
+                ys.append(p.y if hasattr(p, "y") else p[1])
+        if not xs or not ys:
+            return None
+        return (min(xs), min(ys), max(xs), max(ys))
+    return (rect.x0, rect.y0, rect.x1, rect.y1)
+
 def bbox_union(b1, b2):
     return (min(b1[0], b2[0]), min(b1[1], b2[1]),
             max(b1[2], b2[2]), max(b1[3], b2[3]))
@@ -79,11 +96,17 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
       1) Растровые изображения (через PyMuPDF):
          - проверка выхода за поля;
          - проверка центрирования по рабочему полю.
-      2) Векторная графика (через pdfplumber):
-         - соберём линии/прямоугольники/кривые;
-         - исключим всё, что пересекается с bbox-ами таблиц;
-         - исключим маркеры списков (маленькие слева);
-         - сгруппируем оставшиеся в кластеры (как «рисунки») и проверим по тем же правилам.
+      2) Векторная графика:
+         - pdfplumber: линии/прямоугольники/кривые;
+         - PyMuPDF: page.get_drawings() (все векторные path/rect/curve);
+         - исключаем всё, что пересекается с bbox-ами таблиц;
+         - исключаем маркеры списков (маленькие слева);
+         - сгруппируем оставшиеся в кластеры и проверим по тем же правилам.
+
+    В админ-лог пишем по страницам:
+      - сколько элементов нашёл pdfplumber;
+      - сколько элементов нашёл PyMuPDF;
+      - сколько осталось после фильтров и сколько получилось кластеров.
 
     Параметры:
       pdf_document            - fitz.Document (PyMuPDF)
@@ -97,45 +120,45 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
     admin_lines = []
     error_pages = []
     total_raster_images = 0
-    page_raster_counts = []     # [(page_num, count)]
-    page_vectors = {}           # {page_num: [bbox, ...]}
+    page_raster_counts = []  # [(page_num, count)]
 
-    # --- Собираем векторные объекты через pdfplumber (если есть путь к файлу)
+    # --- Соберём векторные bbox-ы двумя способами ---
+    plumber_vec_by_page = {}  # {page: [bbox, ...]}
+    mupdf_vec_by_page   = {}  # {page: [bbox, ...]}
+
+    # 2.1 pdfplumber
     if pdf_path:
         try:
             with pdfplumber.open(pdf_path) as pdfp:
                 for page_idx, p in enumerate(pdfp.pages, start=1):
-                    # все векторы страницы
                     all_vec = (
                         [bbox_of_line(l)  for l in p.lines] +
                         [bbox_of_rect(r)  for r in p.rects] +
                         [bbox_of_curve(c) for c in p.curves]
                     )
-
-                    # исключаем всё, что пересекается с таблицами
-                    tbl_bboxes = table_bboxes_by_page.get(page_idx, [])
-                    filtered = []
-                    for b in all_vec:
-                        if not any(bboxes_intersect(b, tb, tol=TOLERANCE_PT) for tb in tbl_bboxes):
-                            filtered.append(b)
-
-                    # исключаем маркеры списков (мелкие слева)
-                    filtered2 = [b for b in filtered if not is_bullet_candidate(b, p.width)]
-
-                    # можно отсеять очень маленький мусор (тонкие линии и т. п.)
-                    filtered3 = []
-                    for b in filtered2:
-                        w = b[2] - b[0]
-                        h = b[3] - b[1]
-                        if w < 0.5 and h < 0.5:
-                            continue
-                        filtered3.append(b)
-
-                    page_vectors[page_idx] = filtered3
+                    plumber_vec_by_page[page_idx] = all_vec
         except Exception as e:
             admin_lines.append(f"[image_checker] pdfplumber error: {e}")
 
-    # --- Идём по страницам PyMuPDF и проверяем растровые + векторные кластеры
+    # 2.2 PyMuPDF drawings
+    try:
+        for idx, page in enumerate(pdf_document):
+            page_num = idx + 1
+            vec_boxes = []
+            try:
+                drawings = page.get_drawings()  # список dict
+                for d in drawings:
+                    b = bbox_from_mupdf_draw(d)
+                    if b is None:
+                        continue
+                    vec_boxes.append(b)
+            except Exception as de:
+                admin_lines.append(f"[image_checker] get_drawings error on page {page_num}: {de}")
+            mupdf_vec_by_page[page_num] = vec_boxes
+    except Exception as e:
+        admin_lines.append(f"[image_checker] MuPDF drawings walk error: {e}")
+
+    # --- Идём по страницам, проверяем растровые + векторные кластеры ---
     for idx, page in enumerate(pdf_document):
         page_num = idx + 1
         pw, ph = page.rect.width, page.rect.height
@@ -175,13 +198,54 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         total_raster_images += raster_count
         page_raster_counts.append((page_num, raster_count))
 
-        # 2) Векторные «рисунки» (кластеры)
-        vecs = page_vectors.get(page_num, [])
-        if vecs:
-            clusters = cluster_bboxes(vecs, max_dist=6)
+        # 2) Векторные «рисунки» (клaстеры)
+        # сырые ббоксы
+        raw_pl = plumber_vec_by_page.get(page_num, [])
+        raw_mu = mupdf_vec_by_page.get(page_num, [])
+
+        # лог исходных количеств
+        pl_count_raw = len(raw_pl)
+        mu_count_raw = len(raw_mu)
+
+        # исключаем всё, что пересекается с таблицами
+        tbl_bboxes = table_bboxes_by_page.get(page_num, [])
+
+        def filter_with_tables(bboxes):
+            out = []
+            for b in bboxes:
+                if not any(bboxes_intersect(b, tb, tol=TOLERANCE_PT) for tb in tbl_bboxes):
+                    out.append(b)
+            return out
+
+        filtered_pl = filter_with_tables(raw_pl)
+        filtered_mu = filter_with_tables(raw_mu)
+
+        # исключаем маркеры списков + совсем мелкий мусор
+        def filter_bullets_and_noise(bboxes, page_width):
+            out = []
+            for b in bboxes:
+                if is_bullet_candidate(b, page_width):
+                    continue
+                w, h = b[2] - b[0], b[3] - b[1]
+                if w < 0.5 and h < 0.5:
+                    continue
+                out.append(b)
+            return out
+
+        filtered_pl = filter_bullets_and_noise(filtered_pl, pw)
+        filtered_mu = filter_bullets_and_noise(filtered_mu, pw)
+
+        # объединим оба источника
+        combined_vecs = filtered_pl + filtered_mu
+
+        clusters = []
+        if combined_vecs:
+            clusters = cluster_bboxes(combined_vecs, max_dist=6)
+
+            # проверяем кластеры
             for b in clusters:
                 x0, y0, x1, y1 = b
-                # отсечём очень маленькие кластеры
+                # отсечём совсем маленькие кластеры
                 if (x1 - x0) < 8 and (y1 - y0) < 8:
                     continue
 
@@ -206,13 +270,20 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                     ann.set_info(title="Сервис нормоконтроля", content=msg)
                     ann.update()
 
-                # Отладочная рамка вокруг кластера
+                # отладочная рамка вокруг кластера
                 if debug_draw:
                     ra = fitz.Rect(x0, y0, x1, y1)
                     rect_annot = page.add_rect_annot(ra)
                     rect_annot.set_colors(stroke=(1, 0, 0))
                     rect_annot.set_border(width=0.5)
                     rect_annot.update()
+
+        # лог по странице (векторная часть)
+        admin_lines.append(
+            f"[VectorSummary][Стр. {page_num}] pdfplumber: {pl_count_raw} raw → {len(filtered_pl)} filtered; "
+            f"PyMuPDF: {mu_count_raw} raw → {len(filtered_mu)} filtered; "
+            f"clusters: {len(clusters)}"
+        )
 
         if has_error:
             error_pages.append(page_num)
