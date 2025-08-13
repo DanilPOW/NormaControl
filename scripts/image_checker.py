@@ -28,7 +28,7 @@ def bboxes_intersect(b1, b2, tol=TOLERANCE_PT):
     return not (b1[2] < b2[0] - tol or b1[0] > b2[2] + tol or
                 b1[3] < b2[1] - tol or b1[1] > b2[3] + tol)
 
-def cluster_bboxes(bboxes, max_dist=6):
+def cluster_bboxes(bboxes, max_dist=10):
     # Простая агломеративная кластеризация bbox-ов по близости
     bboxes = bboxes[:]
     clusters = []
@@ -54,6 +54,7 @@ def _mupdf_vector_bboxes(page):
     """
     bboxes = []
     try:
+        text_blocks = [b["bbox"] for b in page.get_text("dict").get("blocks", []) if b.get("type") == 0]
         drawings = page.get_drawings()
     except Exception:
         return bboxes
@@ -61,9 +62,10 @@ def _mupdf_vector_bboxes(page):
     for d in drawings:
         # Если есть готовый прямоугольник — используем его
         rect = d.get("rect")
-        if rect is not None:
-            bboxes.append((rect.x0, rect.y0, rect.x1, rect.y1))
-            continue
+        if rect:
+            if not any(bboxes_intersect((rect.x0, rect.y0, rect.x1, rect.y1), tb) for tb in text_blocks):
+                bboxes.append((rect.x0, rect.y0, rect.x1, rect.y1))
+                continue
 
         xs, ys = [], []
         for it in d.get("items", []):
@@ -119,6 +121,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
     total_raster_images = 0
     page_raster_counts = []  # [(page_num, count)]
 
+
     # для сводки по вектору
     vector_summary_lines = []
 
@@ -169,15 +172,14 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         tbl_bboxes = table_bboxes_by_page.get(page_num, [])
         filtered_vec = [b for b in raw_vec if not any(bboxes_intersect(b, tb) for tb in tbl_bboxes)]
 
-        # кластеризация как «рисунки»
-        clusters = cluster_bboxes(filtered_vec, max_dist=6)
+        clusters = cluster_bboxes(filtered_vec, max_dist=10)  # Используем единое значение max_dist
+        clusters = [b for b in clusters if (b[2] - b[0]) * (b[3] - b[1]) > 50]  # Фильтр по площади
 
-        # отсекаем совсем мелкие кластеры (шум)
-        clusters = [b for b in clusters if (b[2] - b[0] >= 8 or b[3] - b[1] >= 8)]
-
-        # в админ-лог краткую сводку по странице
+        # Добавляем информацию о размерах кластеров
+        cluster_sizes = [f"{round((b[2]-b[0])*(b[3]-b[1]))} pt²" for b in clusters]
         vector_summary_lines.append(
-            f"[VectorMuPDF][Стр. {page_num}] PyMuPDF: {len(raw_vec)} raw → {len(filtered_vec)} filtered; clusters: {len(clusters)}"
+            f"[VectorMuPDF][Стр. {page_num}] PyMuPDF: {len(raw_vec)} raw → {len(filtered_vec)} filtered; "
+            f"clusters: {len(clusters)} (размеры: {', '.join(cluster_sizes)})"
         )
 
         # Проверки по каждому кластеру
