@@ -370,6 +370,11 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             w = x1 - x0
             h = y1 - y0
             area_pct = (w * h) / (page_area + 1e-9) * 100.0
+
+            is_marker_like = (w <= mm_to_pt(MARKER_MAX_W_MM) and h <= mm_to_pt(MARKER_MAX_H_MM))
+            if is_marker_like:
+                continue
+        
             errs = []
 
             # Выход за поля (учитываем page.rect)
