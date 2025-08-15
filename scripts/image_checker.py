@@ -15,7 +15,6 @@ def bbox_union(b1, b2):
             max(b1[2], b2[2]), max(b1[3], b2[3]))
 
 def bbox_distance(b1, b2):
-    # Евклидово расстояние между рамками (0, если пересекаются)
     ax0, ay0, ax1, ay1 = b1
     bx0, by0, bx1, by1 = b2
     dx = max(0, max(bx0 - ax1, ax0 - bx1))
@@ -47,10 +46,7 @@ def cluster_bboxes(bboxes, max_dist=6):
 
 #сбор векторных bbox
 def _mupdf_vector_bboxes(page):
-    """
-    Сбор bbox для каждого векторного примитива через page.get_drawings().
-    Возвращает список (x0,y0,x1,y1).
-    """
+
     bboxes = []
     try:
         drawings = page.get_drawings()
@@ -66,7 +62,6 @@ def _mupdf_vector_bboxes(page):
 
         xs, ys = [], []
         for it in d.get("items", []):
-            # it может быть dict разных типов: lines, beziers, curves, etc.
             pts = it.get("points")
             if pts:
                 for p in pts:
@@ -79,7 +74,6 @@ def _mupdf_vector_bboxes(page):
                     ys.append(float(y))
                 continue
 
-            # некоторые элементы имеют x0,y0,x1,y1 напрямую
             x0 = it.get("x0"); y0 = it.get("y0"); x1 = it.get("x1"); y1 = it.get("y1")
             if None not in (x0, y0, x1, y1):
                 xs.extend([float(x0), float(x1)])
@@ -102,12 +96,6 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
          - исключаем всё, что пересекается с bbox-ами таблиц;
          - объединяем в кластеры (как «рисунки»);
          - проверяем выход за поля и центрирование.
-
-    Параметры:
-      pdf_document            - fitz.Document (PyMuPDF)
-      pdf_path                - НЕ используется в этой версии (оставлен для совместимости)
-      table_bboxes_by_page    - {page_num: [(x0,y0,x1,y1), ...]} из pdf_table_checker
-      debug_draw              - если True, рисуем рамки вокруг кластеров (аннотации)
     """
     if table_bboxes_by_page is None:
         table_bboxes_by_page = {}
@@ -138,7 +126,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                     # Выход за поля
                     if (x0 < LEFT_MARGIN_PT or x1 > pw - RIGHT_MARGIN_PT or
                         y0 < TOP_MARGIN_PT or  y1 > ph - BOTTOM_MARGIN_PT):
-                        errs.append("Изображение выходит за поля")
+                        errs.append("Рисунок выходит за поля")
 
                     # Центрирование по рабочему полю
                     work_w  = pw - LEFT_MARGIN_PT - RIGHT_MARGIN_PT
