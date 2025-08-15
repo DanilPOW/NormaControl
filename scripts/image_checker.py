@@ -296,7 +296,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             is_center, dx_mm = centered_status(g["bbox"], rect, LEFT_MARGIN_PT, RIGHT_MARGIN_PT, CENTER_TOL_CM)
             if not is_center:
                 errs.append(
-                    f"Графический объект должен быть выровнен по центру (смещение {dx_mm:+.1f} мм, допуск ±{CENTER_TOL_CM*10:.0f} мм)"
+                    f"Графический объект должен быть выровнен по центру без абзацного отступа"
                 )
 
             if errs:
