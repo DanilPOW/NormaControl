@@ -12,7 +12,7 @@ TOLERANCE_PT = 2
 def check_tables(pdf_path, pdf_document, start_page=2):
     admin_lines = []
     error_pages = set()
-    table_bboxes_by_page = {}  # <--- важно
+    table_bboxes_by_page = {}
 
     total_pages = len(pdf_document)
 
