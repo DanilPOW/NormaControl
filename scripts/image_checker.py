@@ -20,8 +20,13 @@ MIN_H_MM      = 15      # мин. высота 1.5 см
 MIN_AREA_PCT  = 0.30    # площадь ≥ 0.30% площади страницы
 THIN_LINE_MM  = 1.0     # отсечь совсем тонкие линии
 
+# Эвристика для пометки «похоже на маркер»
+MARKER_MAX_W_MM = 8.0
+MARKER_MAX_H_MM = 8.0
+
 # Вспомогательные
 def mm_to_pt(mm): return mm * MM_TO_PT
+def pt_to_mm(pt): return pt / MM_TO_PT
 
 # ===== Геометрия =====
 def bbox_union(b1, b2):
@@ -72,7 +77,7 @@ def color_distance(c1, c2):
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(c1, c2)))
 
 def same_style(a, b, color_tol=0.08, lw_rel_tol=0.35):
-    # цвет берем stroke приоритетно, иначе fill
+    # цвет берём stroke приоритетно, иначе fill
     def repr_color(d): return d.get("stroke") or d.get("fill")
     ca = repr_color(a); cb = repr_color(b)
     cdist = color_distance(ca, cb)
@@ -162,7 +167,7 @@ def centered_status(group_bbox, page_rect,
     tol_pt = tol_cm * CM_TO_PT
 
     is_centered = abs(dx_pt) <= tol_pt
-    dx_mm = dx_pt / MM_TO_PT  # 1 мм = 2.834646 pt
+    dx_mm = pt_to_mm(dx_pt)  # 1 мм = 2.834646 pt
     return is_centered, dx_mm
 
 # ===== Вектор: сбор групп с исключением таблиц =====
@@ -177,7 +182,11 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
     """
     entries = []
     try:
+        # Если у вас старая версия PyMuPDF — параметр extended может быть недоступен.
+        # Тогда замените на: drawings = page.get_drawings()
         drawings = page.get_drawings(extended=True)
+    except TypeError:
+        drawings = page.get_drawings()
     except Exception:
         drawings = []
 
@@ -191,9 +200,10 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
             "stroke": d.get("stroke"),
             "fill": d.get("fill"),
             "width": d.get("width") or d.get("linewidth") or 0.0,
-            "stroke_opacity": d.get("stroke_opacity", 1.0),
-            "fill_opacity": d.get("fill_opacity", 1.0),
+            "stroke_opacity": d.get("stroke_opacity", 1.0) if hasattr(d, "get") else None,
+            "fill_opacity": d.get("fill_opacity", 1.0) if hasattr(d, "get") else None,
         }
+        # если extended недоступен, is_visible_path всё равно корректно отсеет "без stroke/fill"
         if is_visible_path(entry):
             entries.append(entry)
 
@@ -239,11 +249,10 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
     """
     Проверка графики:
       1) Растровые изображения (blocks type==1): выход за поля + центровка (как было).
-      2) Вектор: видимые пути (extended=True) -> группировка -> исключение таблиц ->
+      2) Вектор: видимые пути (extended=True, если доступно) -> группировка -> исключение таблиц ->
          проверка выхода за поля и (для крупных фигур) центровка.
 
-    table_exclude_mode: "intersect" (как раньше) или "iou" (мягче, с iou_threshold).
-    vector_annotate_center: ставить аннотацию по центру bbox (True) или в левый верхний угол (False).
+    Новое: в админ-лог выводятся размеры всех сгруппированных векторных объектов.
     """
     if table_bboxes_by_page is None:
         table_bboxes_by_page = {}
@@ -310,7 +319,52 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             f"[VectorMuPDF][Стр. {page_num}] видимых путей сгруппировано: {len(groups)} логических объектов"
         )
 
+        # ===== ДОП. ОТЛАДОЧНЫЙ ЛОГ РАЗМЕРОВ ВЕКТОРНЫХ ОБЪЕКТОВ =====
         page_area = pw * ph
+        admin_lines.append(
+            f"[VectorMuPDF][Стр. {page_num}] объекты: {len(groups)} (размеры: w×h pt | w×h мм | area %)"
+        )
+
+        small_objs = []
+        figure_objs = []
+
+        for gi, g in enumerate(groups, 1):
+            x0, y0, x1, y1 = g["bbox"]
+            w = x1 - x0
+            h = y1 - y0
+            area_pct = (w * h) / (page_area + 1e-9) * 100.0
+
+            is_figure = (
+                w >= mm_to_pt(MIN_W_MM) and
+                h >= mm_to_pt(MIN_H_MM) and
+                area_pct >= MIN_AREA_PCT and
+                h >= mm_to_pt(THIN_LINE_MM) and
+                w >= mm_to_pt(THIN_LINE_MM)
+            )
+
+            is_marker_like = (w <= mm_to_pt(MARKER_MAX_W_MM) and h <= mm_to_pt(MARKER_MAX_H_MM))
+
+            line = (
+                f"  • G#{gi}: "
+                f"{w:.1f}×{h:.1f} pt | {pt_to_mm(w):.1f}×{pt_to_mm(h):.1f} мм | "
+                f"{area_pct:.3f}% | {'FIGURE' if is_figure else 'small'}"
+                f"{' | marker-like' if is_marker_like else ''}"
+            )
+
+            if is_figure:
+                figure_objs.append(line)
+            else:
+                small_objs.append(line)
+
+        if figure_objs:
+            admin_lines.append("    Кандидаты на рисунок:")
+            admin_lines.extend(figure_objs)
+        if small_objs:
+            admin_lines.append("    Мелкие/маркерные объекты:")
+            admin_lines.extend(small_objs)
+        # ===== КОНЕЦ ДОП. ЛОГА =====
+
+        # Основные проверки/аннотации по группам
         for g in groups:
             x0, y0, x1, y1 = g["bbox"]
             w = x1 - x0
