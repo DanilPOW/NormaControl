@@ -2,7 +2,7 @@
 import fitz
 import math
 
-# --- Поля (в пунктах) ---
+#Поля 
 LEFT_MARGIN_PT   = 3 * 28.35
 RIGHT_MARGIN_PT  = 1.5 * 28.35
 TOP_MARGIN_PT    = 2 * 28.35
@@ -10,7 +10,6 @@ BOTTOM_MARGIN_PT = 2 * 28.35
 TOLERANCE_PT     = 2
 
 
-# ========== utils ==========
 def bbox_union(b1, b2):
     return (min(b1[0], b2[0]), min(b1[1], b2[1]),
             max(b1[2], b2[2]), max(b1[3], b2[3]))
@@ -46,7 +45,7 @@ def cluster_bboxes(bboxes, max_dist=6):
     return clusters
 
 
-# ======== PyMuPDF: сбор векторных bbox ========
+#сбор векторных bbox
 def _mupdf_vector_bboxes(page):
     """
     Сбор bbox для каждого векторного примитива через page.get_drawings().
@@ -92,7 +91,6 @@ def _mupdf_vector_bboxes(page):
     return bboxes
 
 
-# ========== main ==========
 def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_draw=False):
     """
     Проверка графики:
