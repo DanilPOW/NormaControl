@@ -2,7 +2,7 @@
 import fitz
 import math
 
-# ===== Константы полей и допусков =====
+# Константы
 CM_TO_PT = 28.35
 MM_TO_PT = 2.834646
 
@@ -11,7 +11,7 @@ RIGHT_MARGIN_PT  = 1.5 * CM_TO_PT
 TOP_MARGIN_PT    = 2.0 * CM_TO_PT
 BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
 
-# Допуск центровки в сантиметрах (±2 мм)
+# Допуск центровки  
 CENTER_TOL_CM = 0.2
 
 # Порог «кандидата на рисунок» (для центровки)
@@ -97,6 +97,77 @@ def is_visible_path(d):
     stroked = bool(stroke) and lw > 0 and (so is None or so > 0)
     filled  = bool(fill) and (fo is None or fo > 0)
     return stroked or filled
+
+# ===== Сбор текстовых строк (bbox + средний fontsize) =====
+# ===== Сбор текстовых строк (bbox + средний fontsize) =====
+def collect_text_lines(page):
+    """Собирает строки текста со средним кеглем по span'ам и bbox строки."""
+    lines = []
+    d = page.get_text("dict")
+    for b in d.get("blocks", []):
+        if b.get("type") != 0:
+            continue
+        for ln in b.get("lines", []):
+            spans = ln.get("spans", [])
+            if not spans:
+                continue
+            xs0 = [s["bbox"][0] for s in spans]
+            ys0 = [s["bbox"][1] for s in spans]
+            xs1 = [s["bbox"][2] for s in spans]
+            ys1 = [s["bbox"][3] for s in spans]
+            bx = (min(xs0), min(ys0), max(xs1), max(ys1))
+            fs = sum(float(s.get("size", 0)) for s in spans) / max(1, len(spans))
+            lines.append({"bbox": bx, "fontsize": fs})
+    return lines
+
+
+# ===== Проверка «пустой строки» ПЕРЕД картинкой для 1 колонки, межстрочник 1.5 =====
+def check_empty_line_above(page, fig_bbox, page_rect, work_top_pt,
+                           font_min_pt=12.0, font_max_pt=14.0,
+                           first_elem_top_thresh_mm=5.0,
+                           lines=None):
+    """
+    Возвращает None, если всё ок/неприменимо, иначе — текст ошибки.
+
+    Логика:
+      - Находим БЛИЖАЙШУЮ по вертикали строку ВЫШЕ рисунка (без проверок по X).
+      - Требуем расстояние >= 1.5 * fontsize; fontsize жёстко в диапазоне 12–14 pt.
+      - Если строк сверху нет и верх рисунка <= 5 мм от верха рабочей области — проверку не выполняем.
+    """
+    x0, y0, x1, y1 = fig_bbox
+
+    if lines is None:
+        lines = collect_text_lines(page)
+
+    # Ближайшая строка выше по вертикали
+    above = None
+    best_dy = None
+    for ln in lines:
+        bx = ln["bbox"]
+        if bx[3] <= y0:
+            dy = y0 - bx[3]  # зазор от низа строки до верха рисунка
+            if best_dy is None or dy < best_dy:
+                above = ln
+                best_dy = dy
+
+    # Нет строки сверху — допускаем «первый элемент»
+    if not above:
+        if (y0 - work_top_pt) <= mm_to_pt(first_elem_top_thresh_mm):
+            return None
+        return None  # нечего измерять — мягко пропускаем
+
+    # Требуемый зазор = 1.5 * fontsize (fontsize в [12;14] pt)
+    fs = float(above["fontsize"]) if above["fontsize"] > 0 else font_min_pt
+    fs = max(font_min_pt, min(font_max_pt, fs))
+    required_gap_pt = 1.5 * fs
+
+    actual_gap_pt = y0 - above["bbox"][3]
+    if actual_gap_pt + 1e-6 < required_gap_pt:
+        return (f"Нет пустой строки перед рисунком: расстояние "
+                f"{pt_to_mm(actual_gap_pt):.1f} мм, требуется ≥ {pt_to_mm(required_gap_pt):.1f} мм (межстрочник 1.5)")
+    return None
+
+
 
 def choose_repr(a, b):
     # репрезентативный путь группы
@@ -268,6 +339,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         rect = page.rect
         pw, ph = rect.width, rect.height
         has_error = False
+        text_lines = collect_text_lines(page)
 
         # Рабочая область страницы с учетом реальных границ
         work_left   = rect.x0 + LEFT_MARGIN_PT
@@ -295,6 +367,18 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                     if abs(obj_cx - work_cx) > 2:  # как у тебя
                         errs.append("Рисунок должен быть выровнен по центру без абзацного отступа")
 
+                    # ПУСТАЯ СТРОКА ПЕРЕД КАРТИНКОЙ
+                    gap_err = check_empty_line_above(
+                        page, (x0, y0, x1, y1), rect,
+                        work_top_pt=work_top,
+                        font_min_pt=12.0, font_max_pt=14.0,
+                        first_elem_top_thresh_mm=5.0,
+                        lines=text_lines,                # ← кешированные строки
+                    )
+                    if gap_err:
+                        errs.append(gap_err)
+
+        
                     if errs:
                         has_error = True
                         msg = f"[Стр. {page_num}] Растровый рисунок: " + "; ".join(errs)
@@ -399,6 +483,16 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                         f"Графический объект должен быть выровнен по центру "
                         f"(смещение {dx_mm:+.1f} мм, допуск ±{CENTER_TOL_CM*10:.0f} мм)"
                     )
+            
+                gap_err = check_empty_line_above(
+                    page, g["bbox"], rect,
+                    work_top_pt=work_top,
+                    font_min_pt=12.0, font_max_pt=14.0,
+                    first_elem_top_thresh_mm=5.0,
+                    lines=text_lines,
+                )
+                if gap_err:
+                    errs.append(gap_err)
 
             if errs:
                 has_error = True
