@@ -1,6 +1,7 @@
 # scripts/image_checker.py
 import fitz
 import math
+import re  # для фильтра "шумных" строк
 
 # Константы
 CM_TO_PT = 28.35
@@ -11,7 +12,7 @@ RIGHT_MARGIN_PT  = 1.5 * CM_TO_PT
 TOP_MARGIN_PT    = 2.0 * CM_TO_PT
 BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
 
-# Допуск центровки  
+# Допуск центровки
 CENTER_TOL_CM = 0.2
 
 # Порог «кандидата на рисунок» (для центровки)
@@ -70,6 +71,14 @@ def center_distance(b1, b2):
     c1 = bbox_center(b1); c2 = bbox_center(b2)
     return math.hypot(c1[0]-c2[0], c1[1]-c2[1])
 
+def x_overlap(a, b):
+    """Горизонтальное перекрытие bbox'ов в pt."""
+    return max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+
+def x_gap(a, b):
+    """Горизонтальный зазор между интервалами по X (0, если пересекаются)."""
+    return max(0.0, max(a[0]-b[2], b[0]-a[2]))
+
 # ===== Стиль/видимость =====
 def color_distance(c1, c2):
     if not c1 or not c2:
@@ -98,10 +107,33 @@ def is_visible_path(d):
     filled  = bool(fill) and (fo is None or fo > 0)
     return stroked or filled
 
-# ===== Сбор текстовых строк (bbox + средний fontsize) =====
-# ===== Сбор текстовых строк (bbox + средний fontsize) =====
+# ===== Сбор «чистых» текстовых строк =====
+_PUNCT_ONLY_RE = re.compile(r"^[\s\.\,\-\–\—\·•:;…]+$")
+
+def _is_noise_line(line):
+    """Отбрасываем микролинии/мусор."""
+    fs = float(line.get("fontsize") or 0)
+    x0,y0,x1,y1 = line["bbox"]
+    h = max(0.0, y1 - y0)
+    txt = (line.get("text") or "").strip()
+    # критерии шума:
+    if fs < 6.0:                        # слишком маленький кегль
+        return True
+    if h < mm_to_pt(2.0):               # слишком низкий bbox
+        return True
+    if len(txt) == 0:                   # пусто
+        return True
+    if _PUNCT_ONLY_RE.match(txt):       # только знаки/пробелы
+        return True
+    return False
+
 def collect_text_lines(page):
-    """Собирает строки текста со средним кеглем по span'ам и bbox строки."""
+    """
+    Собирает строки текста:
+      - bbox строки,
+      - средний кегль по span'ам,
+      - объединённый текст строки.
+    """
     lines = []
     d = page.get_text("dict")
     for b in d.get("blocks", []):
@@ -116,45 +148,108 @@ def collect_text_lines(page):
             xs1 = [s["bbox"][2] for s in spans]
             ys1 = [s["bbox"][3] for s in spans]
             bx = (min(xs0), min(ys0), max(xs1), max(ys1))
+            # средний кегль
             fs = sum(float(s.get("size", 0)) for s in spans) / max(1, len(spans))
-            lines.append({"bbox": bx, "fontsize": fs})
+            # текст строки (склеим спаны)
+            txt = "".join(s.get("text", "") for s in spans)
+            line = {"bbox": bx, "fontsize": fs, "text": txt}
+            if not _is_noise_line(line):
+                lines.append(line)
     return lines
 
+def _nearest_valid_line_above(
+    fig_bbox,
+    lines,
+    *,
+    min_overlap_mm=10.0,
+    max_x_gap_mm=15.0,
+    max_center_dx_mm=25.0
+):
+    """
+    Возвращает ближайшую по вертикали ВАЛИДНУЮ строку над картинкой.
+    Приоритет выбора:
+      1) есть перекрытие по X >= min_overlap_mm;
+      2) иначе — близко по X: x_gap <= max_x_gap_mm ИЛИ |dx центров| <= max_center_dx_mm;
+      3) иначе — любая валидная строка (антишум уже применён).
+    """
+    x0f, y0f, x1f, y1f = fig_bbox
+    min_ol_pt   = mm_to_pt(min_overlap_mm)
+    max_gap_pt  = mm_to_pt(max_x_gap_mm)
+    max_cdx_pt  = mm_to_pt(max_center_dx_mm)
 
-# ===== Проверка «пустой строки» ПЕРЕД картинкой для 1 колонки, межстрочник 1.5 =====
+    overlap_cand = []
+    near_cand = []
+    any_cand = []
+
+    fx_c = (x0f + x1f) / 2.0
+
+    for ln in lines:
+        x0,y0,x1,y1 = ln["bbox"]
+        if y1 > y0f:         # не выше картинки
+            continue
+        # 1) с перекрытием
+        if x_overlap(ln["bbox"], fig_bbox) >= min_ol_pt:
+            overlap_cand.append((ln, y0f - y1))
+            continue
+        # 2) близко по X
+        gap = x_gap(ln["bbox"], fig_bbox)
+        lx_c = (x0 + x1) / 2.0
+        cdx = abs(lx_c - fx_c)
+        if (gap <= max_gap_pt) or (cdx <= max_cdx_pt):
+            near_cand.append((ln, y0f - y1))
+            continue
+        # 3) просто валидная строка
+        any_cand.append((ln, y0f - y1))
+
+    def pick_best(cands):
+        if not cands:
+            return None, None
+        # берём с минимальным вертикальным зазором
+        ln, dy = min(cands, key=lambda t: t[1])
+        return ln, dy
+
+    ln, dy = pick_best(overlap_cand)
+    if ln is not None:
+        return ln, dy
+    ln, dy = pick_best(near_cand)
+    if ln is not None:
+        return ln, dy
+    ln, dy = pick_best(any_cand)
+    if ln is not None:
+        return ln, dy
+    return None, 0.0
+
+# ===== Проверка «пустой строки» ПЕРЕД картинкой (1 колонка, 1.5 межстрочник) =====
 def check_empty_line_above(page, fig_bbox, page_rect, work_top_pt,
+                           work_left_pt, work_right_pt,
                            font_min_pt=12.0, font_max_pt=14.0,
                            first_elem_top_thresh_mm=5.0,
                            lines=None):
     """
     Возвращает None, если всё ок/неприменимо, иначе — текст ошибки.
 
-    Логика:
-      - Находим БЛИЖАЙШУЮ по вертикали строку ВЫШЕ рисунка (без проверок по X).
-      - Требуем расстояние >= 1.5 * fontsize; fontsize жёстко в диапазоне 12–14 pt.
-      - Если строк сверху нет и верх рисунка <= 5 мм от верха рабочей области — проверку не выполняем.
+    Алгоритм:
+      1) Собираем «чистые» строки (без мусора).
+      2) Ищем ближайшую ВЫШЕ картинки:
+         a) с перекрытием по X (≥ 10 мм);
+         b) если нет — рядом по X (x_gap ≤ 15 мм ИЛИ центры ближе 25 мм);
+         c) если нет — любую валидную строку (антишум уже отсеял мусор).
+      3) Требуем gap >= 1.5 * fontsize, fontsize ∈ [12;14] pt.
+      4) Если строк сверху нет и картинка близко к верхнему полю (≤ 5 мм) — пропускаем.
     """
     x0, y0, x1, y1 = fig_bbox
 
     if lines is None:
         lines = collect_text_lines(page)
 
-    # Ближайшая строка выше по вертикали
-    above = None
-    best_dy = None
-    for ln in lines:
-        bx = ln["bbox"]
-        if bx[3] <= y0:
-            dy = y0 - bx[3]  # зазор от низа строки до верха рисунка
-            if best_dy is None or dy < best_dy:
-                above = ln
-                best_dy = dy
+    above, best_dy = _nearest_valid_line_above(fig_bbox, lines)
 
-    # Нет строки сверху — допускаем «первый элемент»
+    # Нет валидной строки сверху — допускаем «первый элемент» при близости к верху
     if not above:
         if (y0 - work_top_pt) <= mm_to_pt(first_elem_top_thresh_mm):
             return None
-        return None  # нечего измерять — мягко пропускаем
+        # строк нет — мягко пропускаем
+        return None
 
     # Требуемый зазор = 1.5 * fontsize (fontsize в [12;14] pt)
     fs = float(above["fontsize"]) if above["fontsize"] > 0 else font_min_pt
@@ -166,8 +261,6 @@ def check_empty_line_above(page, fig_bbox, page_rect, work_top_pt,
         return (f"Нет пустой строки перед рисунком: расстояние "
                 f"{pt_to_mm(actual_gap_pt):.1f} мм, требуется ≥ {pt_to_mm(required_gap_pt):.1f} мм (межстрочник 1.5)")
     return None
-
-
 
 def choose_repr(a, b):
     # репрезентативный путь группы
@@ -253,8 +346,6 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
     """
     entries = []
     try:
-        # Если у вас старая версия PyMuPDF — параметр extended может быть недоступен.
-        # Тогда замените на: drawings = page.get_drawings()
         drawings = page.get_drawings(extended=True)
     except TypeError:
         drawings = page.get_drawings()
@@ -274,7 +365,6 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
             "stroke_opacity": d.get("stroke_opacity", 1.0) if hasattr(d, "get") else None,
             "fill_opacity": d.get("fill_opacity", 1.0) if hasattr(d, "get") else None,
         }
-        # если extended недоступен, is_visible_path всё равно корректно отсеет "без stroke/fill"
         if is_visible_path(entry):
             entries.append(entry)
 
@@ -291,7 +381,6 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
                 continue
             filtered.append(e)
         else:
-            # strict intersect
             if any(bboxes_intersect(eb, tb) for tb in table_bboxes):
                 continue
             filtered.append(e)
@@ -319,11 +408,11 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                  table_exclude_mode="intersect", iou_threshold=0.30, vector_annotate_center=True):
     """
     Проверка графики:
-      1) Растровые изображения (blocks type==1): выход за поля + центровка (как было).
-      2) Вектор: видимые пути (extended=True, если доступно) -> группировка -> исключение таблиц ->
+      1) Растровые изображения (blocks type==1): выход за поля + центровка.
+      2) Вектор: видимые пути -> группировка -> исключение таблиц ->
          проверка выхода за поля и (для крупных фигур) центровка.
 
-    Новое: в админ-лог выводятся размеры всех сгруппированных векторных объектов.
+    В админ-лог выводятся размеры всех сгруппированных векторных объектов.
     """
     if table_bboxes_by_page is None:
         table_bboxes_by_page = {}
@@ -356,7 +445,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                     x0, y0, x1, y1 = block["bbox"]
                     errs = []
 
-                    # Выход за поля (с учетом page.rect)
+                    # Выход за поля
                     if (x0 < work_left or x1 > work_right or
                         y0 < work_top  or y1 > work_bottom):
                         errs.append("Рисунок выходит за поля")
@@ -364,26 +453,26 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                     # Центрирование по рабочему полю (допуск в pt)
                     work_cx = (work_left + work_right) / 2.0
                     obj_cx  = (x0 + x1) / 2.0
-                    if abs(obj_cx - work_cx) > 2:  # как у тебя
+                    if abs(obj_cx - work_cx) > 2:
                         errs.append("Рисунок должен быть выровнен по центру без абзацного отступа")
 
-                    # ПУСТАЯ СТРОКА ПЕРЕД КАРТИНКОЙ
+                    # ПУСТАЯ СТРОКА ПЕРЕД КАРТИНКОЙ (антишум + «короткие строки»)
                     gap_err = check_empty_line_above(
                         page, (x0, y0, x1, y1), rect,
                         work_top_pt=work_top,
+                        work_left_pt=work_left,
+                        work_right_pt=work_right,
                         font_min_pt=12.0, font_max_pt=14.0,
                         first_elem_top_thresh_mm=5.0,
-                        lines=text_lines,                # ← кешированные строки
+                        lines=text_lines,
                     )
                     if gap_err:
                         errs.append(gap_err)
 
-        
                     if errs:
                         has_error = True
                         msg = f"[Стр. {page_num}] Растровый рисунок: " + "; ".join(errs)
                         admin_lines.append(msg)
-                        # аннотация в верхний левый угол растра
                         ann_point = fitz.Point(x0, y0)
                         ann = page.add_text_annot(ann_point, "\n".join(errs))
                         ann.set_info(title="Сервис нормоконтроля", content=msg)
@@ -403,7 +492,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             f"[VectorMuPDF][Стр. {page_num}] видимых путей сгруппировано: {len(groups)} логических объектов"
         )
 
-        # ===== ДОП. ОТЛАДОЧНЫЙ ЛОГ РАЗМЕРОВ ВЕКТОРНЫХ ОБЪЕКТОВ =====
+        # ===== ДОП. ЛОГ РАЗМЕРОВ ВЕКТОРНЫХ ОБЪЕКТОВ =====
         page_area = pw * ph
         admin_lines.append(
             f"[VectorMuPDF][Стр. {page_num}] объекты: {len(groups)} (размеры: w×h pt | w×h мм | area %)"
@@ -446,7 +535,6 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         if small_objs:
             admin_lines.append("    Мелкие/маркерные объекты:")
             admin_lines.extend(small_objs)
-        # ===== КОНЕЦ ДОП. ЛОГА =====
 
         # Основные проверки/аннотации по группам
         for g in groups:
@@ -458,10 +546,10 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             is_marker_like = (w <= mm_to_pt(MARKER_MAX_W_MM) and h <= mm_to_pt(MARKER_MAX_H_MM))
             if is_marker_like:
                 continue
-        
+
             errs = []
 
-            # Выход за поля (учитываем page.rect)
+            # Выход за поля
             if (x0 < work_left or x1 > work_right or
                 y0 < work_top  or y1 > work_bottom):
                 errs.append("Графический объект выходит за поля")
@@ -483,10 +571,12 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                         f"Графический объект должен быть выровнен по центру "
                         f"(смещение {dx_mm:+.1f} мм, допуск ±{CENTER_TOL_CM*10:.0f} мм)"
                     )
-            
+
                 gap_err = check_empty_line_above(
                     page, g["bbox"], rect,
                     work_top_pt=work_top,
+                    work_left_pt=work_left,
+                    work_right_pt=work_right,
                     font_min_pt=12.0, font_max_pt=14.0,
                     first_elem_top_thresh_mm=5.0,
                     lines=text_lines,
@@ -499,13 +589,9 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                 msg = f"[Стр. {page_num}] Векторный объект: " + "; ".join(errs)
                 admin_lines.append(msg)
 
-                # точка аннотации: центр bbox или верхний левый угол — на выбор
-                if vector_annotate_center:
-                    cx, cy = bbox_center(g["bbox"])
-                    ann_point = fitz.Point(cx, cy)
-                else:
-                    ann_point = fitz.Point(x0, y0)
-
+                # точка аннотации
+                cx, cy = bbox_center(g["bbox"])
+                ann_point = fitz.Point(cx, cy) if vector_annotate_center else fitz.Point(x0, y0)
                 ann = page.add_text_annot(ann_point, "\n".join(errs))
                 ann.set_info(title="Сервис нормоконтроля", content=msg)
                 ann.update()
