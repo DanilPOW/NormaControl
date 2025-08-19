@@ -491,7 +491,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
 
         raster_count = len(raster_blocks)
         # допуск схожести верхней координаты: ~0.7 мм
-        y_tol_pt = mm_to_pt(0.7)
+        y_tol_pt = mm_to_pt(50.7)
         raster_rows = group_rasters_by_row(raster_blocks, y_tol_pt=y_tol_pt)
         grouped_raster_count = len(raster_rows)
 
