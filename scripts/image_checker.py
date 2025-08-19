@@ -161,58 +161,58 @@ def _nearest_valid_line_above(
     fig_bbox,
     lines,
     *,
-    # перекрытия по X не требуем
-    max_x_gap_mm=15.0,        # допустимый разрыв между интервалами по X
-    max_center_dx_mm=25.0,    # допустимое расстояние между центрами по X
-    max_edge_dx_mm=50.0,      # НОВОЕ: расстояние от центра фигуры до ближайшей кромки строки
-    y_tol_pt=1.0              # НОВОЕ: вертикальный допуск (~0.35 мм)
+    mode="global",           # "global" = игнорировать X, искать по всей ширине
+    max_x_gap_mm=15.0,       # оставлены на случай mode="local"
+    max_center_dx_mm=25.0,   # —//—
+    max_edge_dx_mm=50.0,     # —//—
+    y_tol_pt=1.5             # вертикальный допуск (~0.53 мм) на микроперекрытие по Y
 ):
     """
     Возвращает ближайшую по вертикали валидную строку над картинкой.
-    Приоритет:
-      1) строки «рядом по X»: x_gap ≤ max_x_gap_mm ИЛИ |dx центров| ≤ max_center_dx_mm
-         ИЛИ edge‑distance ≤ max_edge_dx_mm;
-      2) иначе — любая валидная строка выше.
+    mode="global": игнорируем X полностью, берём по минимальному dy среди всех строк с y1 <= y0+tol.
+    mode="local":  (резерв) учитывает близость по X.
     """
     x0f, y0f, x1f, y1f = fig_bbox
-    max_gap_pt   = mm_to_pt(max_x_gap_mm)
-    max_cdx_pt   = mm_to_pt(max_center_dx_mm)
-    max_edge_pt  = mm_to_pt(max_edge_dx_mm)
 
-    near_cand = []
-    any_cand  = []
+    # --- ГЛОБАЛЬНЫЙ РЕЖИМ (вся ширина) ---
+    if mode == "global":
+        best, best_dy = None, None
+        for ln in lines:
+            x0, y0, x1, y1 = ln["bbox"]
+            if y1 > (y0f + y_tol_pt):
+                continue  # строка не выше (с учётом допуска)
+            dy = max(0.0, y0f - y1)
+            if best_dy is None or dy < best_dy:
+                best, best_dy = ln, dy
+        return best, (best_dy or 0.0)
 
+    # --- ЛОКАЛЬНЫЙ РЕЖИМ (на всякий случай сохраним прежнюю логику) ---
+    def mm_to_pt(mm): return mm * 2.834646
+    max_gap_pt  = mm_to_pt(max_x_gap_mm)
+    max_cdx_pt  = mm_to_pt(max_center_dx_mm)
+    max_edge_pt = mm_to_pt(max_edge_dx_mm)
     fx_c = (x0f + x1f) / 2.0
 
+    def x_gap(a, b):
+        return max(0.0, max(a[0]-b[2], b[0]-a[2]))
+
+    near_cand, any_cand = [], []
     for ln in lines:
         x0, y0, x1, y1 = ln["bbox"]
-
-        # Допускаем микроперекрытие по Y, чтобы не терять строку "вровень" с фигурой
         if y1 > (y0f + y_tol_pt):
             continue
-
         gap = x_gap(ln["bbox"], fig_bbox)
         lx_c = (x0 + x1) / 2.0
         cdx = abs(lx_c - fx_c)
-
-        # расстояние от центра фигуры до ближайшей кромки строки
         edge_dx = min(abs(fx_c - x0), abs(fx_c - x1))
-
-        dy = max(0.0, y0f - y1)  # вертикальный зазор (без отрицательных)
-
+        dy = max(0.0, y0f - y1)
         if (gap <= max_gap_pt) or (cdx <= max_cdx_pt) or (edge_dx <= max_edge_pt):
             near_cand.append((dy, ln))
         else:
             any_cand.append((dy, ln))
-
-    # берём с минимальным вертикальным зазором
-    near_cand.sort(key=lambda t: t[0])
-    any_cand.sort(key=lambda t: t[0])
-
-    if near_cand:
-        return near_cand[0][1], near_cand[0][0]
-    if any_cand:
-        return any_cand[0][1], any_cand[0][0]
+    near_cand.sort(key=lambda t: t[0]); any_cand.sort(key=lambda t: t[0])
+    if near_cand: return near_cand[0][1], near_cand[0][0]
+    if any_cand:  return any_cand[0][1], any_cand[0][0]
     return None, 0.0
 
 # ===== Проверка «пустой строки» ПЕРЕД картинкой (1 колонка, 1.5 межстрочник) =====
@@ -238,7 +238,7 @@ def check_empty_line_above(page, fig_bbox, page_rect, work_top_pt,
     if lines is None:
         lines = collect_text_lines(page)
 
-    above, best_dy = _nearest_valid_line_above(fig_bbox, lines)
+    above, best_dy = _nearest_valid_line_above(fig_bbox, lines, mode="global", y_tol_pt=1.5)
 
     # Нет валидной строки сверху — допускаем «первый элемент» при близости к верху
     if not above:
