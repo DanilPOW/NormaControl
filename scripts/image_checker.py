@@ -314,6 +314,53 @@ def group_paths(paths):
 
     return groups
 
+def group_rasters_by_row(raster_blocks, y_tol_pt):
+    """
+    Группирует растровые картинки в «ряды» по близости верхней координаты (y0).
+    Возвращает список групп, где у каждой есть:
+      - "bbox": объединённый bbox,
+      - "items": список исходных блоков (каждый блок — dict с "bbox").
+    """
+    if not raster_blocks:
+        return []
+
+    # сортируем по y0 (верх)
+    raster_blocks_sorted = sorted(raster_blocks, key=lambda b: b["bbox"][1])
+
+    groups = []
+    # опорный y для текущей группы (будем вести как среднее по группе)
+    cur_items = []
+    cur_y_ref = None
+
+    def flush_group():
+        if not cur_items:
+            return
+        # объединяем bbox-ы
+        bx = cur_items[0]["bbox"]
+        for it in cur_items[1:]:
+            bx = bbox_union(bx, it["bbox"])
+        groups.append({"bbox": bx, "items": cur_items.copy()})
+
+    for blk in raster_blocks_sorted:
+        y0 = blk["bbox"][1]
+        if cur_y_ref is None:
+            cur_items = [blk]
+            cur_y_ref = y0
+            continue
+
+        # если верх нового блока близок к опорному y — кладём в текущую группу
+        if abs(y0 - cur_y_ref) <= y_tol_pt:
+            cur_items.append(blk)
+            # обновим опорный как среднее (чуть устойчивее к шуму)
+            cur_y_ref = sum(b["bbox"][1] for b in cur_items) / len(cur_items)
+        else:
+            flush_group()
+            cur_items = [blk]
+            cur_y_ref = y0
+
+    flush_group()
+    return groups
+
 # ===== Центровка относительно рабочей области =====
 def centered_status(group_bbox, page_rect,
                     left_pt=LEFT_MARGIN_PT, right_pt=RIGHT_MARGIN_PT,
@@ -432,52 +479,72 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         work_top    = rect.y0 + TOP_MARGIN_PT
         work_bottom = rect.y1 - BOTTOM_MARGIN_PT
 
-        # ---------- Растры ----------
-        raster_count = 0
+                # ---------- Растры (с группировкой по строкам) ----------
+        raster_blocks = []
         try:
             for block in page.get_text("dict").get("blocks", []):
-                if block.get("type") == 1:
-                    raster_count += 1
+                if block.get("type") == 1 and "bbox" in block:
                     x0, y0, x1, y1 = block["bbox"]
-                    errs = []
-
-                    # Выход за поля
-                    if (x0 < work_left or x1 > work_right or
-                        y0 < work_top  or y1 > work_bottom):
-                        errs.append("Рисунок выходит за поля")
-
-                    # Центрирование по рабочему полю (допуск в pt)
-                    work_cx = (work_left + work_right) / 2.0
-                    obj_cx  = (x0 + x1) / 2.0
-                    if abs(obj_cx - work_cx) > 2:
-                        errs.append("Рисунок должен быть выровнен по центру без абзацного отступа")
-
-                    # ПУСТАЯ СТРОКА ПЕРЕД КАРТИНКОЙ (антишум + «короткие строки»)
-                    gap_err = check_empty_line_above(
-                        page, (x0, y0, x1, y1), rect,
-                        work_top_pt=work_top,
-                        work_left_pt=work_left,
-                        work_right_pt=work_right,
-                        font_min_pt=12.0, font_max_pt=14.0,
-                        first_elem_top_thresh_mm=5.0,
-                        lines=text_lines,
-                    )
-                    if gap_err:
-                        errs.append(gap_err)
-
-                    if errs:
-                        has_error = True
-                        msg = f"[Стр. {page_num}] Растровый рисунок: " + "; ".join(errs)
-                        admin_lines.append(msg)
-                        ann_point = fitz.Point(x0, y0)
-                        ann = page.add_text_annot(ann_point, "\n".join(errs))
-                        ann.set_info(title="Сервис нормоконтроля", content=msg)
-                        ann.update()
+                    raster_blocks.append({"bbox": (x0, y0, x1, y1)})
         except Exception as e:
-            admin_lines.append(f"[image_checker] raster pass error on page {page_num}: {e}")
+            admin_lines.append(f"[image_checker] raster collect error on page {page_num}: {e}")
+
+        raster_count = len(raster_blocks)
+        # допуск схожести верхней координаты: ~0.7 мм
+        y_tol_pt = mm_to_pt(0.7)
+        raster_rows = group_rasters_by_row(raster_blocks, y_tol_pt=y_tol_pt)
+        grouped_raster_count = len(raster_rows)
+
+        # Лог по количеству
+        vector_summary_lines.append(
+            f"[Raster][Стр. {page_num}] найдено {raster_count} растровых объектов, "
+            f"сгруппировано в {grouped_raster_count} ряд(ов)"
+        )
+
+        try:
+            for ri, row in enumerate(raster_rows, 1):
+                x0, y0, x1, y1 = row["bbox"]
+                errs = []
+
+                # Выход за поля
+                if (x0 < work_left or x1 > work_right or
+                    y0 < work_top  or y1 > work_bottom):
+                    errs.append("Рисунок(и) выходит(ят) за поля")
+
+                # Центрирование по рабочему полю (допуск в pt)
+                work_cx = (work_left + work_right) / 2.0
+                obj_cx  = (x0 + x1) / 2.0
+                if abs(obj_cx - work_cx) > 2:
+                    errs.append("Рисунок(и) должен(ы) быть выровнен(ы) по центру без абзацного отступа")
+
+                # ПУСТАЯ СТРОКА ПЕРЕД КАРТИНКОЙ — проверка над объединённым bbox
+                gap_err = check_empty_line_above(
+                    page, (x0, y0, x1, y1), rect,
+                    work_top_pt=work_top,
+                    work_left_pt=work_left,
+                    work_right_pt=work_right,
+                    font_min_pt=12.0, font_max_pt=14.0,
+                    first_elem_top_thresh_mm=5.0,
+                    lines=text_lines,
+                )
+                if gap_err:
+                    errs.append(gap_err)
+
+                if errs:
+                    has_error = True
+                    msg = (f"[Стр. {page_num}] Группа растровых рисунков (#{ri}, элементов: {len(row['items'])}): "
+                           + "; ".join(errs))
+                    admin_lines.append(msg)
+                    ann_point = fitz.Point(x0, y0)
+                    ann = page.add_text_annot(ann_point, "\n".join(errs))
+                    ann.set_info(title="Сервис нормоконтроля", content=msg)
+                    ann.update()
+        except Exception as e:
+            admin_lines.append(f"[image_checker] raster group pass error on page {page_num}: {e}")
 
         total_raster_images += raster_count
-        page_raster_counts.append((page_num, raster_count))
+        page_raster_counts.append((page_num, raster_count, grouped_raster_count))
+
 
         # ---------- Вектор ----------
         tbl_bboxes = table_bboxes_by_page.get(page_num, [])
@@ -596,9 +663,12 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             error_pages.append(page_num)
 
     # --- отчёты
-    counts_lines = [f"Стр. {n}: растровых картинок {c}" for n, c in page_raster_counts]
+    counts_lines = [
+        f"Стр. {n}: растровых картинок {orig}, рядов (после склейки) {grp}"
+        for n, orig, grp in page_raster_counts
+    ]
     counts_summary = (
-        f"Найдено {total_raster_images} растровых картинок в документе\n" +
+        f"Найдено {total_raster_images} растровых картинок в документе (до склейки)\n" +
         "\n".join(counts_lines)
     )
 
