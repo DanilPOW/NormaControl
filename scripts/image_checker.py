@@ -503,19 +503,39 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
 
         try:
             for ri, row in enumerate(raster_rows, 1):
+                # --- NEW: проверка "в одной строке две картинки с разными y" ---
+                # сортируем картинки в ряду слева-направо
+                items_sorted = sorted(row["items"], key=lambda it: it["bbox"][0])
+                if len(items_sorted) >= 2:
+                    y_misaligned_tol_pt = mm_to_pt(1.0)  # допуск по "разным y", можно 0.7–1.5 мм
+                    base_y0 = items_sorted[0]["bbox"][1]
+                    for idx_in_row, it in enumerate(items_sorted[1:], start=2):
+                        x0i, y0i, x1i, y1i = it["bbox"]
+                        if abs(y0i - base_y0) > y_misaligned_tol_pt:
+                            has_error = True
+                            warn = "Каждый рисунок должен находиться в отдельной строке и иметь свою подрисуночную подпись."
+                            admin_lines.append(
+                                f"[Стр. {page_num}] Растровый ряд #{ri}: элемент #{idx_in_row} смещён по вертикали "
+                                f"(Δy={pt_to_mm(abs(y0i - base_y0)):.1f} мм). {warn}"
+                            )
+                            ann = page.add_text_annot(fitz.Point(x0i, y0i), warn)
+                            ann.set_info(title="Сервис нормоконтроля", content=warn)
+                            ann.update()
+                # --- /NEW ---
+
                 x0, y0, x1, y1 = row["bbox"]
                 errs = []
 
                 # Выход за поля
                 if (x0 < work_left or x1 > work_right or
                     y0 < work_top  or y1 > work_bottom):
-                    errs.append("Рисунок(и) выходит(ят) за поля")
+                    errs.append("Рисунок(и) выходит(ят) за поля.")
 
                 # Центрирование по рабочему полю (допуск в pt)
                 work_cx = (work_left + work_right) / 2.0
                 obj_cx  = (x0 + x1) / 2.0
                 if abs(obj_cx - work_cx) > 2:
-                    errs.append("Рисунок(и) должен(ы) быть выровнен(ы) по центру без абзацного отступа")
+                    errs.append("Рисунок(и) должен(ы) быть выровнен(ы) по центру без абзацного отступа.")
 
                 # ПУСТАЯ СТРОКА ПЕРЕД КАРТИНКОЙ — проверка над объединённым bbox
                 gap_err = check_empty_line_above(
