@@ -552,7 +552,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
 
                 if errs:
                     has_error = True
-                    msg = (f"[Стр. {page_num}] Группа растровых рисунков (#{ri}, элементов: {len(row['items'])}): "
+                    msg = (f""
                            + "; ".join(errs))
                     admin_lines.append(msg)
                     ann_point = fitz.Point(x0, y0)
