@@ -161,56 +161,48 @@ def _nearest_valid_line_above(
     fig_bbox,
     lines,
     *,
-    min_overlap_mm=10.0,
-    max_x_gap_mm=15.0,
-    max_center_dx_mm=25.0
+    # перекрытие по X больше не требуется
+    max_x_gap_mm=15.0,        # насколько «рядом» по X допускаем (зазор между интервалами)
+    max_center_dx_mm=25.0     # допускаемое расстояние между центрами по X
 ):
     """
     Возвращает ближайшую по вертикали ВАЛИДНУЮ строку над картинкой.
     Приоритет выбора:
-      1) есть перекрытие по X >= min_overlap_mm;
-      2) иначе — близко по X: x_gap <= max_x_gap_mm ИЛИ |dx центров| <= max_center_dx_mm;
-      3) иначе — любая валидная строка (антишум уже применён).
+      1) «рядом по X»: x_gap ≤ max_x_gap_mm ИЛИ |dx центров| ≤ max_center_dx_mm;
+      2) иначе — любая валидная строка выше.
+    Требование перекрытия по X полностью убрано, чтобы учитывать короткие
+    финальные строки абзацев, заканчивающиеся в начале строки.
     """
     x0f, y0f, x1f, y1f = fig_bbox
-    min_ol_pt   = mm_to_pt(min_overlap_mm)
     max_gap_pt  = mm_to_pt(max_x_gap_mm)
     max_cdx_pt  = mm_to_pt(max_center_dx_mm)
 
-    overlap_cand = []
     near_cand = []
-    any_cand = []
+    any_cand  = []
 
     fx_c = (x0f + x1f) / 2.0
 
     for ln in lines:
         x0,y0,x1,y1 = ln["bbox"]
-        if y1 > y0f:         # не выше картинки
+        if y1 > y0f:         # строка должна быть ВЫШЕ картинки
             continue
-        # 1) с перекрытием
-        if x_overlap(ln["bbox"], fig_bbox) >= min_ol_pt:
-            overlap_cand.append((ln, y0f - y1))
-            continue
-        # 2) близко по X
+
+        # Кандидаты «рядом по X»
         gap = x_gap(ln["bbox"], fig_bbox)
         lx_c = (x0 + x1) / 2.0
         cdx = abs(lx_c - fx_c)
         if (gap <= max_gap_pt) or (cdx <= max_cdx_pt):
             near_cand.append((ln, y0f - y1))
-            continue
-        # 3) просто валидная строка
-        any_cand.append((ln, y0f - y1))
+        else:
+            any_cand.append((ln, y0f - y1))
 
     def pick_best(cands):
         if not cands:
             return None, None
-        # берём с минимальным вертикальным зазором
+        # выбираем с минимальным вертикальным зазором
         ln, dy = min(cands, key=lambda t: t[1])
         return ln, dy
 
-    ln, dy = pick_best(overlap_cand)
-    if ln is not None:
-        return ln, dy
     ln, dy = pick_best(near_cand)
     if ln is not None:
         return ln, dy
