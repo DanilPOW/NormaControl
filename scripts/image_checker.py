@@ -467,13 +467,13 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                 # Выход за поля
                 if (x0 < work_left or x1 > work_right or
                     y0 < work_top  or y1 > work_bottom):
-                    errs.append("Рисунок(и) выходит(ят) за поля.")
+                    errs.append("Рисунок выходит за поля.")
 
                 # Центрирование по рабочему полю (допуск в pt)
                 work_cx = (work_left + work_right) / 2.0
                 obj_cx  = (x0 + x1) / 2.0
                 if abs(obj_cx - work_cx) > 2:
-                    errs.append("Рисунок(и) должен(ы) быть выровнен(ы) по центру без абзацного отступа.")
+                    errs.append("Рисунок должен быть выровнен по центру без абзацного отступа.")
 
                 # ПУСТАЯ СТРОКА ПЕРЕД КАРТИНКОЙ
                 gap_err = check_empty_line_above(
