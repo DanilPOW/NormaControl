@@ -337,6 +337,73 @@ def centered_status(group_bbox, page_rect,
     dx_mm = pt_to_mm(dx_pt)  # 1 мм = 2.834646 pt
     return is_centered, dx_mm
 
+def _reading_key_single_column(bbox, y_snap_mm=0.3):
+    """Ключ сортировки: сверху-вниз, слева-направо, со снапом по Y (≈0.3 мм)."""
+    x0,y0,x1,y1 = bbox
+    y_snap_pt = mm_to_pt(y_snap_mm)
+    y0s = round(y0 / y_snap_pt) * y_snap_pt
+    return (y0s, x0)
+
+def _collect_page_fig_candidates_single(page_rect, raster_rows, vector_groups):
+    """Единый список кандидатов на рисунок с теми же порогами, что и в проверках."""
+    def _is_figure(bx):
+        x0,y0,x1,y1 = bx
+        w = x1 - x0; h = y1 - y0
+        area_pct = (w*h) / (page_rect.width * page_rect.height + 1e-9) * 100.0
+        return (
+            w >= mm_to_pt(MIN_W_MM) and
+            h >= mm_to_pt(MIN_H_MM) and
+            area_pct >= MIN_AREA_PCT and
+            h >= mm_to_pt(THIN_LINE_MM) and
+            w >= mm_to_pt(THIN_LINE_MM)
+        )
+
+    items = []
+    for row in raster_rows:
+        if _is_figure(row["bbox"]):
+            items.append({"bbox": row["bbox"], "kind": "raster", "src": row})
+    for g in vector_groups:
+        if _is_figure(g["bbox"]):
+            items.append({"bbox": g["bbox"], "kind": "vector", "src": g})
+    return items
+
+def _enumerate_figures_single_column(pdf_document, raster_rows_by_page, vector_groups_by_page):
+    """
+    Возвращает:
+      all_figs: [{"page":n,"bbox":...,"kind":...,"src":...,"fig_index":k}, ...]
+      page_to_figs: {n: [..] в порядке на странице}
+    """
+    all_items = []
+    for i, page in enumerate(pdf_document):
+        page_num = i + 1
+        rect = page.rect
+        rows = raster_rows_by_page.get(page_num, [])
+        vgs  = vector_groups_by_page.get(page_num, [])
+
+        items = _collect_page_fig_candidates_single(rect, rows, vgs)
+        items.sort(key=lambda it: _reading_key_single_column(it["bbox"]))
+        for it in items:
+            it["page"] = page_num
+            all_items.append(it)
+
+    for idx, it in enumerate(all_items, start=1):
+        it["fig_index"] = idx
+
+    page_to_figs = {}
+    for it in all_items:
+        page_to_figs.setdefault(it["page"], []).append(it)
+    return all_items, page_to_figs
+
+def _match_fig_index(page_num, bbox, page_to_figs, tol_pt=1.5):
+    """Находим номер рисунка по bbox на странице с небольшим допуском по координатам."""
+    def _close(a,b,t): return abs(a-b) <= t
+    for it in page_to_figs.get(page_num, []):
+        x0,y0,x1,y1 = it["bbox"]
+        if (_close(x0,bbox[0],tol_pt) and _close(y0,bbox[1],tol_pt) and
+            _close(x1,bbox[2],tol_pt) and _close(y1,bbox[3],tol_pt)):
+            return it["fig_index"]
+    return None
+
 def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="intersect", iou_threshold=0.30):
     entries = []
     try:
@@ -407,6 +474,8 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
     total_raster_images = 0
     page_raster_counts = []
     vector_summary_lines = []
+    raster_rows_by_page = {}
+    vector_groups_by_page = {}
 
     for idx, page in enumerate(pdf_document):
         page_num = idx + 1
@@ -434,6 +503,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         # допуск схожести верхней координаты: ~0.7 мм
         y_tol_pt = mm_to_pt(50.7)
         raster_rows = group_rasters_by_row(raster_blocks, y_tol_pt=y_tol_pt)
+        raster_rows_by_page[page_num] = raster_rows
         grouped_raster_count = len(raster_rows)
 
         # Лог по количеству
@@ -507,6 +577,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         tbl_bboxes = table_bboxes_by_page.get(page_num, [])
         groups = _vector_groups(page, tbl_bboxes, debug_draw=debug_draw,
                                 table_exclude_mode=table_exclude_mode, iou_threshold=iou_threshold)
+        vector_groups_by_page[page_num] = groups
 
         vector_summary_lines.append(
             f"[VectorMuPDF][Стр. {page_num}] видимых путей сгруппировано: {len(groups)} логических объектов"
@@ -618,6 +689,19 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         if has_error:
             error_pages.append(page_num)
 
+
+    all_figs, page_to_figs = _enumerate_figures_single_column(
+        pdf_document, raster_rows_by_page, vector_groups_by_page
+    )
+    if all_figs:
+        admin_lines.append("\n[Нумерация рисунков]")
+        for it in all_figs:
+            x0, y0, x1, y1 = it["bbox"]
+            admin_lines.append(
+                f"  • Рис. #{it['fig_index']} — стр. {it['page']} — "
+                f"{'растровый' if it['kind']=='raster' else 'векторный'} — "
+                f"bbox=({pt_to_mm(x0):.1f},{pt_to_mm(y0):.1f})–({pt_to_mm(x1):.1f},{pt_to_mm(y1):.1f}) мм"
+            )
     counts_lines = [
         f"Стр. {n}: растровых картинок {orig}, рядов (после склейки) {grp}"
         for n, orig, grp in page_raster_counts
