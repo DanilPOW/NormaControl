@@ -241,32 +241,50 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox, tol_px: float = 2.0, 
 # ФОРМАТИРОВАНИЕ ЛОГА ПО ЯЧЕЙКЕ
 # ==========================
 
-def _abbr_align(a: Optional[Alignment]) -> Optional[str]:
-    """Вернуть краткую метку выравнивания вида H/V => L|C|R / T|M|B"""
+def _abbr_align(a: Optional[object]) -> Optional[str]:
+    """
+    Вернуть краткую метку выравнивания вида H/V => L|C|R / T|M|B.
+    Поддерживает и dataclass Alignment, и dict {"horizontal":..., "vertical":...}.
+    """
     if not a:
         return None
-    h = {"left": "L", "center": "C", "right": "R"}.get(a.horizontal, "?")
-    v = {"top": "T", "middle": "M", "bottom": "B"}.get(a.vertical, "?")
-    return f"{h}/{v}"
+
+    # вытащить h/v из объекта или словаря
+    if isinstance(a, dict):
+        h = a.get("horizontal")
+        v = a.get("vertical")
+    else:
+        h = getattr(a, "horizontal", None)
+        v = getattr(a, "vertical", None)
+
+    if not h or not v:
+        return None
+
+    h_abbr = {"left": "L", "center": "C", "right": "R"}.get(h, "?")
+    v_abbr = {"top": "T", "middle": "M", "bottom": "B"}.get(v, "?")
+    return f"{h_abbr}/{v_abbr}"
 
 def _cell_brief(cell_info: Dict, r: int, c: int) -> str:
     """
-    Вернуть краткий отчёт по ячейке:
-    [r,c] T=C/M I=L/T V=R/B {F}   — где T/I/V — типы контента, F — пометка формулы
+    Краткий отчёт по ячейке:
+    [r,c] T=C/M I=L/T V=R/B {F}
     Отсутствующий тип не выводим.
     """
     parts = [f"[{r},{c}]"]
-    if cell_info.get("has_text") and cell_info.get("alignment_text"):
-        parts.append(f"T={_abbr_align(cell_info['alignment_text'])}")
-    if cell_info.get("has_images") and cell_info.get("alignment_image"):
-        parts.append(f"I={( _abbr_align(cell_info['alignment_image']) )}")
-    if cell_info.get("has_vectors") and cell_info.get("alignment_vector"):
-        parts.append(f"V={( _abbr_align(cell_info['alignment_vector']) )}")
+
+    t = _abbr_align(cell_info.get("alignment_text"))
+    i = _abbr_align(cell_info.get("alignment_image"))
+    v = _abbr_align(cell_info.get("alignment_vector"))
+
+    if t: parts.append(f"T={t}")
+    if i: parts.append(f"I={i}")
+    if v: parts.append(f"V={v}")
     if cell_info.get("is_formula_like"):
         parts.append("{F}")
-    # если вообще пусто
+
     if len(parts) == 1:
         parts.append("—")
+
     return " ".join(parts)
 
 
