@@ -450,6 +450,20 @@ def _cell_brief(cell_info: Dict, r: int, c: int) -> str:
 
 
 # ==========================
+# ТИХИЕ АННОТАЦИИ (как в другом скрипте)
+# ==========================
+
+def _add_text_annot_silent(page: fitz.Page, point_xy: Tuple[float, float], msg: str):
+    """Тихая точечная текстовая аннотация в стиле скрипта нумерации (без логов)."""
+    try:
+        ann = page.add_text_annot(fitz.Point(*point_xy), msg)
+        ann.set_info(title="Сервис нормоконтроля", content=msg)
+        ann.update()
+    except Exception:
+        pass
+
+
+# ==========================
 # ОСНОВНАЯ ФУНКЦИЯ
 # ==========================
 
@@ -552,13 +566,18 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             "; ".join(errors)
                         )
                         error_pages.add(page_num)
+
+                        # --- Тихая точечная аннотация у верхнего левого угла таблицы ---
+                        ann_text = "Ошибки расположения таблицы:\n" + "\n".join(errors)
+                        _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), ann_text)
+
                     else:
                         admin_lines.append(
                             f"[Camelot][Стр. {page_num}][Табл. {tbl_idx}] bbox(miner)={t._bbox} | "
                             f"fitz={tbl_rect.x0:.1f},{tbl_rect.y0:.1f},{tbl_rect.x1:.1f},{tbl_rect.y1:.1f} | ✅Таблица корректно расположена"
                         )
 
-                    # ---------- важное: строим ЛОГИЧЕСКУЮ сетку (устойчиво к пере-детекту линий)
+                    # ---------- логическая сетка (устойчиво к пере-детекту линий)
                     X, Y = build_logical_grid(t, page_height, min_frac=0.30, eps=1.0)
                     rows = max(0, len(Y) - 1)
                     cols = max(0, len(X) - 1)
@@ -567,6 +586,9 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                     table_report = {"shape": (rows, cols), "cells": []}
 
                     admin_lines.append(f"[Cells][Стр. {page_num}][Табл. {tbl_idx}] Размер: {rows}×{cols}")
+
+                    # флаг несоблюдения центровки хотя бы в одной ячейке
+                    table_has_miscenter = False
 
                     for r in range(rows):
                         row_cells = []
@@ -578,6 +600,12 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
                             # извлекаем содержимое с внутренним отступом
                             content = extract_cell_content(page, cell_rect, tol_px=tol_px, padding=cell_padding)
+
+                            # если любой тип содержимого не по центру — поднимем общий флаг
+                            for al in (content.alignment_text, content.alignment_image, content.alignment_vector):
+                                if al and not al.gaps.get("centered_ok", True):
+                                    table_has_miscenter = True
+                                    break
 
                             cell_info = {
                                 "cell_bbox": (cell_rect.x0, cell_rect.y0, cell_rect.x1, cell_rect.y1),
@@ -615,17 +643,25 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
                     page_tables.append(table_report)
 
+                    # если нашли нецентровку — одна тихая аннотация с правилом
+                    if table_has_miscenter:
+                        _add_text_annot_silent(
+                            page,
+                            (tbl_rect.x0, tbl_rect.y0),
+                            "Весь контент в ячейках должен находиться в центре ячейки"
+                        )
+                        error_pages.add(page_num)
+
             except Exception as e:
                 admin_lines.append(f"[Camelot] Ошибка: {e}")
 
     admin_lines.append(f"[Camelot] Обработано {camelot_tables_count} таблиц за {time.perf_counter() - t1:.2f} сек.")
 
-    # ---- Этап 3: отдельного повторного прохода по ячейкам не делаем —
-    #              анализ уже выполнен в Этапе 2, сразу после детекта таблицы.
-
     # ---- Итог
-    user_summary = (f"⚠️ Проверка таблиц: нарушения на страницах {', '.join(map(str, sorted(error_pages)))}"
-                    if error_pages else "✅ Проверка таблиц: нарушений не найдено")
+    if error_pages:
+        user_summary = "⚠️Проверка таблиц: обнаружены нарушения на стр " + ", ".join(map(str, sorted(error_pages)))
+    else:
+        user_summary = "✅Проверка таблиц"
 
     return {
         "user_summary": user_summary,
