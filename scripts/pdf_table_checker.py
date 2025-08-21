@@ -15,6 +15,7 @@ RIGHT_MARGIN_PT  = 1.5 * 28.35
 TOP_MARGIN_PT    = 2 * 28.35
 BOTTOM_MARGIN_PT = 2 * 28.35
 TOLERANCE_PT     = 2
+MM_TO_PT = 2.8346456693  # 1 мм = 2.8346 pt
 
 
 # ==========================
@@ -213,44 +214,42 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: 
     top_gap    = max(0.0, ty0 - cy0)
     bottom_gap = max(0.0, cy1 - ty1)
 
-    # Горизонталь
-    cell_mid_x = (cx0 + cx1) / 2
-    text_mid_x = (tx0 + tx1) / 2
-    center_gap = abs(cell_mid_x - text_mid_x)
+    # Центры
+    cell_mid_x = (cx0 + cx1) / 2.0
+    cell_mid_y = (cy0 + cy1) / 2.0
+    text_mid_x = (tx0 + tx1) / 2.0
+    text_mid_y = (ty0 + ty1) / 2.0
 
+    center_gap = abs(cell_mid_x - text_mid_x)
+    middle_gap = abs(cell_mid_y - text_mid_y)
+
+    # Базовое решение по осям
     if center_gap <= tol_px:
         h = "center"
-    elif abs(left_gap) <= tol_px and right_gap > tol_px:
+    elif left_gap <= right_gap:
         h = "left"
-    elif abs(right_gap) <= tol_px and left_gap > tol_px:
-        h = "right"
     else:
-        h = "left" if left_gap < right_gap else "right"
-
-    # Вертикаль
-    cell_mid_y = (cy0 + cy1) / 2
-    text_mid_y = (ty0 + ty1) / 2
-    middle_gap = abs(cell_mid_y - text_mid_y)
+        h = "right"
 
     if middle_gap <= tol_px:
         v = "middle"
-    elif abs(top_gap) <= tol_px and bottom_gap > tol_px:
+    elif top_gap <= bottom_gap:
         v = "top"
-    elif abs(bottom_gap) <= tol_px and top_gap > tol_px:
-        v = "bottom"
     else:
-        v = "top" if top_gap < bottom_gap else "bottom"
+        v = "bottom"
 
-    return Alignment(
-        horizontal=h,
-        vertical=v,
-        gaps={
-            "left": left_gap, "right": right_gap,
-            "top": top_gap, "bottom": bottom_gap,
-            "center_gap": center_gap, "middle_gap": middle_gap
-        }
-    )
+    centered_ok = (center_gap <= tol_px) and (middle_gap <= tol_px)
 
+    gaps = {
+        "left": left_gap, "right": right_gap,
+        "top": top_gap, "bottom": bottom_gap,
+        "center_gap": center_gap, "middle_gap": middle_gap,
+        "centered_ok": centered_ok,
+    }
+    if not centered_ok:
+        gaps["note"] = "Элемент в ячейке должен быть в центре ячейки"
+
+    return Alignment(horizontal=h, vertical=v, gaps=gaps)
 
 def looks_like_formula(text: str) -> bool:
     """
@@ -454,7 +453,7 @@ def _cell_brief(cell_info: Dict, r: int, c: int) -> str:
 # ОСНОВНАЯ ФУНКЦИЯ
 # ==========================
 
-def check_tables(pdf_path, pdf_document, start_page=2, tol_px=2.0, cell_padding=1.5):
+def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=1.5):
     """
     Возвращает:
       - user_summary
@@ -462,6 +461,7 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_px=2.0, cell_padding=
       - table_bboxes_by_page (fitz-координаты)
       - cell_analysis_by_page
     """
+    tol_px = float(tol_mm) * MM_TO_PT
     admin_lines = []
     error_pages = set()
     table_bboxes_by_page: Dict[int, List[Tuple[float, float, float, float]]] = {}
