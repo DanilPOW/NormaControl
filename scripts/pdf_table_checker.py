@@ -1,16 +1,21 @@
 # scripts/pdf_table_checker.py
-import camelot
 import time
-import pdfplumber
-import fitz  # PyMuPDF
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
 
-LEFT_MARGIN_PT = 3 * 28.35
-RIGHT_MARGIN_PT = 1.5 * 28.35
-TOP_MARGIN_PT = 2 * 28.35
+import camelot
+import pdfplumber
+import fitz  # PyMuPDF
+
+# --------------------------
+# Константы макета страницы
+# --------------------------
+LEFT_MARGIN_PT   = 3 * 28.35
+RIGHT_MARGIN_PT  = 1.5 * 28.35
+TOP_MARGIN_PT    = 2 * 28.35
 BOTTOM_MARGIN_PT = 2 * 28.35
-TOLERANCE_PT = 2
+TOLERANCE_PT     = 2
+
 
 # ==========================
 # ВСПОМОГАТЕЛЬНЫЕ СТРУКТУРЫ
@@ -32,33 +37,6 @@ class BBox:
     def height(self) -> float:
         return self.y1 - self.y0
 
-def bbox_area(b: BBox) -> float:
-    return max(0.0, b.width()) * max(0.0, b.height())
-
-def bbox_inset(b: BBox, pad: float) -> BBox:
-    return BBox(b.x0 + pad, b.y0 + pad, b.x1 - pad, b.y1 - pad)
-
-def bbox_intersection(a: BBox, b: BBox) -> Tuple[float, Optional[BBox]]:
-    x0 = max(a.x0, b.x0); y0 = max(a.y0, b.y0)
-    x1 = min(a.x1, b.x1); y1 = min(a.y1, b.y1)
-    if x1 <= x0 or y1 <= y0:
-        return 0.0, None
-    inter = BBox(x0, y0, x1, y1)
-    return bbox_area(inter), inter
-
-def bbox_iou(a: BBox, b: BBox) -> float:
-    inter_area, _ = bbox_intersection(a, b)
-    if inter_area <= 0:
-        return 0.0
-    return inter_area / (bbox_area(a) + bbox_area(b) - inter_area)
-
-def touches_cell_border(b: BBox, cell: BBox, tol: float = 1.2) -> bool:
-    """Элемент касается границы ячейки (рамка/штрих)."""
-    left   = abs(b.x0 - cell.x0) <= tol
-    right  = abs(b.x1 - cell.x1) <= tol
-    top    = abs(b.y0 - cell.y0) <= tol
-    bottom = abs(b.y1 - cell.y1) <= tol
-    return left or right or top or bottom
 
 @dataclass
 class Alignment:
@@ -85,6 +63,67 @@ class CellContent:
 # УТИЛИТЫ
 # ==========================
 
+def _unique_sorted(vals, eps=1.0):
+    """Кластеризуем координаты с допуском eps (pt), возвращаем отсортированные уникальные."""
+    vals = sorted(vals)
+    out = []
+    for v in vals:
+        if not out or abs(v - out[-1]) > eps:
+            out.append(v)
+    return out
+
+
+def build_logical_grid(table, page_height, min_frac=0.30, eps=1.0):
+    """
+    Строим логические ряды/колонки:
+    - собираем все x/y-границы из сырых ячеек Camelot (miner coords),
+    - кластеризуем (eps),
+    - считаем интервалы и отбрасываем слишком тонкие (< min_frac * медиана).
+    Возвращаем списки X и Y уже в fitz-координатах (y вниз).
+    """
+    # 1) все границы в miner-координатах
+    xs, ys = [], []
+    for row in table.cells:
+        for cell in row:
+            xs.extend([cell.x1, cell.x2])
+            ys.extend([cell.y1, cell.y2])
+
+    xs = _unique_sorted(xs, eps=eps)
+    ys = _unique_sorted(ys, eps=eps)
+
+    # 2) интервалы (miner: y растёт вверх)
+    col_widths = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
+    row_heights = [ys[i + 1] - ys[i] for i in range(len(ys) - 1)]
+
+    # медианы
+    import statistics as st
+    med_w = st.median(col_widths) if col_widths else 0
+    med_h = st.median(row_heights) if row_heights else 0
+
+    # 3) отбрасываем слишком тонкие интервалы
+    min_w = med_w * min_frac
+    min_h = med_h * min_frac
+
+    keep_x = [xs[0]] if xs else []
+    for i, w in enumerate(col_widths):
+        if w >= min_w:
+            keep_x.append(xs[i + 1])
+
+    keep_y = [ys[0]] if ys else []
+    for i, h in enumerate(row_heights):
+        if h >= min_h:
+            keep_y.append(ys[i + 1])
+
+    # 4) miner -> fitz (y вниз)
+    def miner_to_fitz_y(y_m): return float(page_height - y_m)
+    keep_y_fitz = [miner_to_fitz_y(y) for y in keep_y]
+    keep_y_fitz = keep_y_fitz[::-1]  # сверху вниз
+
+    keep_x_fitz = [float(x) for x in keep_x]
+
+    return keep_x_fitz, keep_y_fitz
+
+
 def bbox_union(b1: BBox, b2: BBox) -> BBox:
     return BBox(
         x0=min(b1.x0, b2.x0),
@@ -93,17 +132,53 @@ def bbox_union(b1: BBox, b2: BBox) -> BBox:
         y1=max(b1.y1, b2.y1),
     )
 
+
+def bbox_area(b: BBox) -> float:
+    return max(0.0, b.width()) * max(0.0, b.height())
+
+
+def bbox_inset(b: BBox, pad: float) -> BBox:
+    return BBox(b.x0 + pad, b.y0 + pad, b.x1 - pad, b.y1 - pad)
+
+
+def bbox_intersection(a: BBox, b: BBox) -> Tuple[float, Optional[BBox]]:
+    x0 = max(a.x0, b.x0); y0 = max(a.y0, b.y0)
+    x1 = min(a.x1, b.x1); y1 = min(a.y1, b.y1)
+    if x1 <= x0 or y1 <= y0:
+        return 0.0, None
+    inter = BBox(x0, y0, x1, y1)
+    return bbox_area(inter), inter
+
+
+def bbox_iou(a: BBox, b: BBox) -> float:
+    inter_area, _ = bbox_intersection(a, b)
+    if inter_area <= 0:
+        return 0.0
+    return inter_area / (bbox_area(a) + bbox_area(b) - inter_area)
+
+
+def touches_cell_border(b: BBox, cell: BBox, tol: float = 1.2) -> bool:
+    """Элемент касается границы ячейки (рамка/штрих)."""
+    left   = abs(b.x0 - cell.x0) <= tol
+    right  = abs(b.x1 - cell.x1) <= tol
+    top    = abs(b.y0 - cell.y0) <= tol
+    bottom = abs(b.y1 - cell.y1) <= tol
+    return left or right or top or bottom
+
+
 def fitz_rect_to_bbox(r: fitz.Rect) -> BBox:
     return BBox(r.x0, r.y0, r.x1, r.y1)
 
+
 def rect_reasonably_inside(elem: BBox, container: BBox, min_cover_ratio: float) -> bool:
     """
-    Считаем, что элемент принадлежит контейнеру, если пересечение покрывает
-    >= min_cover_ratio площади самого элемента (не по центру!).
+    Элемент принадлежит контейнеру, если площадь пересечения покрывает
+    >= min_cover_ratio площади самого элемента (а не по центру).
     """
     inter, _ = bbox_intersection(elem, container)
     ea = bbox_area(elem)
     return ea > 0 and (inter / ea) >= min_cover_ratio
+
 
 def camelot_to_fitz_bbox(cell, page_height: float) -> BBox:
     """
@@ -118,8 +193,11 @@ def camelot_to_fitz_bbox(cell, page_height: float) -> BBox:
         y1=float(page_height - y0_c),  # низ
     )
 
+
 def camelot_table_bbox_to_fitz(x0, y0, x1, y1, page_height: float) -> BBox:
+    # входные coords из t._bbox — в miner-системе
     return BBox(float(x0), float(page_height - y1), float(x1), float(page_height - y0))
+
 
 def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: float = 0.0) -> Alignment:
     # Учитываем «пэддинг» — отступы внутри ячейки
@@ -172,6 +250,7 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: 
             "center_gap": center_gap, "middle_gap": middle_gap
         }
     )
+
 
 def looks_like_formula(text: str) -> bool:
     """
@@ -235,7 +314,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                     continue
                 if rect_reasonably_inside(sb, inner, MIN_TEXT_COVER):
                     t = (span.get("text") or "").strip()
-                    if t:  # игнор пустых
+                    if t:
                         span_boxes.append(sb)
                         span_texts.append(t)
 
@@ -279,13 +358,13 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                     xs.extend([x0, x1]); ys.extend([y0, y1])
                 else:
                     for k in range(0, len(pts), 2):
-                        xs.append(pts[k]); ys.append(pts[k+1])
+                        xs.append(pts[k]); ys.append(pts[k + 1])
             if xs and ys:
                 vb = BBox(min(xs), min(ys), max(xs), max(ys))
                 if bbox_area(vb) < MIN_AREA_PT2:
                     continue
                 # внутри и не касается границ ячейки — иначе это рамка/решётка
-                if rect_reasonably_inside(vb, inner, MIN_VEC_COVER) and not touches_cell_border(vb, cell_rect, tol=padding+0.5):
+                if rect_reasonably_inside(vb, inner, MIN_VEC_COVER) and not touches_cell_border(vb, cell_rect, tol=padding + 0.5):
                     vec_boxes.append(vb)
     except Exception:
         pass
@@ -298,7 +377,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
         cc.vector_bbox = vbb
         cc.alignment_vector = classify_alignment(cell_rect, vbb, tol_px=tol_px, padding=padding)
 
-    # -------- Конфликтология (избавляемся от ложных T/V в «картинковых» ячейках) --------
+    # -------- Конфликтология (снижаем ложные срабатывания) --------
     cell_area = bbox_area(inner)
 
     if cc.image_bbox:
@@ -309,7 +388,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             cc.text_spans.clear()
             cc.text_bbox = None
             cc.alignment_text = None
-            cc.is_formula_like = False  # формулы в чисто картинковой ячейке обычно нет
+            cc.is_formula_like = False
 
     # если вектора есть, но их площадь мизерная относительно ячейки — считаем шумом
     if cc.vector_bbox and (bbox_area(cc.vector_bbox) / max(1.0, cell_area) < 0.02):
@@ -332,7 +411,6 @@ def _abbr_align(a: Optional[object]) -> Optional[str]:
     if not a:
         return None
 
-    # вытащить h/v из объекта или словаря
     if isinstance(a, dict):
         h = a.get("horizontal")
         v = a.get("vertical")
@@ -346,6 +424,7 @@ def _abbr_align(a: Optional[object]) -> Optional[str]:
     h_abbr = {"left": "L", "center": "C", "right": "R"}.get(h, "?")
     v_abbr = {"top": "T", "middle": "M", "bottom": "B"}.get(v, "?")
     return f"{h_abbr}/{v_abbr}"
+
 
 def _cell_brief(cell_info: Dict, r: int, c: int) -> str:
     """
@@ -379,20 +458,20 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_px=2.0, cell_padding=
     """
     Возвращает:
       - user_summary
-      - admin_details: теперь включает сводку по каждой таблице и по всем её ячейкам  # <<< NEW
-      - table_bboxes_by_page
+      - admin_details: лог по страницам/таблицам и краткие строки по ячейкам
+      - table_bboxes_by_page (fitz-координаты)
       - cell_analysis_by_page
     """
     admin_lines = []
     error_pages = set()
-    table_bboxes_by_page = {}
-    cell_analysis_by_page = {}
+    table_bboxes_by_page: Dict[int, List[Tuple[float, float, float, float]]] = {}
+    cell_analysis_by_page: Dict[int, List[Dict]] = {}
 
     total_pages = len(pdf_document)
 
     # ---- Этап 1: эвристика страниц с таблицами (pdfplumber)
     t0 = time.perf_counter()
-    plumber_table_pages = []
+    plumber_table_pages: List[int] = []
     try:
         with pdfplumber.open(pdf_path) as pdf:
             for page_idx, page in enumerate(pdf.pages, start=1):
@@ -411,12 +490,13 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_px=2.0, cell_padding=
                     )
     except Exception as e:
         admin_lines.append(f"[pdfplumber] Ошибка: {e}")
-    admin_lines.append(f"[pdfplumber] Найдено {len(plumber_table_pages)} страниц с таблицами за {time.perf_counter()-t0:.2f} сек.")
+    admin_lines.append(f"[pdfplumber] Найдено {len(plumber_table_pages)} страниц с таблицами за {time.perf_counter() - t0:.2f} сек.")
 
-    # ---- Этап 2: Camelot — извлечение таблиц, проверка полей/центровки
+    # ---- Этап 2: Camelot — извлечение таблиц, проверка полей/центровки и анализ ячеек
     t1 = time.perf_counter()
     camelot_tables_count = 0
-    valid_pages = []
+    valid_pages: List[int] = []
+
     if plumber_table_pages:
         valid_pages = [p for p in plumber_table_pages if 1 <= p <= total_pages]
         if valid_pages:
@@ -425,150 +505,123 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_px=2.0, cell_padding=
                     pdf_path,
                     flavor="lattice",
                     pages=",".join(map(str, valid_pages)),
-                    line_scale=40,       # склеивает мелкие внутренние линии
-                    shift_text=["l", "t"],
+                    line_scale=15,            # мягче склейка, чем 40
+                    process_background=False, # не тащим «линии» из фона
                     strip_text="\n",
                 )
                 camelot_tables_count = len(tables)
+
+                # Счётчик таблиц на каждой странице для красивого лога
+                per_page_table_counter: Dict[int, int] = {}
+
                 for t in tables:
                     page_num = int(t.page)
+                    per_page_table_counter[page_num] = per_page_table_counter.get(page_num, 0) + 1
+                    tbl_idx = per_page_table_counter[page_num]
+
                     page = pdf_document[page_num - 1]
                     page_width, page_height = page.rect.width, page.rect.height
-    
+
                     # bbox таблицы: miner -> fitz
                     x0_m, y0_m, x1_m, y1_m = t._bbox
                     tbl_rect = camelot_table_bbox_to_fitz(x0_m, y0_m, x1_m, y1_m, page_height)
-    
-                    # копим bbox (сохраним сразу в fitz-координатах; при желании добавь и miner)
+
+                    # копим bbox (в fitz-координатах)
                     table_bboxes_by_page.setdefault(page_num, []).append(
                         (float(tbl_rect.x0), float(tbl_rect.y0), float(tbl_rect.x1), float(tbl_rect.y1))
                     )
-    
-                    # проверки
+
+                    # проверки на поля/центр
                     errors = []
                     if (tbl_rect.x0 < LEFT_MARGIN_PT - TOLERANCE_PT or
                         tbl_rect.x1 > page_width - RIGHT_MARGIN_PT + TOLERANCE_PT or
                         tbl_rect.y0 < TOP_MARGIN_PT - TOLERANCE_PT or
                         tbl_rect.y1 > page_height - BOTTOM_MARGIN_PT + TOLERANCE_PT):
                         errors.append("Таблица выходит за пределы полей")
-    
+
                     work_w = page_width - LEFT_MARGIN_PT - RIGHT_MARGIN_PT
                     work_cx = LEFT_MARGIN_PT + work_w / 2
                     tbl_cx = (tbl_rect.x0 + tbl_rect.x1) / 2
                     if abs(tbl_cx - work_cx) > 2:
                         errors.append("Таблица не по центру относительно полей")
-    
-                    # лог
+
                     if errors:
                         admin_lines.append(
-                            f"[Camelot][Стр. {page_num}] bbox={t._bbox} | "
+                            f"[Camelot][Стр. {page_num}][Табл. {tbl_idx}] bbox(miner)={t._bbox} | "
                             f"fitz={tbl_rect.x0:.1f},{tbl_rect.y0:.1f},{tbl_rect.x1:.1f},{tbl_rect.y1:.1f} | " +
                             "; ".join(errors)
                         )
                         error_pages.add(page_num)
                     else:
                         admin_lines.append(
-                            f"[Camelot][Стр. {page_num}] bbox={t._bbox} | "
+                            f"[Camelot][Стр. {page_num}][Табл. {tbl_idx}] bbox(miner)={t._bbox} | "
                             f"fitz={tbl_rect.x0:.1f},{tbl_rect.y0:.1f},{tbl_rect.x1:.1f},{tbl_rect.y1:.1f} | ✅Таблица корректно расположена"
                         )
+
+                    # ---------- важное: строим ЛОГИЧЕСКУЮ сетку (устойчиво к пере-детекту линий)
+                    X, Y = build_logical_grid(t, page_height, min_frac=0.30, eps=1.0)
+                    rows = max(0, len(Y) - 1)
+                    cols = max(0, len(X) - 1)
+
+                    page_tables = cell_analysis_by_page.setdefault(page_num, [])
+                    table_report = {"shape": (rows, cols), "cells": []}
+
+                    admin_lines.append(f"[Cells][Стр. {page_num}][Табл. {tbl_idx}] Размер: {rows}×{cols}")
+
+                    for r in range(rows):
+                        row_cells = []
+                        row_briefs = []
+                        y_top, y_bot = Y[r], Y[r + 1]
+                        for c in range(cols):
+                            x_left, x_right = X[c], X[c + 1]
+                            cell_rect = BBox(x_left, y_top, x_right, y_bot)
+
+                            # извлекаем содержимое с внутренним отступом
+                            content = extract_cell_content(page, cell_rect, tol_px=tol_px, padding=cell_padding)
+
+                            cell_info = {
+                                "cell_bbox": (cell_rect.x0, cell_rect.y0, cell_rect.x1, cell_rect.y1),
+                                "has_text": bool(content.text_bbox),
+                                "has_images": bool(content.image_bbox),
+                                "has_vectors": bool(content.vector_bbox),
+                                "is_formula_like": content.is_formula_like,
+                                "alignment_text": (
+                                    None if not content.alignment_text else {
+                                        "horizontal": content.alignment_text.horizontal,
+                                        "vertical": content.alignment_text.vertical,
+                                        "gaps": content.alignment_text.gaps
+                                    }
+                                ),
+                                "alignment_image": (
+                                    None if not content.alignment_image else {
+                                        "horizontal": content.alignment_image.horizontal,
+                                        "vertical": content.alignment_image.vertical,
+                                        "gaps": content.alignment_image.gaps
+                                    }
+                                ),
+                                "alignment_vector": (
+                                    None if not content.alignment_vector else {
+                                        "horizontal": content.alignment_vector.horizontal,
+                                        "vertical": content.alignment_vector.vertical,
+                                        "gaps": content.alignment_vector.gaps
+                                    }
+                                ),
+                            }
+                            row_cells.append(cell_info)
+                            row_briefs.append(_cell_brief(cell_info, r, c))
+
+                        table_report["cells"].append(row_cells)
+                        admin_lines.append("  " + " | ".join(row_briefs))
+
+                    page_tables.append(table_report)
+
             except Exception as e:
                 admin_lines.append(f"[Camelot] Ошибка: {e}")
-    admin_lines.append(f"[Camelot] Обработано {camelot_tables_count} таблиц за {time.perf_counter()-t1:.2f} сек.")
 
-    # ---- Этап 3: Анализ содержимого ячеек и выравнивания (PyMuPDF)
-    t2 = time.perf_counter()
-    if camelot_tables_count:
-        try:
-            # повторно читаем те же страницы (быстро), чтобы пройтись по ячейкам и залогировать
-            tables = camelot.read_pdf(
-                pdf_path,
-                flavor="lattice",
-                pages=",".join(map(str, valid_pages)),
-                line_scale=40,
-                shift_text=["l", "t"],
-                strip_text="\n",
-            )
+    admin_lines.append(f"[Camelot] Обработано {camelot_tables_count} таблиц за {time.perf_counter() - t1:.2f} сек.")
 
-            per_page_table_counter: Dict[int, int] = {}  # для нумерации таблиц на странице
-
-            for t in tables:
-                page_num = int(t.page)
-                per_page_table_counter[page_num] = per_page_table_counter.get(page_num, 0) + 1
-                tbl_idx = per_page_table_counter[page_num]  # 1..N на странице
-
-                page = pdf_document[page_num - 1]
-                page_height = page.rect.height
-
-                rows = len(t.cells)
-                cols = len(t.cells[0]) if rows and len(t.cells[0]) else 0
-                if rows == 0 or cols == 0:
-                    admin_lines.append(f"[Cells][Стр. {page_num}][Табл. {tbl_idx}] Пустая таблица — пропуск")
-                    continue
-                page_tables = cell_analysis_by_page.setdefault(page_num, [])
-
-                table_report = {
-                    "shape": (rows, cols),
-                    "cells": []
-                }
-
-                # <<< NEW: заголовок отчёта по таблице >>>
-                admin_lines.append(f"[Cells][Стр. {page_num}][Табл. {tbl_idx}] Размер: {rows}×{cols}")
-
-                for r in range(rows):
-                    row_cells = []
-                    row_briefs = []  # <<< NEW: аккумулируем строку отчёта
-                    for c in range(cols):
-                        cell = t.cells[r][c]
-                        cell_rect = camelot_to_fitz_bbox(cell, page_height)
-
-                        content = extract_cell_content(
-                            page, cell_rect, tol_px=tol_px, padding=cell_padding
-                        )
-
-                        cell_info = {
-                            "cell_bbox": (cell_rect.x0, cell_rect.y0, cell_rect.x1, cell_rect.y1),
-                            "has_text": bool(content.text_bbox),
-                            "has_images": bool(content.image_bbox),
-                            "has_vectors": bool(content.vector_bbox),
-                            "is_formula_like": content.is_formula_like,
-                            "alignment_text": (
-                                None if not content.alignment_text else {
-                                    "horizontal": content.alignment_text.horizontal,
-                                    "vertical": content.alignment_text.vertical,
-                                    "gaps": content.alignment_text.gaps
-                                }
-                            ),
-                            "alignment_image": (
-                                None if not content.alignment_image else {
-                                    "horizontal": content.alignment_image.horizontal,
-                                    "vertical": content.alignment_image.vertical,
-                                    "gaps": content.alignment_image.gaps
-                                }
-                            ),
-                            "alignment_vector": (
-                                None if not content.alignment_vector else {
-                                    "horizontal": content.alignment_vector.horizontal,
-                                    "vertical": content.alignment_vector.vertical,
-                                    "gaps": content.alignment_vector.gaps
-                                }
-                            ),
-                        }
-                        row_cells.append(cell_info)
-
-                        # <<< NEW: краткая метка ячейки в лог >>>
-                        row_briefs.append(_cell_brief(cell_info, r, c))
-
-                    table_report["cells"].append(row_cells)
-                    # <<< NEW: строка с ячейками >>>
-                    admin_lines.append("  " + " | ".join(row_briefs))
-
-                page_tables.append(table_report)
-
-            admin_lines.append(f"[Cells] Анализ содержимого ячеек выполнен за {time.perf_counter()-t2:.2f} сек.")
-        except Exception as e:
-            admin_lines.append(f"[Cells] Ошибка анализа содержимого ячеек: {e}")
-    else:
-        admin_lines.append("[Cells] Таблиц не обнаружено — анализ ячеек пропущен.")
+    # ---- Этап 3: отдельного повторного прохода по ячейкам не делаем —
+    #              анализ уже выполнен в Этапе 2, сразу после детекта таблицы.
 
     # ---- Итог
     user_summary = (f"⚠️ Проверка таблиц: нарушения на страницах {', '.join(map(str, sorted(error_pages)))}"
