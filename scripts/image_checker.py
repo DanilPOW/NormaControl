@@ -14,11 +14,10 @@ BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
 # Допуск
 CENTER_TOL_CM = 0.2
 
-# Порог кандидата на рисунок 
-MIN_W_MM      = 30      # мин. ширина 3 см
-MIN_H_MM      = 15      # мин. высота 1.5 см
-MIN_AREA_PCT  = 0.30    # площадь ≥ 0.30% площади страницы
-THIN_LINE_MM  = 1.0     # отсечь совсем тонкие линии
+MIN_W_MM      = 30      
+MIN_H_MM      = 15     
+MIN_AREA_PCT  = 0.30    
+THIN_LINE_MM  = 1.0     
 
 MARKER_MAX_W_MM = 8.0
 MARKER_MAX_H_MM = 8.0
@@ -68,7 +67,6 @@ def center_distance(b1, b2):
     return math.hypot(c1[0]-c2[0], c1[1]-c2[1])
 
 def x_overlap(a, b):
-    """Горизонтальное перекрытие bbox'ов в pt."""
     return max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
 
 def x_gap(a, b):
@@ -109,23 +107,17 @@ def _is_noise_line(line):
     h = max(0.0, y1 - y0)
     txt = (line.get("text") or "").strip()
     # критерии шума:
-    if fs < 6.0:                        # слишком маленький кегль
+    if fs < 6.0:                       
         return True
-    if h < mm_to_pt(2.0):               # слишком низкий bbox
+    if h < mm_to_pt(2.0):              
         return True
-    if len(txt) == 0:                   # пусто
+    if len(txt) == 0:                  
         return True
-    if _PUNCT_ONLY_RE.match(txt):       # только знаки/пробелы
+    if _PUNCT_ONLY_RE.match(txt):      
         return True
     return False
 
 def collect_text_lines(page):
-    """
-    Собирает строки текста:
-      - bbox строки,
-      - средний кегль по span'ам,
-      - объединённый текст строки.
-    """
     lines = []
     d = page.get_text("dict")
     for b in d.get("blocks", []):
@@ -212,7 +204,6 @@ def check_empty_line_above(page, fig_bbox, page_rect, work_top_pt,
 
     above, best_dy = _nearest_valid_line_above(fig_bbox, lines, mode="global", y_tol_pt=1.5)
 
-    # Нет валидной строки сверху — допускаем «первый элемент» при близости к верху
     if not above:
         if (y0 - work_top_pt) <= mm_to_pt(first_elem_top_thresh_mm):
             return None
@@ -285,11 +276,9 @@ def group_rasters_by_row(raster_blocks, y_tol_pt):
     if not raster_blocks:
         return []
 
-    # сортируем по y0 (верх)
     raster_blocks_sorted = sorted(raster_blocks, key=lambda b: b["bbox"][1])
 
     groups = []
-    # опорный y для текущей группы (будем вести как среднее по группе)
     cur_items = []
     cur_y_ref = None
 
@@ -309,10 +298,8 @@ def group_rasters_by_row(raster_blocks, y_tol_pt):
             cur_y_ref = y0
             continue
 
-        # если верх нового блока близок к опорному y — кладём в текущую группу
         if abs(y0 - cur_y_ref) <= y_tol_pt:
             cur_items.append(blk)
-            # обновим опорный как среднее (чуть устойчивее к шуму)
             cur_y_ref = sum(b["bbox"][1] for b in cur_items) / len(cur_items)
         else:
             flush_group()
@@ -368,11 +355,6 @@ def _collect_page_fig_candidates_single(page_rect, raster_rows, vector_groups):
     return items
 
 def _enumerate_figures_single_column(pdf_document, raster_rows_by_page, vector_groups_by_page):
-    """
-    Возвращает:
-      all_figs: [{"page":n,"bbox":...,"kind":...,"src":...,"fig_index":k}, ...]
-      page_to_figs: {n: [..] в порядке на странице}
-    """
     all_items = []
     for i, page in enumerate(pdf_document):
         page_num = i + 1
@@ -395,7 +377,6 @@ def _enumerate_figures_single_column(pdf_document, raster_rows_by_page, vector_g
     return all_items, page_to_figs
 
 def _match_fig_index(page_num, bbox, page_to_figs, tol_pt=1.5):
-    """Находим номер рисунка по bbox на странице с небольшим допуском по координатам."""
     def _close(a,b,t): return abs(a-b) <= t
     for it in page_to_figs.get(page_num, []):
         x0,y0,x1,y1 = it["bbox"]
@@ -413,7 +394,6 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
     except Exception:
         drawings = []
 
-    # Собираем только видимые пути
     for d in drawings:
         bbox = d.get("rect") or d.get("bbox")
         if not bbox:
@@ -429,7 +409,6 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
         if is_visible_path(entry):
             entries.append(entry)
 
-    # Исключаем пути, которые попадают в таблицы
     filtered = []
     for e in entries:
         eb = e["bbox"]
@@ -446,17 +425,14 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
                 continue
             filtered.append(e)
 
-    # Группируем
     groups = group_paths(filtered)
 
-    # Отсекаем мелкий шум (по минимуму размеров в pt)
     cleaned = []
     for g in groups:
         x0, y0, x1, y1 = g["bbox"]
         if (x1-x0) >= 8 or (y1-y0) >= 8:
             cleaned.append(g)
 
-    # Отрисовка отладочных рамок
     if debug_draw:
         for g in cleaned:
             x0, y0, x1, y1 = g["bbox"]
@@ -464,9 +440,7 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
 
     return cleaned
 
-# --------- NEW: утилита проверки «ряд попадает в таблицу?» ----------
 def _row_in_tables(row_bbox, table_bboxes, *, mode="intersect", iou_threshold=0.30):
-    """True, если bbox ряда растровых изображений входит/пересекает одну из таблиц."""
     if not table_bboxes:
         return False
     if mode == "iou":
@@ -474,7 +448,6 @@ def _row_in_tables(row_bbox, table_bboxes, *, mode="intersect", iou_threshold=0.
         return max_iou > iou_threshold
     # режим пересечения
     return any(bboxes_intersect(row_bbox, tb) for tb in table_bboxes)
-# -------------------------------------------------------------------
 
 def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_draw=False,
                  table_exclude_mode="intersect", iou_threshold=0.30, vector_annotate_center=True):
@@ -512,7 +485,6 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             admin_lines.append(f"[image_checker] raster collect error on page {page_num}: {e}")
 
         raster_count = len(raster_blocks)
-        # допуск схожести верхней координаты: ~0.7 мм
         y_tol_pt = mm_to_pt(50.7)  # (оставлено как в исходном коде)
         raster_rows = group_rasters_by_row(raster_blocks, y_tol_pt=y_tol_pt)
         raster_rows_by_page[page_num] = raster_rows
