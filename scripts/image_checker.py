@@ -298,7 +298,7 @@ def group_rasters_by_row(raster_blocks, y_tol_pt):
             return
         # объединяем bbox-ы
         bx = cur_items[0]["bbox"]
-        for it in cur_items[1:]:
+        for it in cur_items[1:]               :
             bx = bbox_union(bx, it["bbox"])
         groups.append({"bbox": bx, "items": cur_items.copy()})
 
@@ -464,6 +464,18 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
 
     return cleaned
 
+# --------- NEW: утилита проверки «ряд попадает в таблицу?» ----------
+def _row_in_tables(row_bbox, table_bboxes, *, mode="intersect", iou_threshold=0.30):
+    """True, если bbox ряда растровых изображений входит/пересекает одну из таблиц."""
+    if not table_bboxes:
+        return False
+    if mode == "iou":
+        max_iou = max((bbox_iou(row_bbox, tb) for tb in table_bboxes), default=0.0)
+        return max_iou > iou_threshold
+    # режим пересечения
+    return any(bboxes_intersect(row_bbox, tb) for tb in table_bboxes)
+# -------------------------------------------------------------------
+
 def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_draw=False,
                  table_exclude_mode="intersect", iou_threshold=0.30, vector_annotate_center=True):
     if table_bboxes_by_page is None:
@@ -501,7 +513,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
 
         raster_count = len(raster_blocks)
         # допуск схожести верхней координаты: ~0.7 мм
-        y_tol_pt = mm_to_pt(50.7)
+        y_tol_pt = mm_to_pt(50.7)  # (оставлено как в исходном коде)
         raster_rows = group_rasters_by_row(raster_blocks, y_tol_pt=y_tol_pt)
         raster_rows_by_page[page_num] = raster_rows
         grouped_raster_count = len(raster_rows)
@@ -513,10 +525,21 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         )
 
         try:
+            tbl_bboxes = table_bboxes_by_page.get(page_num, [])
+
             for ri, row in enumerate(raster_rows, 1):
+                row_bbox = row["bbox"]
+
+                # NEW: если ряд попал в таблицу — пропускаем все проверки по выравниванию/полям/строке
+                if _row_in_tables(row_bbox, tbl_bboxes, mode=table_exclude_mode, iou_threshold=iou_threshold):
+                    admin_lines.append(
+                        f"[Стр. {page_num}] Растровый ряд #{ri}: пропущен (внутри таблицы)"
+                    )
+                    continue
+
                 items_sorted = sorted(row["items"], key=lambda it: it["bbox"][0])
                 if len(items_sorted) >= 2:
-                    y_misaligned_tol_pt = mm_to_pt(1.0)  # допуск по "разным y", можно 0.7–1.5 мм
+                    y_misaligned_tol_pt = mm_to_pt(1.0)  # допуск по "разным y"
                     base_y0 = items_sorted[0]["bbox"][1]
                     for idx_in_row, it in enumerate(items_sorted[1:], start=2):
                         x0i, y0i, x1i, y1i = it["bbox"]
@@ -531,7 +554,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                             ann.set_info(title="Сервис нормоконтроля", content=warn)
                             ann.update()
 
-                x0, y0, x1, y1 = row["bbox"]
+                x0, y0, x1, y1 = row_bbox
                 errs = []
 
                 # Выход за поля
@@ -560,8 +583,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
 
                 if errs:
                     has_error = True
-                    msg = (f""
-                           + "; ".join(errs))
+                    msg = (f"" + "; ".join(errs))
                     admin_lines.append(msg)
                     ann_point = fitz.Point(x0, y0)
                     ann = page.add_text_annot(ann_point, "\n".join(errs))
@@ -573,8 +595,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         total_raster_images += raster_count
         page_raster_counts.append((page_num, raster_count, grouped_raster_count))
 
-
-        tbl_bboxes = table_bboxes_by_page.get(page_num, [])
+        # Векторные группы (как было, с исключением по таблицам)
         groups = _vector_groups(page, tbl_bboxes, debug_draw=debug_draw,
                                 table_exclude_mode=table_exclude_mode, iou_threshold=iou_threshold)
         vector_groups_by_page[page_num] = groups
@@ -626,7 +647,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             admin_lines.append("    Мелкие/маркерные объекты:")
             admin_lines.extend(small_objs)
 
-        # Основные проверки/аннотации по группам
+        # Основные проверки/аннотации по векторным группам
         for g in groups:
             x0, y0, x1, y1 = g["bbox"]
             w = x1 - x0
@@ -688,7 +709,6 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
 
         if has_error:
             error_pages.append(page_num)
-
 
     all_figs, page_to_figs = _enumerate_figures_single_column(
         pdf_document, raster_rows_by_page, vector_groups_by_page
