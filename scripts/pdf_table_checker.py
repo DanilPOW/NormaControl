@@ -205,7 +205,7 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 0.001, padding
     center_gap = abs(cell_mid_x - text_mid_x)
     middle_gap = abs(cell_mid_y - text_mid_y)
 
-    if center_gap = 0.0:  # ← здесь тоже tol_px
+    if center_gap == 0:
         h = "center"
     elif right_gap > left_gap:
         h = "left"
