@@ -205,8 +205,7 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 0.4, padding: 
     center_gap = abs(cell_mid_x - text_mid_x)
     middle_gap = abs(cell_mid_y - text_mid_y)
 
-    if center_gap <= tol_px and abs(left_gap - right_gap) <= tol_px:
-        # Центрирован и отступы примерно равны
+    if center_gap == 0.0:  # Точное совпадение центров
         h = "center"
     elif left_gap <= tol_px and right_gap > left_gap:
         # Прижат к левому краю и справа больше места
