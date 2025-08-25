@@ -500,7 +500,7 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                     x0_m, y0_m, x1_m, y1_m = t._bbox
                     tbl_rect = camelot_table_bbox_to_fitz(x0_m, y0_m, x1_m, y1_m, page_height)
 
-                    # копим bbox (в fitz-координатах)
+                    # копим bbox (в fitz-координаты)
                     table_bboxes_by_page.setdefault(page_num, []).append(
                         (float(tbl_rect.x0), float(tbl_rect.y0), float(tbl_rect.x1), float(tbl_rect.y1))
                     )
@@ -547,8 +547,9 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
                     admin_lines.append(f"[Cells][Стр. {page_num}][Табл. {tbl_idx}] Размер: {rows}×{cols}")
 
-                    # флаг несоблюдения центровки хотя бы в одной ячейке
-                    table_has_miscenter = False
+                    # флаг несоблюдения выравнивания в заголовочных ячейках
+                    table_has_header_alignment_issue = False
+                    header_alignment_errors = []
 
                     for r in range(rows):
                         row_cells = []
@@ -560,12 +561,6 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
                             # извлекаем содержимое с внутренним отступом
                             content = extract_cell_content(page, cell_rect, tol_px=tol_px, padding=cell_padding)
-
-                            # если любой тип содержимого не по центру — поднимем общий флаг
-                            for al in (content.alignment_text, content.alignment_image, content.alignment_vector):
-                                if al and not al.gaps.get("centered_ok", True):
-                                    table_has_miscenter = True
-                                    break
 
                             cell_info = {
                                 "cell_bbox": (cell_rect.x0, cell_rect.y0, cell_rect.x1, cell_rect.y1),
@@ -598,19 +593,51 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             row_cells.append(cell_info)
                             row_briefs.append(_cell_brief(cell_info, r, c))
 
+                            # Проверка выравнивания только для заголовочных ячеек
+                            if r == 0 or c == 0:  # Первая строка или первый столбец
+                                alignment_errors = []
+                                
+                                # Проверяем текстовое выравнивание
+                                if content.alignment_text:
+                                    if r == 0:  # Заголовки столбцов - по центру
+                                        if content.alignment_text.horizontal != "center":
+                                            alignment_errors.append(f"Заголовок столбца [{r},{c}] должен быть по центру (сейчас: {content.alignment_text.horizontal})")
+                                    if c == 0 and r > 0:  # Заголовки строк (кроме первой ячейки) - по левому краю
+                                        if content.alignment_text.horizontal != "left":
+                                            alignment_errors.append(f"Заголовок строки [{r},{c}] должен быть по левому краю (сейчас: {content.alignment_text.horizontal})")
+                                
+                                # Проверяем выравнивание изображений
+                                if content.alignment_image:
+                                    if r == 0:  # Заголовки столбцов - по центру
+                                        if content.alignment_image.horizontal != "center":
+                                            alignment_errors.append(f"Изображение в заголовке столбца [{r},{c}] должно быть по центру")
+                                    if c == 0 and r > 0:  # Заголовки строк - по левому краю
+                                        if content.alignment_image.horizontal != "left":
+                                            alignment_errors.append(f"Изображение в заголовке строки [{r},{c}] должно быть по левому краю")
+                                
+                                if alignment_errors:
+                                    table_has_header_alignment_issue = True
+                                    header_alignment_errors.extend(alignment_errors)
+
                         table_report["cells"].append(row_cells)
                         admin_lines.append("  " + " | ".join(row_briefs))
 
                     page_tables.append(table_report)
 
-                    # если нашли нецентровку — одна тихая аннотация с правилом
-                    if table_has_miscenter:
+                    # Если нашли проблемы с выравниванием заголовков - добавляем аннотацию
+                    if table_has_header_alignment_issue:
+                        error_text = "Ошибки выравнивания заголовков:\n" + "\n".join(header_alignment_errors[:3])  # Ограничиваем количество ошибок в аннотации
+                        if len(header_alignment_errors) > 3:
+                            error_text += f"\n... и ещё {len(header_alignment_errors) - 3} ошибок"
                         _add_text_annot_silent(
                             page,
                             (tbl_rect.x0, tbl_rect.y0),
-                            "Весь контент в ячейках должен находиться в центре ячейки"
+                            error_text
                         )
                         error_pages.add(page_num)
+                        admin_lines.append(f"[Alignment][Стр. {page_num}][Табл. {tbl_idx}] Обнаружены ошибки выравнивания заголовков:")
+                        for error in header_alignment_errors:
+                            admin_lines.append(f"  {error}")
 
             except Exception as e:
                 admin_lines.append(f"[Camelot] Ошибка: {e}")
