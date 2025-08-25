@@ -219,14 +219,13 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: 
         h = "mixed"
 
     # Вертикальное выравнивание
-    if top_gap <= tol_px and bottom_gap > top_gap:
-        v = "top"
-    elif bottom_gap <= tol_px and top_gap > bottom_gap:
-        v = "bottom"
-    elif middle_gap <= tol_px and abs(top_gap - bottom_gap) <= tol_px:
+    if middle_gap <= tol_px:
         v = "middle"
+    elif top_gap <= bottom_gap:
+        v = "top"
     else:
-        v = "mixed"
+        v = "bottom"
+
 
     centered_ok = (center_gap <= tol_px) and (middle_gap <= tol_px)
 
