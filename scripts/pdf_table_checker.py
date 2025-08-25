@@ -182,7 +182,7 @@ def camelot_table_bbox_to_fitz(x0, y0, x1, y1, page_height: float) -> BBox:
     return BBox(float(x0), float(page_height - y1), float(x1), float(page_height - y0))
 
 
-def classify_alignment(cell: BBox, content: BBox, tol_px: float = 0.4, padding: float = 0.0) -> Alignment:
+def classify_alignment(cell: BBox, content: BBox, tol_px: float = 0.2, padding: float = 0.0) -> Alignment:
     # Учитываем «пэддинг» — отступы внутри ячейки
     cx0 = cell.x0 + padding
     cy0 = cell.y0 + padding
