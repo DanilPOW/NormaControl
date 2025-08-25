@@ -207,10 +207,10 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 0.4, padding: 
 
     if center_gap == 0.0:  # Точное совпадение центров
         h = "center"
-    elif left_gap <= tol_px and right_gap > left_gap:
+    elif right_gap > left_gap:
         # Прижат к левому краю и справа больше места
         h = "left"
-    elif right_gap <= tol_px and left_gap > right_gap:
+    elif left_gap > right_gap:
         # Прижат к правому краю и слева больше места
         h = "right"
     else:
