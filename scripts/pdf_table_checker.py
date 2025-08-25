@@ -205,16 +205,13 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 1.0, padding: 
     center_gap = abs(cell_mid_x - text_mid_x)
     middle_gap = abs(cell_mid_y - text_mid_y)
 
-    if center_gap <= 0.5: 
+    if center_gap <= tol_px:  # ← здесь тоже tol_px
         h = "center"
     elif right_gap > left_gap:
-        # Прижат к левому краю и справа больше места
         h = "left"
     elif left_gap > right_gap:
-        # Прижат к правому краю и слева больше места
         h = "right"
     else:
-        # Если не подходит ни под одну категорию - считаем смешанным
         h = "mixed"
 
     # Вертикальное выравнивание
