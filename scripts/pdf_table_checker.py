@@ -7,20 +7,13 @@ import camelot
 import pdfplumber
 import fitz  # PyMuPDF
 
-# --------------------------
 # Константы макета страницы
-# --------------------------
 LEFT_MARGIN_PT   = 3 * 28.35
 RIGHT_MARGIN_PT  = 1.5 * 28.35
 TOP_MARGIN_PT    = 2 * 28.35
 BOTTOM_MARGIN_PT = 2 * 28.35
 TOLERANCE_PT     = 2
 MM_TO_PT = 2.8346456693  # 1 мм = 2.8346 pt
-
-
-# ==========================
-# ВСПОМОГАТЕЛЬНЫЕ СТРУКТУРЫ
-# ==========================
 
 @dataclass
 class BBox:
@@ -60,10 +53,6 @@ class CellContent:
     is_formula_like: bool = False                          # эвристика «формульной» ячейки
 
 
-# ==========================
-# УТИЛИТЫ
-# ==========================
-
 def _unique_sorted(vals, eps=1.0):
     """Кластеризуем координаты с допуском eps (pt), возвращаем отсортированные уникальные."""
     vals = sorted(vals)
@@ -75,13 +64,6 @@ def _unique_sorted(vals, eps=1.0):
 
 
 def build_logical_grid(table, page_height, min_frac=0.30, eps=1.0):
-    """
-    Строим логические ряды/колонки:
-    - собираем все x/y-границы из сырых ячеек Camelot (miner coords),
-    - кластеризуем (eps),
-    - считаем интервалы и отбрасываем слишком тонкие (< min_frac * медиана).
-    Возвращаем списки X и Y уже в fitz-координатах (y вниз).
-    """
     # 1) все границы в miner-координатах
     xs, ys = [], []
     for row in table.cells:
@@ -252,10 +234,6 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: 
     return Alignment(horizontal=h, vertical=v, gaps=gaps)
 
 def looks_like_formula(text: str) -> bool:
-    """
-    Простая эвристика: много матсимволов, греческие буквы,
-    бинарные операторы, дроби, индексы и т.д.
-    """
     if not text:
         return False
     t = text.strip()
@@ -276,11 +254,6 @@ def looks_like_formula(text: str) -> bool:
         score += 1
 
     return score >= 4  # настроечный порог
-
-
-# ==========================
-# ИЗВЛЕЧЕНИЕ СОДЕРЖИМОГО ЯЧЕЙКИ (fitz)
-# ==========================
 
 def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                          tol_px: float = 2.0, padding: float = 1.5) -> CellContent:
@@ -397,11 +370,6 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
 
     return cc
 
-
-# ==========================
-# ФОРМАТИРОВАНИЕ ЛОГА ПО ЯЧЕЙКЕ
-# ==========================
-
 def _abbr_align(a: Optional[object]) -> Optional[str]:
     """
     Вернуть краткую метку выравнивания вида H/V => L|C|R / T|M|B.
@@ -449,10 +417,6 @@ def _cell_brief(cell_info: Dict, r: int, c: int) -> str:
     return " ".join(parts)
 
 
-# ==========================
-# ТИХИЕ АННОТАЦИИ (как в другом скрипте)
-# ==========================
-
 def _add_text_annot_silent(page: fitz.Page, point_xy: Tuple[float, float], msg: str):
     """Тихая точечная текстовая аннотация в стиле скрипта нумерации (без логов)."""
     try:
@@ -462,10 +426,6 @@ def _add_text_annot_silent(page: fitz.Page, point_xy: Tuple[float, float], msg: 
     except Exception:
         pass
 
-
-# ==========================
-# ОСНОВНАЯ ФУНКЦИЯ
-# ==========================
 
 def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=1.5):
     """
