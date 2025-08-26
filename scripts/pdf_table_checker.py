@@ -692,14 +692,16 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                     for r in range(rows):
                         row_cells = []
                         row_briefs = []
+                        row_debugs = []
+                    
                         y_top, y_bot = Y[r], Y[r + 1]
                         for c in range(cols):
                             x_left, x_right = X[c], X[c + 1]
                             cell_rect = BBox(x_left, y_top, x_right, y_bot)
-
+                    
                             # извлекаем содержимое с внутренним отступом
                             content = extract_cell_content(page, cell_rect, tol_px=tol_px, padding=cell_padding)
-
+                    
                             cell_info = {
                                 "cell_bbox": (cell_rect.x0, cell_rect.y0, cell_rect.x1, cell_rect.y1),
                                 "has_text": bool(content.text_bbox),
@@ -728,49 +730,57 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                     }
                                 ),
                             }
+                    
+                            # ВАЖНО: сохраняем ячейку в отчёт
+                            row_cells.append(cell_info)
+                    
+                            # 1) краткая «сеточка»
+                            row_briefs.append(_cell_brief(cell_info, r, c))
+                    
+                            # 2) отложим подробные debug-и до конца строки
                             if content.alignment_text:
                                 g = content.alignment_text.gaps
-                                admin_lines.append(
+                                row_debugs.append(
                                     (f"[Debug][{r},{c}] H={content.alignment_text.horizontal} V={content.alignment_text.vertical} | "
                                      f"cell_mid_x={g.get('cell_mid_x'):.2f} text_mid_x={g.get('text_mid_x'):.2f} "
                                      f"center_gap_x={g.get('center_gap_x'):.2f} | "
                                      f"Lm={g.get('median_L'):.2f} Rm={g.get('median_R'):.2f} fills={g.get('fills_ratio'):.3f} | "
                                      f"bbox_gaps L={g.get('left'):.2f} R={g.get('right'):.2f} T={g.get('top'):.2f} B={g.get('bottom'):.2f}")
                                 )
-                            row_cells.append(cell_info)
-                            row_briefs.append(_cell_brief(cell_info, r, c))
-
-                            # Проверка выравнивания только для заголовочных ячеек
-                            if r == 0 or c == 0:  # Первая строка или первый столбец
+                    
+                            # Проверка выравнивания заголовков (как было)
+                            if r == 0 or c == 0:
                                 alignment_errors = []
-                                
-                                # Проверяем текстовое выравнивание
                                 if content.alignment_text:
-                                    if r == 0:  # Заголовки столбцов - по центру
-                                        if content.alignment_text.horizontal != "center":
-                                            alignment_errors.append(f"Заголовок столбца [{r},{c}] должен быть по центру (сейчас: {content.alignment_text.horizontal})")
-                                    if c == 0 and r > 0:  # Заголовки строк (кроме первой ячейки) - по левому краю
-                                        if content.alignment_text.horizontal != "left":
-                                            alignment_errors.append(f"Заголовок строки [{r},{c}] должен быть по левому краю (сейчас: {content.alignment_text.horizontal})")
-                                
-                                # Проверяем выравнивание изображений
+                                    if r == 0 and content.alignment_text.horizontal != "center":
+                                        alignment_errors.append(
+                                            f"Заголовок столбца [{r},{c}] должен быть по центру (сейчас: {content.alignment_text.horizontal})"
+                                        )
+                                    if c == 0 and r > 0 and content.alignment_text.horizontal != "left":
+                                        alignment_errors.append(
+                                            f"Заголовок строки [{r},{c}] должен быть по левому краю (сейчас: {content.alignment_text.horizontal})"
+                                        )
                                 if content.alignment_image:
-                                    if r == 0:  # Заголовки столбцов - по центру
-                                        if content.alignment_image.horizontal != "center":
-                                            alignment_errors.append(f"Изображение в заголовке столбца [{r},{c}] должно быть по центру")
-                                    if c == 0 and r > 0:  # Заголовки строк - по левому краю
-                                        if content.alignment_image.horizontal != "left":
-                                            alignment_errors.append(f"Изображение в заголовке строки [{r},{c}] должно быть по левому краю")
-                                
+                                    if r == 0 and content.alignment_image.horizontal != "center":
+                                        alignment_errors.append(f"Изображение в заголовке столбца [{r},{c}] должно быть по центру")
+                                    if c == 0 and r > 0 and content.alignment_image.horizontal != "left":
+                                        alignment_errors.append(f"Изображение в заголовке строки [{r},{c}] должно быть по левому краю")
                                 if alignment_errors:
                                     table_has_header_alignment_issue = True
                                     header_alignment_errors.extend(alignment_errors)
-
+                    
+                        # === после завершения строки r ===
                         table_report["cells"].append(row_cells)
+                    
+                        # 1) сначала компактная «сеточка»
                         admin_lines.append("  " + " | ".join(row_briefs))
-
+                    
+                        # 2) затем подробные debug-строки
+                        for dbg in row_debugs:
+                            admin_lines.append(dbg)
+                    
                     page_tables.append(table_report)
-
+                    
                     # Если нашли проблемы с выравниванием заголовков - добавляем аннотацию
                     if table_has_header_alignment_issue:
                         error_text = "Ошибки выравнивания заголовков:\n" + "\n".join(header_alignment_errors[:3])  # Ограничиваем количество ошибок в аннотации
