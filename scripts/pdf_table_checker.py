@@ -886,7 +886,8 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             max_pt=14.0,
                             must_black=True,
                             must_tnr=True,
-                            require_dash=True
+                            require_dash=True,
+                            max_gap_em=0.6,
                         )
                         if val.ok:
                             admin_lines.append(f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] ✅ «{cap.text}»")
