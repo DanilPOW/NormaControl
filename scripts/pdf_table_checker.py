@@ -342,7 +342,7 @@ def _decide_halign_strict_center(inner: BBox,
     fills = fills_ratio >= 0.965
 
     # 4) пороги
-    tau_sym  = max(0.45 * tol_px, 0.01 * inner_w)
+    tau_sym  = max(0.6 * tol_px, 0.015 * inner_w)
     tau_air  = 1.8  * tol_px
     tau_bias = 0.60 * tol_px
 
