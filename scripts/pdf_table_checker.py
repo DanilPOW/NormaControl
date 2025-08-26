@@ -52,7 +52,7 @@ class CellContent:
     alignment_image: Optional[Alignment] = None
     alignment_vector: Optional[Alignment] = None
     is_formula_like: bool = False                          # эвристика «формульной» ячейки
-    font_report: Optional[Dict] = None                     # {"max_size": float, "all_times_new_roman": bool, "all_black": bool, "violations": [...]}
+    font_report: Optional[Dict] = None                     # {"max_size": float, "all_times_new_roman": bool, "all_black": bool, "violations": [...], "display": str}
 
 
 def _unique_sorted(vals, eps=1.0):
@@ -116,6 +116,47 @@ def bbox_union(b1: BBox, b2: BBox) -> BBox:
         x1=max(b1.x1, b2.x1),
         y1=max(b1.y1, b2.y1),
     )
+
+def _font_base_name(font_name: str) -> str:
+    """Отрезаем сабсет-префикс 'ABCDEE+' и приводим к удобному виду для показа."""
+    if not font_name:
+        return ""
+    base = font_name.split("+", 1)[-1]  # убираем ABCDEE+
+    return base
+
+def summarize_cell_fonts(text_spans: List[Dict]) -> Dict:
+    """
+    Возвращает сводку по шрифтам в ячейке:
+    {
+      "by_font": {
+          "TimesNewRomanPSMT": {"min": 10.0, "max": 12.0, "samples": ["Пример..."]},
+          "ArialMT": {...}
+      },
+      "display": "TimesNewRomanPSMT 10–12pt; ArialMT 11pt"
+    }
+    """
+    from collections import OrderedDict
+    acc: Dict[str, Dict] = OrderedDict()
+    for sp in text_spans:
+        f = _font_base_name(sp.get("font", ""))
+        s = float(sp.get("size", 0.0))
+        if not f:
+            f = "Unknown"
+        if f not in acc:
+            acc[f] = {"min": s, "max": s, "samples": []}
+        else:
+            acc[f]["min"] = min(acc[f]["min"], s)
+            acc[f]["max"] = max(acc[f]["max"], s)
+        txt = (sp.get("text") or "").strip()
+        if txt and len(acc[f]["samples"]) < 2:
+            acc[f]["samples"].append(txt[:24])
+    parts = []
+    for f, meta in acc.items():
+        if abs(meta["min"] - meta["max"]) < 0.05:
+            parts.append(f"{f} {meta['max']:.0f}pt")
+        else:
+            parts.append(f"{f} {meta['min']:.0f}–{meta['max']:.0f}pt")
+    return {"by_font": acc, "display": "; ".join(parts)}
 
 
 def is_times_new_roman_name(font_name: str) -> bool:
@@ -268,13 +309,13 @@ def _decide_halign_strict_center(inner: BBox,
     Центр даём только при:
       - |cell_mid - content_mid| <= tau_sym
       - |Lm - Rm| <= tau_sym
-      - min(Lm,Rm) >= tau_air   (есть «воздух», не микро-зазоры)
-    Если заполнение ширины высокое (fills) — центр только при L≈R, иначе left/right.
+      - min(Lm,Rm) >= tau_air
+    Если заполнение ширины высокое — центр только при L≈R, иначе left/right.
     """
     if not line_boxes:
         return "mixed"
 
-    # 1) игнорируем последнюю (часто короткую) строку — уменьшает ложный центр
+    # 1) игнорируем последнюю (часто короткую) строку
     lines = list(line_boxes)
     if ignore_last_line and len(lines) >= 2:
         bottom_idx = max(range(len(lines)), key=lambda i: lines[i].y1)  # PyMuPDF: y вниз
@@ -282,7 +323,7 @@ def _decide_halign_strict_center(inner: BBox,
     if not lines:
         lines = line_boxes
 
-    # 2) медианные зазоры по строкам
+    # 2) медианные зазоры
     import statistics as st
     L = [max(0.0, lb.x0 - inner.x0) for lb in lines]
     R = [max(0.0, inner.x1 - lb.x1) for lb in lines]
@@ -322,7 +363,7 @@ def _decide_halign_strict_center(inner: BBox,
 
 
 def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: float = 0.0) -> Alignment:
-    # Учитываем «пэддинг» — отступы внутри ячейки
+    # Учитываем «пэддинг»
     cx0 = cell.x0 + padding
     cy0 = cell.y0 + padding
     cx1 = cell.x1 - padding
@@ -413,7 +454,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
     MIN_IMG_COVER  = 0.70   # ≥70% картинки лежит в ячейке
     MIN_VEC_COVER  = 0.70   # ≥70% вектора лежит в ячейке
     MIN_AREA_PT2   = 8.0 * 8.0  # минимальная площадь содержимого
-    TINY_TEXT_VS_IMG = 0.15      # относительный порог для «крошечного» текста в картинковой ячейке
+    TINY_TEXT_VS_IMG = 0.15      # крошечный текст относительно картинки
 
     text_dict = page.get_text("dict")
 
@@ -486,7 +527,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             cell_mid = 0.5 * (inner.x0 + inner.x1)
             content_mid = 0.5 * (tb.x0 + tb.x1)  # fallback по общему bbox
 
-        # базовые зазоры по общему bbox (уже есть в base_align.gaps): left/right/top/bottom
+        # базовые зазоры (уже есть в base_align.gaps)
         gaps = dict(base_align.gaps)
         gaps.update({
             "cell_mid_x":    cell_mid,
@@ -505,6 +546,9 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
 
         cc.is_formula_like = looks_like_formula(" ".join(span_texts))
 
+        # --- сводка шрифтов
+        fonts_summary = summarize_cell_fonts(cc.text_spans)
+
         # ---------- ПРОВЕРКИ ШРИФТА ----------
         MAX_PT = 14.0
         font_violations = []
@@ -517,7 +561,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             if not is_times_new_roman_name(f):
                 all_tnr = False
                 font_violations.append({"type": "font", "msg": f"Не Times New Roman: {f}", "sample": t[:60], "size": s})
-            if s > MAX_PT + 0.1:  # небольшой допуск
+            if s > MAX_PT + 0.1:
                 font_violations.append({"type": "size", "msg": f"Размер {s:.1f}pt > 14pt", "sample": t[:60], "font": f})
             if not is_black_rgb(c, tol=6):
                 all_black = False
@@ -527,14 +571,21 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             "max_size": max_size,
             "all_times_new_roman": all_tnr,
             "all_black": all_black,
-            "violations": font_violations
+            "violations": font_violations,
+            "display": fonts_summary.get("display", "")
         }
 
     else:
         # текста нет
         cc.alignment_text = None
         cc.is_formula_like = False
-        cc.font_report = {"max_size": 0.0, "all_times_new_roman": True, "all_black": True, "violations": []}
+        cc.font_report = {
+            "max_size": 0.0,
+            "all_times_new_roman": True,
+            "all_black": True,
+            "violations": [],
+            "display": ""
+        }
 
     # -------- КАРТИНКИ --------
     img_boxes: List[BBox] = []
@@ -586,23 +637,19 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
         cc.vector_bbox = vbb
         cc.alignment_vector = classify_alignment(cell_rect, vbb, tol_px=tol_px, padding=padding)
 
-    # -------- Конфликтология (снижаем ложные срабатывания) --------
+    # -------- Конфликтология --------
     cell_area = bbox_area(inner)
 
     if cc.image_bbox:
         img_area = bbox_area(cc.image_bbox)
         txt_area = bbox_area(cc.text_bbox) if cc.text_bbox else 0.0
-        # если картинка «доминирует», а текст крошечный — гасим текст
         if img_area > 0 and (txt_area / img_area) <= TINY_TEXT_VS_IMG:
             cc.text_spans.clear()
             cc.text_bbox = None
             cc.alignment_text = None
             cc.is_formula_like = False
-            # При этом отчёт по шрфту можно оставить как есть — он отражает реальные спаны,
-            # но если нужно, можно обнулить:
-            # cc.font_report = {"max_size": 0.0, "all_times_new_roman": True, "all_black": True, "violations": []}
+            # font_report можно оставить (фиксирует реальные спаны)
 
-    # если вектора есть, но их площадь мизерная относительно ячейки — считаем шумом
     if cc.vector_bbox and (bbox_area(cc.vector_bbox) / max(1.0, cell_area) < 0.02):
         cc.vectors.clear()
         cc.vector_bbox = None
@@ -720,8 +767,8 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                     pdf_path,
                     flavor="lattice",
                     pages=",".join(map(str, valid_pages)),
-                    line_scale=15,            # мягче склейка, чем 40
-                    process_background=False, # не тащим «линии» из фона
+                    line_scale=15,
+                    process_background=False,
                     strip_text="\n",
                 )
                 camelot_tables_count = len(tables)
@@ -767,18 +814,14 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             "; ".join(errors)
                         )
                         error_pages.add(page_num)
-
-                        # --- Тихая точечная аннотация у верхнего левого угла таблицы ---
-                        ann_text = "Ошибки расположения таблицы:\n" + "\n".join(errors)
-                        _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), ann_text)
-
+                        _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), "Ошибки расположения таблицы:\n" + "\n".join(errors))
                     else:
                         admin_lines.append(
                             f"[Camelot][Стр. {page_num}][Табл. {tbl_idx}] bbox(miner)={t._bbox} | "
                             f"fitz={tbl_rect.x0:.1f},{tbl_rect.y0:.1f},{tbl_rect.x1:.1f},{tbl_rect.y1:.1f} | ✅Таблица корректно расположена"
                         )
 
-                    # ---------- логическая сетка (устойчиво к пере-детекту линий)
+                    # ---------- логическая сетка
                     X, Y = build_logical_grid(t, page_height, min_frac=0.30, eps=1.0)
                     rows = max(0, len(Y) - 1)
                     cols = max(0, len(X) - 1)
@@ -788,12 +831,12 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
                     admin_lines.append(f"[Cells][Стр. {page_num}][Табл. {tbl_idx}] Размер: {rows}×{cols}")
 
-                    # флаг несоблюдения выравнивания в заголовочных ячейках
+                    # флаг несоблюдения выравнивания в заголовках
                     table_has_header_alignment_issue = False
                     header_alignment_errors = []
 
-                    table_briefs = []   # компакт по всем r
-                    table_debugs = []   # все Debug по всем r
+                    table_briefs = []
+                    table_debugs = []
 
                     for r in range(rows):
                         row_cells = []
@@ -833,10 +876,11 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             # --- FONT REPORT (переносим из content) ---
                             fr = getattr(content, "font_report", None)
                             if fr is None:
-                                fr = {"max_size": 0.0, "all_times_new_roman": True, "all_black": True, "violations": []}
+                                fr = {"max_size": 0.0, "all_times_new_roman": True, "all_black": True, "violations": [], "display": ""}
                             cell_info["font_report"] = fr
+                            cell_info["fonts_display"] = fr.get("display", "")
 
-                            # Если есть нарушения — аннотируем левый верх угла ячейки + лог
+                            # Если есть нарушения — аннотация + лог
                             if fr["violations"]:
                                 msgs = []
                                 for v in fr["violations"][:3]:
@@ -850,6 +894,10 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                 row_debugs.append(
                                     f"[Font][{r},{c}] max={fr['max_size']:.1f}pt | TNR={fr['all_times_new_roman']} | BLACK={fr['all_black']} | n={len(fr['violations'])}"
                                 )
+
+                            # Лог сводки шрифтов (видимый даже без нарушений)
+                            if cell_info["fonts_display"]:
+                                row_debugs.append(f"[Fonts][{r},{c}] {cell_info['fonts_display']}")
 
                             row_cells.append(cell_info)
                             row_briefs.append(_cell_brief(cell_info, r, c))
@@ -868,7 +916,7 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                      f"T={g.get('top', 0):.2f} B={g.get('bottom', 0):.2f}")
                                 )
 
-                            # Проверки заголовков как раньше...
+                            # Проверки заголовков
                             if r == 0 or c == 0:
                                 alignment_errors = []
                                 if content.alignment_text:
@@ -889,31 +937,27 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                     table_has_header_alignment_issue = True
                                     header_alignment_errors.extend(alignment_errors)
 
-                        # после строки r — копим, но не печатаем
+                        # после строки r — копим
                         table_report["cells"].append(row_cells)
                         table_briefs.append("  " + " | ".join(row_briefs) if row_briefs else "  —")
                         table_debugs.extend(row_debugs)
 
-                    # 1) Вся «сеточка» сразу
+                    # 1) Вся «сеточка»
                     for line in table_briefs:
                         admin_lines.append(line)
 
-                    # 2) Затем подробные debug-строчки
+                    # 2) Подробные debug-строчки
                     for dbg in table_debugs:
                         admin_lines.append(dbg)
 
                     page_tables.append(table_report)
 
-                    # Если нашли проблемы с выравниванием заголовков - добавляем аннотацию
+                    # Если нашли проблемы с выравниванием заголовков - аннотация
                     if table_has_header_alignment_issue:
                         error_text = "Ошибки выравнивания заголовков:\n" + "\n".join(header_alignment_errors[:3])
                         if len(header_alignment_errors) > 3:
                             error_text += f"\n... и ещё {len(header_alignment_errors) - 3} ошибок"
-                        _add_text_annot_silent(
-                            page,
-                            (tbl_rect.x0, tbl_rect.y0),
-                            error_text
-                        )
+                        _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), error_text)
                         error_pages.add(page_num)
                         admin_lines.append(f"[Alignment][Стр. {page_num}][Табл. {tbl_idx}] Обнаружены ошибки выравнивания заголовков:")
                         for error in header_alignment_errors:
