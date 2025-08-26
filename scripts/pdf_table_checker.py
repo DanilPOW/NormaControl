@@ -181,8 +181,77 @@ def camelot_table_bbox_to_fitz(x0, y0, x1, y1, page_height: float) -> BBox:
     # входные coords из t._bbox — в miner-системе
     return BBox(float(x0), float(page_height - y1), float(x1), float(page_height - y0))
 
+def _lines_in_inner(page: fitz.Page, inner: BBox, min_cover=0.5) -> List[BBox]:
+    """Вернуть bbox строк, лежащих в пределах inner не менее чем на min_cover их площади."""
+    lines_boxes: List[BBox] = []
+    td = page.get_text("dict")
+    for b in td.get("blocks", []):
+        if b.get("type") != 0:
+            continue
+        for line in b.get("lines", []):
+            xs, ys = [], []
+            for span in line.get("spans", []):
+                x0, y0, x1, y1 = span.get("bbox", (0,0,0,0))
+                sb = BBox(x0, y0, x1, y1)
+                inter_area, inter = bbox_intersection(sb, inner)
+                if inter_area > 0 and inter_area / max(1.0, bbox_area(sb)) >= min_cover:
+                    xs.extend([inter.x0, inter.x1]); ys.extend([inter.y0, inter.y1])
+            if xs and ys:
+                lines_boxes.append(BBox(min(xs), min(ys), max(xs), max(ys)))
+    return lines_boxes
 
-def classify_alignment(cell: BBox, content: BBox, tol_px: float = 0.0001, padding: float = 0.0) -> Alignment:
+
+def _decide_halign_by_lines(inner: BBox, line_boxes: List[BBox], tol_px: float) -> str:
+    """'left'|'center'|'right'|'mixed' на основе медианных лев/прав зазоров по строкам."""
+    if not line_boxes:
+        return "mixed"
+
+    L = [max(0.0, lb.x0 - inner.x0) for lb in line_boxes]
+    R = [max(0.0, inner.x1 - lb.x1) for lb in line_boxes]
+
+    import statistics as st
+    Lm = st.median(L); Rm = st.median(R)
+    stdL = st.pstdev(L) if len(L) > 1 else 0.0
+    stdR = st.pstdev(R) if len(R) > 1 else 0.0
+
+    inner_w = max(1.0, inner.width())
+    content_w = (max(lb.x1 for lb in line_boxes) - min(lb.x0 for lb in line_boxes))
+    fills = content_w >= 0.92 * inner_w
+
+    tau_small = tol_px            # очень малый зазор
+    tau_delta = 2.5 * tol_px      # заметная асимметрия
+    tau_sym   = 1.3 * tol_px      # симметрия
+    tau_mid   = 1.8 * tol_px      # «не микрозазоры»
+
+    # Однострочный случай — проще
+    if len(line_boxes) == 1:
+        if abs(Lm - Rm) <= tau_sym and min(Lm, Rm) >= tau_mid:
+            return "center"
+        if Lm < Rm - tau_delta: return "left"
+        if Rm < Lm - tau_delta: return "right"
+        return "mixed"
+
+    # Оба зазора микроскопические
+    if Lm <= tau_small and Rm <= tau_small:
+        # если правый «гуляет» (длины строк разные) — чаще левое
+        return "left" if stdR > 1.2 * tol_px else "mixed"  # можно трактовать как justify
+
+    # Сильная асимметрия
+    if abs(Lm - Rm) >= tau_delta:
+        return "left" if Lm < Rm else "right"
+
+    # Симметрия и не микрозазоры → центр
+    if abs(Lm - Rm) <= tau_sym and min(Lm, Rm) >= tau_mid:
+        return "center"
+
+    # Заполняет почти всю ширину → чаще левое
+    if fills:
+        return "left"
+
+    return "mixed"
+
+
+def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: float = 0.0) -> Alignment:
     # Учитываем «пэддинг» — отступы внутри ячейки
     cx0 = cell.x0 + padding
     cy0 = cell.y0 + padding
@@ -205,23 +274,20 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 0.0001, paddin
     center_gap = abs(cell_mid_x - text_mid_x)
     middle_gap = abs(cell_mid_y - text_mid_y)
 
+    # Базовое решение по осям
     if center_gap <= tol_px:
         h = "center"
-    elif right_gap > left_gap:
+    elif left_gap <= right_gap:
         h = "left"
-    elif left_gap > right_gap:
-        h = "right"
     else:
-        h = "mixed"
+        h = "right"
 
-    # Вертикальное выравнивание
     if middle_gap <= tol_px:
         v = "middle"
     elif top_gap <= bottom_gap:
         v = "top"
     else:
         v = "bottom"
-
 
     centered_ok = (center_gap <= tol_px) and (middle_gap <= tol_px)
 
@@ -294,13 +360,38 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                         span_texts.append(t)
 
     if span_boxes:
+        # общий bbox текста
         tb = None
         for box in span_boxes:
             tb = box if tb is None else bbox_union(tb, box)
+
         cc.text_spans = [{"text": t, "bbox": b} for t, b in zip(span_texts, span_boxes)]
-        cc.text_bbox = tb
-        cc.alignment_text = classify_alignment(cell_rect, tb, tol_px=tol_px, padding=padding)
+        cc.text_bbox  = tb
+
+        # вертикаль — по общему bbox, как раньше
+        base_align = classify_alignment(cell_rect, tb, tol_px=tol_px, padding=padding)
+
+        # горизонталь — по строкам
+        line_boxes = _lines_in_inner(page, inner, min_cover=0.5)
+        h_align = _decide_halign_by_lines(inner, line_boxes, tol_px=tol_px)
+
+        # собрать итог
+        gaps = dict(base_align.gaps)
+        # (опционально добавить метрики)
+        # gaps.update({"lines": len(line_boxes)})
+
+        cc.alignment_text = Alignment(
+            horizontal=h_align,
+            vertical=base_align.vertical,
+            gaps=gaps,
+        )
+
         cc.is_formula_like = looks_like_formula(" ".join(span_texts))
+    else:
+        # текста нет — оставляем alignment_text=None
+        cc.alignment_text = None
+        cc.is_formula_like = False
+
 
     # -------- КАРТИНКИ --------
     img_boxes: List[BBox] = []
