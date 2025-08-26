@@ -206,18 +206,16 @@ def _decide_halign_strict_center(inner: BBox,
                                  tol_px: float,
                                  ignore_last_line: bool = True) -> str:
     """
-    'left' | 'center' | 'right' | 'mixed'
-    Центр даём только при жёсткой симметрии:
-      - |cell_mid - content_mid| <= tol_px
-      - |Lm - Rm| <= tol_px
-      - min(Lm, Rm) >= 1.5*tol_px  (не микрозазоры)
-    Если контент почти на всю ширину (fills) — центр только при симметрии; иначе left/right по сравнению L/R.
-    Во всех прочих случаях — сравнение медианных L/R с небольшой мёртвой зоной.
+    Центр даём только при:
+      - |cell_mid - content_mid| <= tau_sym
+      - |Lm - Rm| <= tau_sym
+      - min(Lm,Rm) >= tau_air   (есть «воздух», не микро-зазоры)
+    Если заполнение ширины высокое (fills) — центр только при L≈R, иначе left/right.
     """
     if not line_boxes:
         return "mixed"
 
-    # 1) опционально игнорируем последнюю (часто короткую) строку
+    # 1) игнорируем последнюю (часто короткую) строку — уменьшает ложный центр
     lines = list(line_boxes)
     if ignore_last_line and len(lines) >= 2:
         bottom_idx = max(range(len(lines)), key=lambda i: lines[i].y1)  # PyMuPDF: y вниз
@@ -225,13 +223,13 @@ def _decide_halign_strict_center(inner: BBox,
     if not lines:
         lines = line_boxes
 
-    # 2) медианные зазоры слева/справа
+    # 2) медианные зазоры по строкам
+    import statistics as st
     L = [max(0.0, lb.x0 - inner.x0) for lb in lines]
     R = [max(0.0, inner.x1 - lb.x1) for lb in lines]
-    import statistics as st
     Lm = st.median(L); Rm = st.median(R)
 
-    # 3) центр контента и ширина
+    # 3) центр и ширина контента
     content_x0 = min(lb.x0 for lb in lines)
     content_x1 = max(lb.x1 for lb in lines)
     content_mid = 0.5 * (content_x0 + content_x1)
@@ -240,31 +238,33 @@ def _decide_halign_strict_center(inner: BBox,
 
     inner_w   = max(1.0, inner.width())
     content_w = content_x1 - content_x0
-    fills     = content_w >= 0.92 * inner_w  # "почти на всю ширину"
+    fills_ratio = content_w / inner_w
+    fills = fills_ratio >= 0.965   # ← РЕКОМЕНДУЮ для твоего шаблона: 96.5%
 
-    # 4) пороги
-    tau_sym   = tol_px          # симметрия L/R и совпадение центров
-    tau_mid   = 1.5 * tol_px    # не микрозазоры
-    tau_bias  = 0.75 * tol_px   # мёртвая зона при сравнении L/R
+    # 4) пороги (жёстче обычного)
+    tau_sym  = 0.30 * tol_px   # симметрия L/R и совпадение центров (≈ 1.7pt при tol_mm=2)
+    tau_air  = 1.8  * tol_px   # «не микро» зазоры для центра (≈ 10pt при tol_mm=2)
+    tau_bias = 0.60 * tol_px   # маленькая мёртвая зона при L/R-сравнении
 
-    # --- строгий центр: совпали центры, симметрия и не микрозазоры
-    if (center_gap <= tau_sym) and (abs(Lm - Rm) <= tau_sym) and (min(Lm, Rm) >= tau_mid):
+    # --- строгий центр
+    if (center_gap <= tau_sym) and (abs(Lm - Rm) <= tau_sym) and (min(Lm, Rm) >= tau_air):
         return "center"
 
-    # --- контент почти на всю ширину: центр только при симметрии, иначе left/right
+    # --- почти вся ширина: центр только при L≈R, иначе left/right
     if fills:
         if abs(Lm - Rm) <= tau_sym:
             return "center"
         return "left" if Lm < Rm else "right"
 
-    # --- бинарное решение по L/R с небольшой мёртвой зоной
+    # --- бинарное решение по L/R
     if Lm + tau_bias < Rm:
         return "left"
     if Rm + tau_bias < Lm:
         return "right"
 
-    # в сомнительных случаях безопаснее трактовать как левое
+    # сомнительные случаи — безопасно трактуем как левое
     return "left"
+
 
 
 
@@ -317,6 +317,11 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: 
     if not centered_ok:
         gaps["note"] = "Элемент в ячейке должен быть в центре ячейки"
 
+    inner_w   = (cell.x1 - cell.x0) - 2*padding
+    content_w = content.width()
+    if inner_w > 0 and content_w >= 0.94*inner_w and min(left_gap, right_gap) <= 0.5*tol_px:
+        h = "left" if left_gap <= right_gap else "right"
+    
     return Alignment(horizontal=h, vertical=v, gaps=gaps)
 
 def looks_like_formula(text: str) -> bool:
@@ -387,16 +392,38 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
 
         # вертикаль — по общему bbox, как раньше
         base_align = classify_alignment(cell_rect, tb, tol_px=tol_px, padding=padding)
-
-        # горизонталь — по строкам
         line_boxes = _lines_in_inner(page, inner, min_cover=0.5)
         h_align = _decide_halign_strict_center(inner, line_boxes, tol_px=tol_px, ignore_last_line=True)
 
-        # собрать итог
+        # вычислим центры и построчные медианы — для логов:
+        import statistics as st
+        if line_boxes:
+            L = [max(0.0, lb.x0 - inner.x0) for lb in line_boxes]
+            R = [max(0.0, inner.x1 - lb.x1) for lb in line_boxes]
+            Lm = st.median(L); Rm = st.median(R)
+            content_x0 = min(lb.x0 for lb in line_boxes)
+            content_x1 = max(lb.x1 for lb in line_boxes)
+            content_mid = 0.5 * (content_x0 + content_x1)
+            cell_mid    = 0.5 * (inner.x0 + inner.x1)
+            center_gap  = abs(cell_mid - content_mid)
+            inner_w     = max(1.0, inner.width())
+            fills_ratio = (content_x1 - content_x0) / inner_w
+        else:
+            Lm = Rm = center_gap = fills_ratio = 0.0
+            cell_mid = 0.5 * (inner.x0 + inner.x1)
+            content_mid = 0.5 * (tb.x0 + tb.x1)  # fallback по общему bbox
+        
+        # базовые зазоры по общему bbox (уже есть в base_align.gaps): left/right/top/bottom
         gaps = dict(base_align.gaps)
-        # (опционально добавить метрики)
-        # gaps.update({"lines": len(line_boxes)})
-
+        gaps.update({
+            "cell_mid_x":    cell_mid,
+            "text_mid_x":    content_mid,
+            "center_gap_x":  center_gap,
+            "median_L":      Lm,
+            "median_R":      Rm,
+            "fills_ratio":   fills_ratio,
+        })
+        
         cc.alignment_text = Alignment(
             horizontal=h_align,
             vertical=base_align.vertical,
@@ -499,7 +526,7 @@ def _abbr_align(a: Optional[object]) -> Optional[str]:
     if not h or not v:
         return None
 
-    h_abbr = {"left": "L", "center": "C", "right": "R", "mixed": "M", "justify": "J"}.get(h, "?")
+    h_abbr = {"left":"L","center":"C","right":"R","mixed":"M","justify":"J"}.get(h, "?")
     v_abbr = {"top": "T", "middle": "M", "bottom": "B"}.get(v, "?")
     return f"{h_abbr}/{v_abbr}"
 
@@ -701,6 +728,15 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                     }
                                 ),
                             }
+                            if content.alignment_text:
+                                g = content.alignment_text.gaps
+                                admin_lines.append(
+                                    (f"[Debug][{r},{c}] H={content.alignment_text.horizontal} V={content.alignment_text.vertical} | "
+                                     f"cell_mid_x={g.get('cell_mid_x'):.2f} text_mid_x={g.get('text_mid_x'):.2f} "
+                                     f"center_gap_x={g.get('center_gap_x'):.2f} | "
+                                     f"Lm={g.get('median_L'):.2f} Rm={g.get('median_R'):.2f} fills={g.get('fills_ratio'):.3f} | "
+                                     f"bbox_gaps L={g.get('left'):.2f} R={g.get('right'):.2f} T={g.get('top'):.2f} B={g.get('bottom'):.2f}")
+                                )
                             row_cells.append(cell_info)
                             row_briefs.append(_cell_brief(cell_info, r, c))
 
