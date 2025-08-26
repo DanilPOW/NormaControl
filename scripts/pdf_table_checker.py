@@ -835,6 +835,10 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                     table_has_header_alignment_issue = False
                     header_alignment_errors = []
 
+                    # ✅ аккумуляторы для комбинированной аннотации
+                    table_font_size_issues: List[str] = []
+                    table_has_font_size_issue = False
+
                     table_briefs = []
                     table_debugs = []
 
@@ -880,7 +884,15 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             cell_info["font_report"] = fr
                             cell_info["fonts_display"] = fr.get("display", "")
 
-                            # Если есть нарушения — аннотация + лог
+                            # ✅ копим нарушения шрифта/размера на уровне таблицы
+                            for v in fr.get("violations", []):
+                                if v.get("type") in ("font", "size"):
+                                    table_has_font_size_issue = True
+                                    sample = v.get("sample", "")
+                                    sample = f' — «{sample}»' if sample else ""
+                                    table_font_size_issues.append(f"[{r},{c}] {v.get('msg','')}{sample}")
+
+                            # Если есть нарушения — аннотация + лог (локально в ячейке)
                             if fr["violations"]:
                                 msgs = []
                                 for v in fr["violations"][:3]:
@@ -952,16 +964,36 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
                     page_tables.append(table_report)
 
-                    # Если нашли проблемы с выравниванием заголовков - аннотация
-                    if table_has_header_alignment_issue:
-                        error_text = "Ошибки выравнивания заголовков:\n" + "\n".join(header_alignment_errors[:3])
-                        if len(header_alignment_errors) > 3:
-                            error_text += f"\n... и ещё {len(header_alignment_errors) - 3} ошибок"
-                        _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), error_text)
+                    # ✅ ЕДИНАЯ АННОТАЦИЯ ПО ТАБЛИЦЕ:
+                    #    (выравнивание заголовков + шрифты/размеры)
+                    if table_has_header_alignment_issue or table_has_font_size_issue:
+                        parts = []
+                        if table_has_header_alignment_issue:
+                            head = "Ошибки выравнивания заголовков:"
+                            body = "\n".join(header_alignment_errors[:5])
+                            if len(header_alignment_errors) > 5:
+                                body += f"\n... и ещё {len(header_alignment_errors) - 5} ошибок"
+                            parts.append(head + "\n" + body)
+                        if table_has_font_size_issue:
+                            head = "Ошибки шрифта/размера в ячейках:"
+                            body = "\n".join(table_font_size_issues[:8])
+                            if len(table_font_size_issues) > 8:
+                                body += f"\n... и ещё {len(table_font_size_issues) - 8} строк"
+                            parts.append(head + "\n" + body)
+
+                        combined_text = "\n\n".join(parts)
+                        _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), combined_text)
                         error_pages.add(page_num)
-                        admin_lines.append(f"[Alignment][Стр. {page_num}][Табл. {tbl_idx}] Обнаружены ошибки выравнивания заголовков:")
-                        for error in header_alignment_errors:
-                            admin_lines.append(f"  {error}")
+
+                        # лог для админа
+                        if table_has_header_alignment_issue:
+                            admin_lines.append(f"[Alignment][Стр. {page_num}][Табл. {tbl_idx}] Обнаружены ошибки выравнивания заголовков:")
+                            for error in header_alignment_errors:
+                                admin_lines.append(f"  {error}")
+                        if table_has_font_size_issue:
+                            admin_lines.append(f"[Fonts][Стр. {page_num}][Табл. {tbl_idx}] Обнаружены нарушения шрифта/размера:")
+                            for line in table_font_size_issues[:12]:
+                                admin_lines.append(f"  {line}")
 
             except Exception as e:
                 admin_lines.append(f"[Camelot] Ошибка: {e}")
