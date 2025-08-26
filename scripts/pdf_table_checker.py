@@ -242,7 +242,7 @@ def _decide_halign_strict_center(inner: BBox,
     fills = fills_ratio >= 0.965   # ← РЕКОМЕНДУЮ для твоего шаблона: 96.5%
 
     # 4) пороги (жёстче обычного)
-    tau_sym  = 0.30 * tol_px   # симметрия L/R и совпадение центров (≈ 1.7pt при tol_mm=2)
+    tau_sym  = max(0.45 * tol_px, 0.01 * inner_w)   # симметрия L/R и совпадение центров (≈ 1.7pt при tol_mm=2)
     tau_air  = 1.8  * tol_px   # «не микро» зазоры для центра (≈ 10pt при tol_mm=2)
     tau_bias = 0.60 * tol_px   # маленькая мёртвая зона при L/R-сравнении
 
