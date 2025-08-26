@@ -1,4 +1,5 @@
 # scripts/pdf_table_checker.py
+# -*- coding: utf-8 -*-
 import time
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
@@ -6,6 +7,12 @@ from typing import List, Dict, Tuple, Optional
 import camelot
 import pdfplumber
 import fitz  # PyMuPDF
+
+# === CAPTION: импортируем функции поиска и валидации подписи таблицы
+from scripts.table_caption_checker import (
+    find_table_caption,
+    validate_table_caption,
+)
 
 # Константы макета страницы
 LEFT_MARGIN_PT   = 3 * 28.35
@@ -789,6 +796,9 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
     camelot_tables_count = 0
     valid_pages: List[int] = []
 
+    # === CAPTION: глобальный счётчик таблиц для проверки номера в подписи
+    global_table_counter = 0
+
     if plumber_table_pages:
         valid_pages = [p for p in plumber_table_pages if 1 <= p <= total_pages]
         if valid_pages:
@@ -850,6 +860,43 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             f"[Camelot][Стр. {page_num}][Табл. {tbl_idx}] bbox(miner)={t._bbox} | "
                             f"fitz={tbl_rect.x0:.1f},{tbl_rect.y0:.1f},{tbl_rect.x1:.1f},{tbl_rect.y1:.1f} | ✅Таблица корректно расположена"
                         )
+
+                    # === CAPTION: поиск и валидация подписи
+                    global_table_counter += 1
+                    expected_number_str = str(global_table_counter)  # сквозная нумерация; при необходимости замени логикой глав/приложений
+
+                    cap = find_table_caption(
+                        page,
+                        tbl_rect,
+                        search_band_mm=25.0,     # окно поиска над таблицей
+                        anchor_mode="workarea",  # "workarea" (левое поле) или "table" (левая грань таблицы)
+                        tol_px=2.0
+                    )
+
+                    if cap is None:
+                        admin_lines.append(f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] Подпись не найдена")
+                        _add_text_annot_silent(page, (tbl_rect.x0, max(tbl_rect.y0 - 6, 0)),
+                                               "Нет подписи таблицы")
+                        error_pages.add(page_num)
+                    else:
+                        val = validate_table_caption(
+                            cap,
+                            expected_num_str=expected_number_str,
+                            anchor_mode="workarea",
+                            max_pt=14.0,
+                            must_black=True,
+                            must_tnr=True,
+                            require_dash=True
+                        )
+                        if val.ok:
+                            admin_lines.append(f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] ✅ «{cap.text}»")
+                        else:
+                            admin_lines.append(
+                                f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] Ошибки:\n  - " + "\n  - ".join(val.issues)
+                            )
+                            note = "Подпись таблицы:\n" + "\n".join(f"• {e}" for e in val.issues[:8])
+                            _add_text_annot_silent(page, (cap.bbox.x0, cap.bbox.y0), note)
+                            error_pages.add(page_num)
 
                     # ---------- логическая сетка
                     X, Y = build_logical_grid(t, page_height, min_frac=0.30, eps=1.0)
