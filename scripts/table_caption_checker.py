@@ -3,24 +3,25 @@ from typing import List, Optional, Tuple, Dict
 import re
 import fitz  # PyMuPDF
 
-# Если у тебя уже есть общий модуль с константами, можно импортировать их оттуда.
+# --- Константы макета / утилиты ---
 MM_TO_PT = 2.8346456693  # 1 мм = 2.8346 pt
 LEFT_MARGIN_PT = 3 * 28.35  # для режима anchor_mode="workarea"
 
 # Нормативные элементы
-DASH_CHARS = "-–—"  # дефис, en dash, em dash
+DASH_CHARS = "-–—"                 # дефис, en dash, em dash
 CAPTION_PREFIX = "Таблица"
 
 # Регулярка формата: Таблица <№> - <Название>
+# Используем f-строки с re.escape для устойчивости и чтобы избежать SyntaxError из-за смешения форматирования.
 CAPTION_NUMBER_RE = re.compile(
     rf"^Таблица\s+"
-    rf"(?P<prefix>[A-Za-zА-Яа-я])?\.?\s*"
-    rf"(?P<number>\d+(?:\.\d+)*)"
-    rf"\s*[{re.escape(DASH_CHARS)}]\s*"
+    rf"(?P<prefix>[A-Za-zА-Яа-я])?\.?\s*"           # необязательная буква для приложений: А.1
+    rf"(?P<number>\d+(?:\.\d+)*)"                   # номер/подномер: 1, 1.1, 2.3.4
+    rf"\s*[{re.escape(DASH_CHARS)}]\s*"             # допустимые тире/дефисы
     rf"(?P<title>.+?)\s*$"
 )
 
-# ============== ДАТАКЛАССЫ ==============
+# ================== ДАТАКЛАССЫ ==================
 
 @dataclass
 class BBox:
@@ -33,8 +34,8 @@ class BBox:
 class CaptionDetected:
     text: str
     bbox: BBox
-    lines: List[Dict]  # сырые строки {'text','bbox','font','size','color'}
-    number_str: Optional[str]   # '3' | '1.2' | 'А.1' и т.п.
+    lines: List[Dict]                 # сырые строки: {'text','bbox','font','size','color'}
+    number_str: Optional[str]         # '3' | '1.2' | 'А.1' и т.п.
     title: Optional[str]
     font: str
     size: float
@@ -43,17 +44,18 @@ class CaptionDetected:
     line_spacing_ok: bool
     starts_with_Tablitsa: bool
     ends_with_dot: bool
+    gap_to_table_pt: float
+    lines_between_caption_and_table: List[Dict]
 
 @dataclass
 class CaptionValidation:
     ok: bool
     issues: List[str]
 
-
-# ============== ВСПОМОГАТЕЛЬНЫЕ ==============
+# ================== ВСПОМОГАТЕЛЬНЫЕ ==================
 
 def _normalize_dash(s: str) -> str:
-    """Единообразим все типы тире к обычному дефису для стабильного парсинга."""
+    """Единообразим все типы тире к обычному дефису для стабильного парсинга/сравнения."""
     return s.replace("–", "-").replace("—", "-")
 
 def _normalize_color_to_rgb255(c) -> Tuple[int, int, int]:
@@ -81,10 +83,10 @@ def is_black_rgb(rgb: Tuple[int, int, int], tol: int = 6) -> bool:
 
 def _collect_text_lines(page: fitz.Page) -> List[Dict]:
     """
-    Вернём строки с bbox и стилем: [{'text','bbox','font','size','color'}, ...],
-    отсортированные сверху-вниз.
+    Возвращает строки с bbox и стилем: [{'text','bbox','font','size','color'}, ...],
+    отсортированные сверху-вниз (y0 растёт вниз).
     """
-    out = []
+    out: List[Dict] = []
     td = page.get_text("dict")
     for b in td.get("blocks", []):
         if b.get("type") != 0:
@@ -94,7 +96,7 @@ def _collect_text_lines(page: fitz.Page) -> List[Dict]:
             line_text = []
             sizes, fonts, colors = [], [], []
             for sp in line.get("spans", []):
-                x0, y0, x1, y1 = sp["bbox"]
+                x0, y0, x1, y1 = sp.get("bbox", (0, 0, 0, 0))
                 xs += [x0, x1]; ys += [y0, y1]
                 t = (sp.get("text") or "")
                 if t:
@@ -111,22 +113,19 @@ def _collect_text_lines(page: fitz.Page) -> List[Dict]:
             size = sum(sizes)/len(sizes) if sizes else 0.0
             font = fonts[0] if fonts else ""
             color = colors[0] if colors else 0
-            out.append({
-                "text": text,
-                "bbox": rect,
-                "font": font,
-                "size": size,
-                "color": color
-            })
+            out.append({"text": text, "bbox": rect, "font": font, "size": size, "color": color})
     out.sort(key=lambda L: (L["bbox"].y0, L["bbox"].x0))
     return out
 
 def _near_caption_lines_above_table(lines: List[Dict], tbl_rect: BBox, max_band_pt: float) -> List[Dict]:
-    """Строки в окне поиска над таблицей: y ∈ [tbl_top - band, tbl_top)."""
+    """
+    Возвращает строки в «окне поиска» над таблицей: y1 ∈ [tbl_top - band, tbl_top).
+    Сортировка снизу-вверх (ближайшая к таблице сначала).
+    """
     top = tbl_rect.y0
     band_top = max(0, top - max_band_pt)
     out = [L for L in lines if (band_top <= L["bbox"].y1 <= top - 0.5)]
-    out.sort(key=lambda L: -L["bbox"].y1)  # снизу-вверх
+    out.sort(key=lambda L: -L["bbox"].y1)
     return out
 
 def _is_no_par_indent_left(line: Dict, anchor_x: float, tol_px: float = 2.0) -> bool:
@@ -163,8 +162,7 @@ def is_times_new_roman_name(font_name: str) -> bool:
     f = base.replace(" ", "").lower()
     return ("timesnewroman" in f) or ("times-roman" in f) or ("timesnewromanps" in f) or (f == "tnr") or ("times" in f)
 
-
-# ============== ПУБЛИЧНЫЕ АПИ-ФУНКЦИИ ==============
+# ================== ПУБЛИЧНЫЕ АПИ ==================
 
 def find_table_caption(page: fitz.Page, tbl_rect: BBox,
                        search_band_mm: float = 25.0,
@@ -205,10 +203,10 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
         else:
             break
 
-    # Без абзацного отступа (проверяем по первой строке)
+    # Без абзацного отступа (по первой строке)
     no_indent_ok = _is_no_par_indent_left(cap_lines[0], anchor_x, tol_px=tol_px)
 
-    # Собираем полный текст (нормализуем тире)
+    # Полный текст (нормализуем тире)
     cap_text = " ".join(_normalize_dash(L["text"]) for L in cap_lines).strip()
 
     # Парсим номер и заголовок
@@ -221,7 +219,7 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
         number_str = None
         title = None
 
-    # Признаки стиля (по первой строке)
+    # Стиль (по первой строке)
     first = cap_lines[0]
     font = first["font"]
     size = float(first["size"])
@@ -233,6 +231,17 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
         xs += [L["bbox"].x0, L["bbox"].x1]
         ys += [L["bbox"].y0, L["bbox"].y1]
     cap_bbox = BBox(min(xs), min(ys), max(xs), max(ys))
+
+    # --- Новый блок: измеряем зазор до таблицы и собираем любые строки между подписью и таблицей
+    gap_to_table_pt = max(0.0, tbl_rect.y0 - cap_bbox.y1)
+
+    cap_ids = {id(L) for L in cap_lines}
+    lines_between: List[Dict] = []
+    for L in lines:
+        if id(L) in cap_ids:
+            continue
+        if (cap_bbox.y1 + 0.5) <= L["bbox"].y1 <= (tbl_rect.y0 - 0.5):
+            lines_between.append(L)
 
     return CaptionDetected(
         text=cap_text,
@@ -247,19 +256,24 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
         line_spacing_ok=_line_spacing_ok(cap_lines),
         starts_with_Tablitsa=cap_text.startswith(CAPTION_PREFIX),
         ends_with_dot=cap_text.endswith("."),
+        gap_to_table_pt=gap_to_table_pt,
+        lines_between_caption_and_table=lines_between,
     )
-
 
 def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
                            anchor_mode: str = "workarea",
                            max_pt: float = 14.0,
                            must_black: bool = True,
                            must_tnr: bool = True,
-                           require_dash: bool = True) -> CaptionValidation:
+                           require_dash: bool = True,
+                           max_gap_em: float = 0.6,
+                           max_gap_pt: Optional[float] = None) -> CaptionValidation:
     """
     Проверка соответствия подписи требованиям.
     expected_num_str: ожидаемый номер таблицы (например '3', '1.2', 'А.1').
     anchor_mode: для формулировки предупреждения про «без абзацного отступа».
+    max_gap_em: допустимый зазор между подписью и таблицей в "em" (от размера шрифта подписи).
+    max_gap_pt: вместо em можно задать фикс. порог в pt (если None — используется em).
     """
     issues: List[str] = []
 
@@ -286,7 +300,7 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
     if must_tnr and not is_times_new_roman_name(cap.font):
         issues.append(f"Шрифт подписи не Times New Roman: {cap.font}")
     if cap.size > max_pt + 0.1:
-        issues.append(f"Размер шрифта подписи {cap.size:.1f}pt > 14pt")
+        issues.append(f"Размер шрифта подписи {cap.size:.1f}pt > {max_pt:.0f}pt")
     if must_black and not is_black_rgb(cap.rgb, tol=6):
         issues.append(f"Цвет подписи не чёрный: RGB{cap.rgb}")
 
@@ -296,5 +310,15 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
         exp = expected_num_str.replace(" ", "")
         if got != exp:
             issues.append(f"Неверный номер таблицы: в подписи «{got}», ожидается «{exp}»")
+
+    # Зазор между подписью и таблицей / "пустая строка"
+    allowed_gap = max_gap_pt if max_gap_pt is not None else (max_gap_em * max(1.0, cap.size))
+    if cap.gap_to_table_pt > allowed_gap + 0.1:
+        issues.append(
+            f"Между подписью и таблицей слишком большой зазор ({cap.gap_to_table_pt:.1f} pt); "
+            f"не должно быть пустой строки"
+        )
+    if cap.lines_between_caption_and_table:
+        issues.append("Между подписью и таблицей не должно быть других строк")
 
     return CaptionValidation(ok=(len(issues) == 0), issues=issues)
