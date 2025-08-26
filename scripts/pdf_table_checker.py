@@ -369,7 +369,7 @@ def _decide_halign_strict_center(inner: BBox,
         return "center"
 
     # ---- «заголовочный» центр со страхами ----
-    if is_header and (fills_ratio >= 0.90) and (center_gap <= weak_sym):
+    if is_header and (fills_ratio >= 0.75) and (center_gap <= weak_sym):
         sum_lr = max(1.0, Lm + Rm)
         sym_ok = (abs(Lm - Rm) / sum_lr) <= delta_sym_norm
         air_ok = min(Lm, Rm) >= tau_air_hdr
