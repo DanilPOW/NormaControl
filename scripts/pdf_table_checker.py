@@ -304,7 +304,8 @@ def _lines_in_inner(page: fitz.Page, inner: BBox, min_cover=0.5) -> List[BBox]:
 def _decide_halign_strict_center(inner: BBox,
                                  line_boxes: List[BBox],
                                  tol_px: float,
-                                 ignore_last_line: bool = True) -> str:
+                                 ignore_last_line: bool = True,
+                                 is_header=False) -> str:
     """
     Центр даём только при:
       - |cell_mid - content_mid| <= tau_sym
@@ -342,22 +343,45 @@ def _decide_halign_strict_center(inner: BBox,
     fills = fills_ratio >= 0.965
 
     # 4) пороги
-    tau_sym  = max(0.6 * tol_px, 0.015 * inner_w)
-    tau_air  = 1.8  * tol_px
+    tau_sym  = max(0.45 * tol_px, 0.01 * inner_w)
+    tau_air  = 1.8 * tol_px
     tau_bias = 0.60 * tol_px
 
+    # послабления для заголовков
+    if is_header:
+        tau_air_hdr = 0.5 * tol_px          # минимальный воздух для центра в заголовке
+        weak_sym    = 1.25 * tau_sym
+        delta_sym_norm = 0.25               # нормализованная симметрия
+    else:
+        tau_air_hdr = tau_air
+        weak_sym    = tau_sym
+        delta_sym_norm = 0.20
+
+    # строгий центр (общий)
     if (center_gap <= tau_sym) and (abs(Lm - Rm) <= tau_sym) and (min(Lm, Rm) >= tau_air):
         return "center"
 
-    if fills:
+    # ---- «заголовочный» центр со страхами ----
+    if is_header and (fills_ratio >= 0.90) and (center_gap <= weak_sym):
+        sum_lr = max(1.0, Lm + Rm)
+        sym_ok = (abs(Lm - Rm) / sum_lr) <= delta_sym_norm
+        air_ok = min(Lm, Rm) >= tau_air_hdr
+        if sym_ok and air_ok:
+            return "center"
+
+    # почти всю ширину — центр только при L≈R, иначе L/R
+    if fills_ratio >= 0.965:
         if abs(Lm - Rm) <= tau_sym:
             return "center"
         return "left" if Lm < Rm else "right"
 
-    if Lm + tau_bias < Rm:
-        return "left"
-    if Rm + tau_bias < Lm:
-        return "right"
+    # бинарное L/R
+    if Lm + tau_bias < Rm: return "left"
+    if Rm + tau_bias < Lm: return "right"
+
+    # финальная мягкость для заголовков: если прям совсем по центру и чуть-чуть воздуха есть
+    if is_header and center_gap <= (0.8 * weak_sym) and min(Lm, Rm) >= (0.3 * tol_px):
+        return "center"
 
     return "left"
 
@@ -407,6 +431,9 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: 
         "top": top_gap, "bottom": bottom_gap,
         "center_gap": center_gap, "middle_gap": middle_gap,
         "centered_ok": centered_ok,
+        "cell_mid_x": cell_mid_x, "text_mid_x": text_mid_x,
+        "cell_mid_y": cell_mid_y, "text_mid_y": text_mid_y,
+        "middle_gap_y": middle_gap,
     }
     if not centered_ok:
         gaps["note"] = "Элемент в ячейке должен быть в центре ячейки"
@@ -443,7 +470,8 @@ def looks_like_formula(text: str) -> bool:
 
 
 def extract_cell_content(page: fitz.Page, cell_rect: BBox,
-                         tol_px: float = 2.0, padding: float = 1.5) -> CellContent:
+                         tol_px: float = 2.0, padding: float = 1.5,
+                         is_header: bool = False) -> CellContent:
     cc = CellContent()
 
     # Внутренности ячейки (не трогаем границы)
@@ -507,7 +535,9 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
         # вертикаль — по общему bbox
         base_align = classify_alignment(cell_rect, tb, tol_px=tol_px, padding=padding)
         line_boxes = _lines_in_inner(page, inner, min_cover=0.5)
-        h_align = _decide_halign_strict_center(inner, line_boxes, tol_px=tol_px, ignore_last_line=True)
+        h_align = _decide_halign_strict_center(
+            inner, line_boxes, tol_px=tol_px, ignore_last_line=True, is_header=is_header
+        )
 
         # вычислим центры и построчные медианы — для логов:
         import statistics as st
@@ -852,7 +882,9 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             x_left, x_right = X[c], X[c + 1]
                             cell_rect = BBox(x_left, y_top, x_right, y_bot)
 
-                            content = extract_cell_content(page, cell_rect, tol_px=tol_px, padding=cell_padding)
+                            content = extract_cell_content(
+                                page, cell_rect, tol_px=tol_px, padding=cell_padding, is_header=(r == 0)
+                            )
 
                             cell_info = {
                                 "cell_bbox": (cell_rect.x0, cell_rect.y0, cell_rect.x1, cell_rect.y1),
