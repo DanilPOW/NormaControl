@@ -689,6 +689,9 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                     table_has_header_alignment_issue = False
                     header_alignment_errors = []
 
+                    table_briefs = []   # сюда сложим компактные строки по всем r
+                    table_debugs = []   # сюда сложим все Debug по всем r
+
                     for r in range(rows):
                         row_cells = []
                         row_briefs = []
@@ -699,7 +702,6 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             x_left, x_right = X[c], X[c + 1]
                             cell_rect = BBox(x_left, y_top, x_right, y_bot)
                     
-                            # извлекаем содержимое с внутренним отступом
                             content = extract_cell_content(page, cell_rect, tol_px=tol_px, padding=cell_padding)
                     
                             cell_info = {
@@ -708,47 +710,41 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                 "has_images": bool(content.image_bbox),
                                 "has_vectors": bool(content.vector_bbox),
                                 "is_formula_like": content.is_formula_like,
-                                "alignment_text": (
-                                    None if not content.alignment_text else {
-                                        "horizontal": content.alignment_text.horizontal,
-                                        "vertical": content.alignment_text.vertical,
-                                        "gaps": content.alignment_text.gaps
-                                    }
-                                ),
-                                "alignment_image": (
-                                    None if not content.alignment_image else {
-                                        "horizontal": content.alignment_image.horizontal,
-                                        "vertical": content.alignment_image.vertical,
-                                        "gaps": content.alignment_image.gaps
-                                    }
-                                ),
-                                "alignment_vector": (
-                                    None if not content.alignment_vector else {
-                                        "horizontal": content.alignment_vector.horizontal,
-                                        "vertical": content.alignment_vector.vertical,
-                                        "gaps": content.alignment_vector.gaps
-                                    }
-                                ),
+                                "alignment_text": (None if not content.alignment_text else {
+                                    "horizontal": content.alignment_text.horizontal,
+                                    "vertical": content.alignment_text.vertical,
+                                    "gaps": content.alignment_text.gaps
+                                }),
+                                "alignment_image": (None if not content.alignment_image else {
+                                    "horizontal": content.alignment_image.horizontal,
+                                    "vertical": content.alignment_image.vertical,
+                                    "gaps": content.alignment_image.gaps
+                                }),
+                                "alignment_vector": (None if not content.alignment_vector else {
+                                    "horizontal": content.alignment_vector.horizontal,
+                                    "vertical": content.alignment_vector.vertical,
+                                    "gaps": content.alignment_vector.gaps
+                                }),
                             }
                     
-                            # ВАЖНО: сохраняем ячейку в отчёт
                             row_cells.append(cell_info)
-                    
-                            # 1) краткая «сеточка»
                             row_briefs.append(_cell_brief(cell_info, r, c))
                     
-                            # 2) отложим подробные debug-и до конца строки
                             if content.alignment_text:
                                 g = content.alignment_text.gaps
                                 row_debugs.append(
                                     (f"[Debug][{r},{c}] H={content.alignment_text.horizontal} V={content.alignment_text.vertical} | "
-                                     f"cell_mid_x={g.get('cell_mid_x'):.2f} text_mid_x={g.get('text_mid_x'):.2f} "
-                                     f"center_gap_x={g.get('center_gap_x'):.2f} | "
-                                     f"Lm={g.get('median_L'):.2f} Rm={g.get('median_R'):.2f} fills={g.get('fills_ratio'):.3f} | "
-                                     f"bbox_gaps L={g.get('left'):.2f} R={g.get('right'):.2f} T={g.get('top'):.2f} B={g.get('bottom'):.2f}")
+                                     f"cell_mid_x={g.get('cell_mid_x', 0):.2f} text_mid_x={g.get('text_mid_x', 0):.2f} "
+                                     f"center_gap_x={g.get('center_gap_x', 0):.2f} ; "
+                                     f"cell_mid_y={g.get('cell_mid_y', 0):.2f} text_mid_y={g.get('text_mid_y', 0):.2f} "
+                                     f"middle_gap_y={g.get('middle_gap_y', g.get('middle_gap', 0)):.2f} | "
+                                     f"Lm={g.get('median_L', 0):.2f} Rm={g.get('median_R', 0):.2f} "
+                                     f"fills={g.get('fills_ratio', 0):.3f} | "
+                                     f"bbox_gaps L={g.get('left', 0):.2f} R={g.get('right', 0):.2f} "
+                                     f"T={g.get('top', 0):.2f} B={g.get('bottom', 0):.2f}")
                                 )
                     
-                            # Проверка выравнивания заголовков (как было)
+                            # Проверки заголовков как раньше...
                             if r == 0 or c == 0:
                                 alignment_errors = []
                                 if content.alignment_text:
@@ -769,15 +765,18 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                     table_has_header_alignment_issue = True
                                     header_alignment_errors.extend(alignment_errors)
                     
-                        # === после завершения строки r ===
+                        # после строки r — копим, но не печатаем
                         table_report["cells"].append(row_cells)
+                        table_briefs.append("  " + " | ".join(row_briefs) if row_briefs else "  —")
+                        table_debugs.extend(row_debugs)
                     
-                        # 1) сначала компактная «сеточка»
-                        admin_lines.append("  " + " | ".join(row_briefs))
+                    # 1) Вся «сеточка» сразу
+                    for line in table_briefs:
+                        admin_lines.append(line)
                     
-                        # 2) затем подробные debug-строки
-                        for dbg in row_debugs:
-                            admin_lines.append(dbg)
+                    # 2) Затем подробные debug-строчки
+                    for dbg in table_debugs:
+                        admin_lines.append(dbg)
                     
                     page_tables.append(table_report)
                     
