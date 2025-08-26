@@ -201,54 +201,71 @@ def _lines_in_inner(page: fitz.Page, inner: BBox, min_cover=0.5) -> List[BBox]:
     return lines_boxes
 
 
-def _decide_halign_by_lines(inner: BBox, line_boxes: List[BBox], tol_px: float) -> str:
-    """'left'|'center'|'right'|'mixed' на основе медианных лев/прав зазоров по строкам."""
+def _decide_halign_strict_center(inner: BBox,
+                                 line_boxes: List[BBox],
+                                 tol_px: float,
+                                 ignore_last_line: bool = True) -> str:
+    """
+    'left' | 'center' | 'right' | 'mixed'
+    Центр даём только при жёсткой симметрии:
+      - |cell_mid - content_mid| <= tol_px
+      - |Lm - Rm| <= tol_px
+      - min(Lm, Rm) >= 1.5*tol_px  (не микрозазоры)
+    Если контент почти на всю ширину (fills) — центр только при симметрии; иначе left/right по сравнению L/R.
+    Во всех прочих случаях — сравнение медианных L/R с небольшой мёртвой зоной.
+    """
     if not line_boxes:
         return "mixed"
 
-    L = [max(0.0, lb.x0 - inner.x0) for lb in line_boxes]
-    R = [max(0.0, inner.x1 - lb.x1) for lb in line_boxes]
+    # 1) опционально игнорируем последнюю (часто короткую) строку
+    lines = list(line_boxes)
+    if ignore_last_line and len(lines) >= 2:
+        bottom_idx = max(range(len(lines)), key=lambda i: lines[i].y1)  # PyMuPDF: y вниз
+        lines.pop(bottom_idx)
+    if not lines:
+        lines = line_boxes
 
+    # 2) медианные зазоры слева/справа
+    L = [max(0.0, lb.x0 - inner.x0) for lb in lines]
+    R = [max(0.0, inner.x1 - lb.x1) for lb in lines]
     import statistics as st
     Lm = st.median(L); Rm = st.median(R)
-    stdL = st.pstdev(L) if len(L) > 1 else 0.0
-    stdR = st.pstdev(R) if len(R) > 1 else 0.0
 
-    inner_w = max(1.0, inner.width())
-    content_w = (max(lb.x1 for lb in line_boxes) - min(lb.x0 for lb in line_boxes))
-    fills = content_w >= 0.92 * inner_w
+    # 3) центр контента и ширина
+    content_x0 = min(lb.x0 for lb in lines)
+    content_x1 = max(lb.x1 for lb in lines)
+    content_mid = 0.5 * (content_x0 + content_x1)
+    cell_mid    = 0.5 * (inner.x0 + inner.x1)
+    center_gap  = abs(cell_mid - content_mid)
 
-    tau_small = tol_px            # очень малый зазор
-    tau_delta = 2.5 * tol_px      # заметная асимметрия
-    tau_sym   = 1.3 * tol_px      # симметрия
-    tau_mid   = 1.8 * tol_px      # «не микрозазоры»
+    inner_w   = max(1.0, inner.width())
+    content_w = content_x1 - content_x0
+    fills     = content_w >= 0.92 * inner_w  # "почти на всю ширину"
 
-    # Однострочный случай — проще
-    if len(line_boxes) == 1:
-        if abs(Lm - Rm) <= tau_sym and min(Lm, Rm) >= tau_mid:
-            return "center"
-        if Lm < Rm - tau_delta: return "left"
-        if Rm < Lm - tau_delta: return "right"
-        return "mixed"
+    # 4) пороги
+    tau_sym   = tol_px          # симметрия L/R и совпадение центров
+    tau_mid   = 1.5 * tol_px    # не микрозазоры
+    tau_bias  = 0.75 * tol_px   # мёртвая зона при сравнении L/R
 
-    # Оба зазора микроскопические
-    if Lm <= tau_small and Rm <= tau_small:
-        # если правый «гуляет» (длины строк разные) — чаще левое
-        return "left" if stdR > 1.2 * tol_px else "mixed"  # можно трактовать как justify
-
-    # Сильная асимметрия
-    if abs(Lm - Rm) >= tau_delta:
-        return "left" if Lm < Rm else "right"
-
-    # Симметрия и не микрозазоры → центр
-    if abs(Lm - Rm) <= tau_sym and min(Lm, Rm) >= tau_mid:
+    # --- строгий центр: совпали центры, симметрия и не микрозазоры
+    if (center_gap <= tau_sym) and (abs(Lm - Rm) <= tau_sym) and (min(Lm, Rm) >= tau_mid):
         return "center"
 
-    # Заполняет почти всю ширину → чаще левое
+    # --- контент почти на всю ширину: центр только при симметрии, иначе left/right
     if fills:
-        return "left"
+        if abs(Lm - Rm) <= tau_sym:
+            return "center"
+        return "left" if Lm < Rm else "right"
 
-    return "mixed"
+    # --- бинарное решение по L/R с небольшой мёртвой зоной
+    if Lm + tau_bias < Rm:
+        return "left"
+    if Rm + tau_bias < Lm:
+        return "right"
+
+    # в сомнительных случаях безопаснее трактовать как левое
+    return "left"
+
 
 
 def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: float = 0.0) -> Alignment:
@@ -373,7 +390,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
 
         # горизонталь — по строкам
         line_boxes = _lines_in_inner(page, inner, min_cover=0.5)
-        h_align = _decide_halign_by_lines(inner, line_boxes, tol_px=tol_px)
+        h_align = _decide_halign_strict_center(inner, line_boxes, tol_px=tol_px, ignore_last_line=True)
 
         # собрать итог
         gaps = dict(base_align.gaps)
@@ -482,7 +499,7 @@ def _abbr_align(a: Optional[object]) -> Optional[str]:
     if not h or not v:
         return None
 
-    h_abbr = {"left": "L", "center": "C", "right": "R"}.get(h, "?")
+    h_abbr = {"left": "L", "center": "C", "right": "R", "mixed": "M", "justify": "J"}.get(h, "?")
     v_abbr = {"top": "T", "middle": "M", "bottom": "B"}.get(v, "?")
     return f"{h_abbr}/{v_abbr}"
 
