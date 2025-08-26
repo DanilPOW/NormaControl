@@ -15,6 +15,7 @@ BOTTOM_MARGIN_PT = 2 * 28.35
 TOLERANCE_PT     = 2
 MM_TO_PT = 2.8346456693  # 1 мм = 2.8346 pt
 
+
 @dataclass
 class BBox:
     x0: float
@@ -41,7 +42,7 @@ class Alignment:
 
 @dataclass
 class CellContent:
-    text_spans: List[Dict] = field(default_factory=list)   # [{"text":..., "bbox":BBox}, ...]
+    text_spans: List[Dict] = field(default_factory=list)   # [{"text":..., "bbox":BBox, "font":..., "size":..., "color_rgb":(r,g,b)}, ...]
     images: List[BBox] = field(default_factory=list)       # bbox картинок
     vectors: List[BBox] = field(default_factory=list)      # bbox векторных объектов
     text_bbox: Optional[BBox] = None
@@ -51,6 +52,7 @@ class CellContent:
     alignment_image: Optional[Alignment] = None
     alignment_vector: Optional[Alignment] = None
     is_formula_like: bool = False                          # эвристика «формульной» ячейки
+    font_report: Optional[Dict] = None                     # {"max_size": float, "all_times_new_roman": bool, "all_black": bool, "violations": [...]}
 
 
 def _unique_sorted(vals, eps=1.0):
@@ -114,6 +116,62 @@ def bbox_union(b1: BBox, b2: BBox) -> BBox:
         x1=max(b1.x1, b2.x1),
         y1=max(b1.y1, b2.y1),
     )
+
+
+def is_times_new_roman_name(font_name: str) -> bool:
+    """
+    Учитываем популярные варианты имён: TimesNewRomanPSMT, TimesNewRomanPS-BoldMT,
+    Times-Roman, TimesNewRoman, TNR и т.п.
+    При желании можно ужесточить (исключить Bold/Italic и т.д.).
+    """
+    if not font_name:
+        return False
+    base = font_name.split('+', 1)[-1]  # отрезаем префикс сабсета
+    f = base.replace(" ", "").lower()
+    return ("timesnewroman" in f) or ("times-roman" in f) or ("timesnewromanps" in f) or (f == "tnr") or ("times" in f)
+
+
+def _normalize_color_to_rgb255(c) -> Tuple[int, int, int]:
+    """
+    PyMuPDF span['color'] встречается в разных видах:
+    - int/float (серый) 0..255 или 0..1
+    - tuple/list из 3 чисел (0..1 или 0..255)
+    - строка '#RRGGBB'
+    Вернём (R,G,B) в диапазоне 0..255.
+    """
+    def clamp255(x):
+        try:
+            return max(0, min(255, int(round(x))))
+        except Exception:
+            return 0
+
+    if isinstance(c, str) and c.startswith("#") and len(c) == 7:
+        r = int(c[1:3], 16); g = int(c[3:5], 16); b = int(c[5:7], 16)
+        return (r, g, b)
+
+    if isinstance(c, (list, tuple)) and len(c) == 3:
+        if all(isinstance(x, (int, float)) for x in c):
+            if max(c) <= 1.0:  # 0..1
+                return (clamp255(c[0] * 255), clamp255(c[1] * 255), clamp255(c[2] * 255))
+            return (clamp255(c[0]), clamp255(c[1]), clamp255(c[2]))
+
+    if isinstance(c, (int, float)):
+        if c <= 1.0:
+            v = clamp255(c * 255)
+        else:
+            v = clamp255(c)
+        return (v, v, v)
+
+    return (0, 0, 0)
+
+
+def is_black_rgb(rgb: Tuple[int, int, int], tol: int = 6) -> bool:
+    """
+    «Чёрный» с небольшим допуском (на случай антиалиасинга / смешения).
+    tol=6 означает, что (0..6) считается чёрным.
+    """
+    r, g, b = rgb
+    return r <= tol and g <= tol and b <= tol
 
 
 def bbox_area(b: BBox) -> float:
@@ -181,6 +239,7 @@ def camelot_table_bbox_to_fitz(x0, y0, x1, y1, page_height: float) -> BBox:
     # входные coords из t._bbox — в miner-системе
     return BBox(float(x0), float(page_height - y1), float(x1), float(page_height - y0))
 
+
 def _lines_in_inner(page: fitz.Page, inner: BBox, min_cover=0.5) -> List[BBox]:
     """Вернуть bbox строк, лежащих в пределах inner не менее чем на min_cover их площади."""
     lines_boxes: List[BBox] = []
@@ -191,7 +250,7 @@ def _lines_in_inner(page: fitz.Page, inner: BBox, min_cover=0.5) -> List[BBox]:
         for line in b.get("lines", []):
             xs, ys = [], []
             for span in line.get("spans", []):
-                x0, y0, x1, y1 = span.get("bbox", (0,0,0,0))
+                x0, y0, x1, y1 = span.get("bbox", (0, 0, 0, 0))
                 sb = BBox(x0, y0, x1, y1)
                 inter_area, inter = bbox_intersection(sb, inner)
                 if inter_area > 0 and inter_area / max(1.0, bbox_area(sb)) >= min_cover:
@@ -239,33 +298,27 @@ def _decide_halign_strict_center(inner: BBox,
     inner_w   = max(1.0, inner.width())
     content_w = content_x1 - content_x0
     fills_ratio = content_w / inner_w
-    fills = fills_ratio >= 0.965   # ← РЕКОМЕНДУЮ для твоего шаблона: 96.5%
+    fills = fills_ratio >= 0.965
 
-    # 4) пороги (жёстче обычного)
-    tau_sym  = max(0.45 * tol_px, 0.01 * inner_w)   # симметрия L/R и совпадение центров (≈ 1.7pt при tol_mm=2)
-    tau_air  = 1.8  * tol_px   # «не микро» зазоры для центра (≈ 10pt при tol_mm=2)
-    tau_bias = 0.60 * tol_px   # маленькая мёртвая зона при L/R-сравнении
+    # 4) пороги
+    tau_sym  = max(0.45 * tol_px, 0.01 * inner_w)
+    tau_air  = 1.8  * tol_px
+    tau_bias = 0.60 * tol_px
 
-    # --- строгий центр
     if (center_gap <= tau_sym) and (abs(Lm - Rm) <= tau_sym) and (min(Lm, Rm) >= tau_air):
         return "center"
 
-    # --- почти вся ширина: центр только при L≈R, иначе left/right
     if fills:
         if abs(Lm - Rm) <= tau_sym:
             return "center"
         return "left" if Lm < Rm else "right"
 
-    # --- бинарное решение по L/R
     if Lm + tau_bias < Rm:
         return "left"
     if Rm + tau_bias < Lm:
         return "right"
 
-    # сомнительные случаи — безопасно трактуем как левое
     return "left"
-
-
 
 
 def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: float = 0.0) -> Alignment:
@@ -317,12 +370,13 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: 
     if not centered_ok:
         gaps["note"] = "Элемент в ячейке должен быть в центре ячейки"
 
-    inner_w   = (cell.x1 - cell.x0) - 2*padding
+    inner_w   = (cell.x1 - cell.x0) - 2 * padding
     content_w = content.width()
-    if inner_w > 0 and content_w >= 0.94*inner_w and min(left_gap, right_gap) <= 0.5*tol_px:
+    if inner_w > 0 and content_w >= 0.94 * inner_w and min(left_gap, right_gap) <= 0.5 * tol_px:
         h = "left" if left_gap <= right_gap else "right"
-    
+
     return Alignment(horizontal=h, vertical=v, gaps=gaps)
+
 
 def looks_like_formula(text: str) -> bool:
     if not text:
@@ -346,6 +400,7 @@ def looks_like_formula(text: str) -> bool:
 
     return score >= 4  # настроечный порог
 
+
 def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                          tol_px: float = 2.0, padding: float = 1.5) -> CellContent:
     cc = CellContent()
@@ -353,19 +408,22 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
     # Внутренности ячейки (не трогаем границы)
     inner = bbox_inset(cell_rect, padding)
 
-    # Порогики
+    # Пороги
     MIN_TEXT_COVER = 0.50   # ≥50% спана лежит в ячейке
     MIN_IMG_COVER  = 0.70   # ≥70% картинки лежит в ячейке
     MIN_VEC_COVER  = 0.70   # ≥70% вектора лежит в ячейке
     MIN_AREA_PT2   = 8.0 * 8.0  # минимальная площадь содержимого
-    # относительный порог для «крошечного» текста в картинковой ячейке
-    TINY_TEXT_VS_IMG = 0.15
+    TINY_TEXT_VS_IMG = 0.15      # относительный порог для «крошечного» текста в картинковой ячейке
 
     text_dict = page.get_text("dict")
 
     # -------- ТЕКСТ --------
     span_boxes: List[BBox] = []
     span_texts: List[str] = []
+    span_fonts: List[str] = []
+    span_sizes: List[float] = []
+    span_colors: List[Tuple[int, int, int]] = []
+
     for b in text_dict.get("blocks", []):
         if b.get("type") != 0:
             continue
@@ -377,9 +435,18 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                     continue
                 if rect_reasonably_inside(sb, inner, MIN_TEXT_COVER):
                     t = (span.get("text") or "").strip()
-                    if t:
-                        span_boxes.append(sb)
-                        span_texts.append(t)
+                    if not t:
+                        continue
+                    fnt  = span.get("font", "")           # PostScript name
+                    sz   = float(span.get("size", 0.0))   # pt
+                    raw_col = span.get("color", span.get("fill", 0))
+                    colv = _normalize_color_to_rgb255(raw_col)
+
+                    span_boxes.append(sb)
+                    span_texts.append(t)
+                    span_fonts.append(fnt)
+                    span_sizes.append(sz)
+                    span_colors.append(colv)
 
     if span_boxes:
         # общий bbox текста
@@ -387,10 +454,16 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
         for box in span_boxes:
             tb = box if tb is None else bbox_union(tb, box)
 
-        cc.text_spans = [{"text": t, "bbox": b} for t, b in zip(span_texts, span_boxes)]
+        cc.text_spans = [{
+            "text": t,
+            "bbox": b,
+            "font": f,
+            "size": s,
+            "color_rgb": c
+        } for t, b, f, s, c in zip(span_texts, span_boxes, span_fonts, span_sizes, span_colors)]
         cc.text_bbox  = tb
 
-        # вертикаль — по общему bbox, как раньше
+        # вертикаль — по общему bbox
         base_align = classify_alignment(cell_rect, tb, tol_px=tol_px, padding=padding)
         line_boxes = _lines_in_inner(page, inner, min_cover=0.5)
         h_align = _decide_halign_strict_center(inner, line_boxes, tol_px=tol_px, ignore_last_line=True)
@@ -412,7 +485,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             Lm = Rm = center_gap = fills_ratio = 0.0
             cell_mid = 0.5 * (inner.x0 + inner.x1)
             content_mid = 0.5 * (tb.x0 + tb.x1)  # fallback по общему bbox
-        
+
         # базовые зазоры по общему bbox (уже есть в base_align.gaps): left/right/top/bottom
         gaps = dict(base_align.gaps)
         gaps.update({
@@ -423,7 +496,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             "median_R":      Rm,
             "fills_ratio":   fills_ratio,
         })
-        
+
         cc.alignment_text = Alignment(
             horizontal=h_align,
             vertical=base_align.vertical,
@@ -431,11 +504,37 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
         )
 
         cc.is_formula_like = looks_like_formula(" ".join(span_texts))
+
+        # ---------- ПРОВЕРКИ ШРИФТА ----------
+        MAX_PT = 14.0
+        font_violations = []
+        all_tnr   = True
+        all_black = True
+        max_size  = 0.0
+
+        for t, f, s, c in zip(span_texts, span_fonts, span_sizes, span_colors):
+            max_size = max(max_size, s)
+            if not is_times_new_roman_name(f):
+                all_tnr = False
+                font_violations.append({"type": "font", "msg": f"Не Times New Roman: {f}", "sample": t[:60], "size": s})
+            if s > MAX_PT + 0.1:  # небольшой допуск
+                font_violations.append({"type": "size", "msg": f"Размер {s:.1f}pt > 14pt", "sample": t[:60], "font": f})
+            if not is_black_rgb(c, tol=6):
+                all_black = False
+                font_violations.append({"type": "color", "msg": f"Цвет RGB{c} не чёрный", "sample": t[:60], "font": f, "size": s})
+
+        cc.font_report = {
+            "max_size": max_size,
+            "all_times_new_roman": all_tnr,
+            "all_black": all_black,
+            "violations": font_violations
+        }
+
     else:
-        # текста нет — оставляем alignment_text=None
+        # текста нет
         cc.alignment_text = None
         cc.is_formula_like = False
-
+        cc.font_report = {"max_size": 0.0, "all_times_new_roman": True, "all_black": True, "violations": []}
 
     # -------- КАРТИНКИ --------
     img_boxes: List[BBox] = []
@@ -499,6 +598,9 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             cc.text_bbox = None
             cc.alignment_text = None
             cc.is_formula_like = False
+            # При этом отчёт по шрфту можно оставить как есть — он отражает реальные спаны,
+            # но если нужно, можно обнулить:
+            # cc.font_report = {"max_size": 0.0, "all_times_new_roman": True, "all_black": True, "violations": []}
 
     # если вектора есть, но их площадь мизерная относительно ячейки — считаем шумом
     if cc.vector_bbox and (bbox_area(cc.vector_bbox) / max(1.0, cell_area) < 0.02):
@@ -507,6 +609,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
         cc.alignment_vector = None
 
     return cc
+
 
 def _abbr_align(a: Optional[object]) -> Optional[str]:
     """
@@ -689,21 +792,21 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                     table_has_header_alignment_issue = False
                     header_alignment_errors = []
 
-                    table_briefs = []   # сюда сложим компактные строки по всем r
-                    table_debugs = []   # сюда сложим все Debug по всем r
+                    table_briefs = []   # компакт по всем r
+                    table_debugs = []   # все Debug по всем r
 
                     for r in range(rows):
                         row_cells = []
                         row_briefs = []
                         row_debugs = []
-                    
+
                         y_top, y_bot = Y[r], Y[r + 1]
                         for c in range(cols):
                             x_left, x_right = X[c], X[c + 1]
                             cell_rect = BBox(x_left, y_top, x_right, y_bot)
-                    
+
                             content = extract_cell_content(page, cell_rect, tol_px=tol_px, padding=cell_padding)
-                    
+
                             cell_info = {
                                 "cell_bbox": (cell_rect.x0, cell_rect.y0, cell_rect.x1, cell_rect.y1),
                                 "has_text": bool(content.text_bbox),
@@ -726,10 +829,31 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                     "gaps": content.alignment_vector.gaps
                                 }),
                             }
-                    
+
+                            # --- FONT REPORT (переносим из content) ---
+                            fr = getattr(content, "font_report", None)
+                            if fr is None:
+                                fr = {"max_size": 0.0, "all_times_new_roman": True, "all_black": True, "violations": []}
+                            cell_info["font_report"] = fr
+
+                            # Если есть нарушения — аннотируем левый верх угла ячейки + лог
+                            if fr["violations"]:
+                                msgs = []
+                                for v in fr["violations"][:3]:
+                                    msgs.append(f"• {v['msg']}")
+                                if len(fr["violations"]) > 3:
+                                    msgs.append(f"... и ещё {len(fr['violations']) - 3}")
+                                annot_text = "Нарушения шрифта:\n" + "\n".join(msgs)
+                                _add_text_annot_silent(page, (cell_rect.x0 + 2, cell_rect.y0 + 2), annot_text)
+                                error_pages.add(page_num)
+
+                                row_debugs.append(
+                                    f"[Font][{r},{c}] max={fr['max_size']:.1f}pt | TNR={fr['all_times_new_roman']} | BLACK={fr['all_black']} | n={len(fr['violations'])}"
+                                )
+
                             row_cells.append(cell_info)
                             row_briefs.append(_cell_brief(cell_info, r, c))
-                    
+
                             if content.alignment_text:
                                 g = content.alignment_text.gaps
                                 row_debugs.append(
@@ -743,7 +867,7 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                      f"bbox_gaps L={g.get('left', 0):.2f} R={g.get('right', 0):.2f} "
                                      f"T={g.get('top', 0):.2f} B={g.get('bottom', 0):.2f}")
                                 )
-                    
+
                             # Проверки заголовков как раньше...
                             if r == 0 or c == 0:
                                 alignment_errors = []
@@ -764,25 +888,25 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                 if alignment_errors:
                                     table_has_header_alignment_issue = True
                                     header_alignment_errors.extend(alignment_errors)
-                    
+
                         # после строки r — копим, но не печатаем
                         table_report["cells"].append(row_cells)
                         table_briefs.append("  " + " | ".join(row_briefs) if row_briefs else "  —")
                         table_debugs.extend(row_debugs)
-                    
+
                     # 1) Вся «сеточка» сразу
                     for line in table_briefs:
                         admin_lines.append(line)
-                    
+
                     # 2) Затем подробные debug-строчки
                     for dbg in table_debugs:
                         admin_lines.append(dbg)
-                    
+
                     page_tables.append(table_report)
-                    
+
                     # Если нашли проблемы с выравниванием заголовков - добавляем аннотацию
                     if table_has_header_alignment_issue:
-                        error_text = "Ошибки выравнивания заголовков:\n" + "\n".join(header_alignment_errors[:3])  # Ограничиваем количество ошибок в аннотации
+                        error_text = "Ошибки выравнивания заголовков:\n" + "\n".join(header_alignment_errors[:3])
                         if len(header_alignment_errors) > 3:
                             error_text += f"\n... и ещё {len(header_alignment_errors) - 3} ошибок"
                         _add_text_annot_silent(
