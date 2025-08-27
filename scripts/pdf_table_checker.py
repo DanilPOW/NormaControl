@@ -549,7 +549,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             "color_rgb": c,
             "flags": fl,
             "underline": ul,
-        } for t, b, f, s, c in zip(span_texts, span_boxes, span_fonts, span_sizes, span_colors)]
+        } for t, b, f, s, c, fl, ul in zip(span_texts, span_boxes, span_fonts, span_sizes, span_colors, span_flags, span_underline)]
         cc.text_bbox  = tb
 
         # вертикаль — по общему bbox
