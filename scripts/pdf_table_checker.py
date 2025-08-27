@@ -347,7 +347,6 @@ def _decide_halign_strict_center(inner: BBox,
     inner_w   = max(1.0, inner.width())
     content_w = content_x1 - content_x0
     fills_ratio = content_w / inner_w
-    fills = fills_ratio >= 0.965
 
     # 4) пороги
     tau_sym  = max(0.45 * tol_px, 0.01 * inner_w)
@@ -356,9 +355,9 @@ def _decide_halign_strict_center(inner: BBox,
 
     # послабления для заголовков
     if is_header:
-        tau_air_hdr = 0.5 * tol_px          # минимальный воздух для центра в заголовке
+        tau_air_hdr = 0.5 * tol_px
         weak_sym    = 1.25 * tau_sym
-        delta_sym_norm = 0.25               # нормализованная симметрия
+        delta_sym_norm = 0.25
     else:
         tau_air_hdr = tau_air
         weak_sym    = tau_sym
@@ -368,7 +367,7 @@ def _decide_halign_strict_center(inner: BBox,
     if (center_gap <= tau_sym) and (abs(Lm - Rm) <= tau_sym) and (min(Lm, Rm) >= tau_air):
         return "center"
 
-    # ---- «заголовочный» центр со страхами ----
+    # «заголовочный» центр
     if is_header and (fills_ratio >= 0.75) and (center_gap <= weak_sym):
         sum_lr = max(1.0, Lm + Rm)
         sym_ok = (abs(Lm - Rm) / sum_lr) <= delta_sym_norm
@@ -386,7 +385,7 @@ def _decide_halign_strict_center(inner: BBox,
     if Lm + tau_bias < Rm: return "left"
     if Rm + tau_bias < Lm: return "right"
 
-    # финальная мягкость для заголовков: если прям совсем по центру и чуть-чуть воздуха есть
+    # мягкость для заголовков
     if is_header and center_gap <= (0.8 * weak_sym) and min(Lm, Rm) >= (0.3 * tol_px):
         return "center"
 
@@ -394,7 +393,6 @@ def _decide_halign_strict_center(inner: BBox,
 
 
 def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: float = 0.0) -> Alignment:
-    # Учитываем «пэддинг»
     cx0 = cell.x0 + padding
     cy0 = cell.y0 + padding
     cx1 = cell.x1 - padding
@@ -407,7 +405,6 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: 
     top_gap    = max(0.0, ty0 - cy0)
     bottom_gap = max(0.0, cy1 - ty1)
 
-    # Центры
     cell_mid_x = (cx0 + cx1) / 2.0
     cell_mid_y = (cy0 + cy1) / 2.0
     text_mid_x = (tx0 + tx1) / 2.0
@@ -416,7 +413,6 @@ def classify_alignment(cell: BBox, content: BBox, tol_px: float = 2.0, padding: 
     center_gap = abs(cell_mid_x - text_mid_x)
     middle_gap = abs(cell_mid_y - text_mid_y)
 
-    # Базовое решение по осям
     if center_gap <= tol_px:
         h = "center"
     elif left_gap <= right_gap:
@@ -476,6 +472,91 @@ def looks_like_formula(text: str) -> bool:
     return score >= 4  # настроечный порог
 
 
+# ---------- НОВОЕ: детектор подчёркивания по векторным линиям ----------
+def _collect_horizontal_segments(page: fitz.Page) -> List[Tuple[float, float, float]]:
+    """
+    Возвращает список горизонтальных сегментов как (x0, x1, y),
+    извлечённых из page.get_drawings().
+    """
+    segs: List[Tuple[float, float, float]] = []
+    try:
+        for d in page.get_drawings():
+            for op, pts in d.get("items", []):
+                # прямоугольники (re) не нужны; интересуют линии / поли-линии
+                if op in ("l", "re"):  # 'l' — line; 're' опустим
+                    if op == "l" and len(pts) >= 4:
+                        x0, y0, x1, y1 = pts[:4]
+                        if abs(y1 - y0) <= 0.25 and abs(x1 - x0) >= 0.5:
+                            x_lo = min(x0, x1); x_hi = max(x0, x1)
+                            segs.append((x_lo, x_hi, y0))
+                elif op == "c":  # curve — не рассматриваем
+                    continue
+                else:
+                    # Некоторые версии возвращают поли-линии как последовательность движений:
+                    # обработаем как цепочку отрезков
+                    if len(pts) >= 6 and len(pts) % 2 == 0:
+                        for i in range(0, len(pts) - 2, 2):
+                            x0, y0 = pts[i], pts[i+1]
+                            x1, y1 = pts[i+2], pts[i+3]
+                            if abs(y1 - y0) <= 0.25 and abs(x1 - x0) >= 0.5:
+                                x_lo = min(x0, x1); x_hi = max(x0, x1)
+                                segs.append((x_lo, x_hi, y0))
+    except Exception:
+        pass
+    return segs
+
+
+def _x_overlap_ratio(a0: float, a1: float, b0: float, b1: float) -> float:
+    left = max(a0, b0); right = min(a1, b1)
+    inter = max(0.0, right - left)
+    denom = max(1.0, min(a1 - a0, b1 - b0))
+    return inter / denom
+
+
+def _detect_underlines_for_spans(page: fitz.Page, inner: BBox, cell_rect: BBox,
+                                 spans: List[Dict],
+                                 y_tol_pt: float = 1.2,
+                                 min_x_cover: float = 0.65) -> List[bool]:
+    """
+    Для каждого span возвращает флаг, есть ли под ним подчёркивание,
+    сделанное горизонтальной векторной линией.
+    Фильтруем линии, которые касаются границ ячейки (скорее это сетка).
+    """
+    segs = _collect_horizontal_segments(page)
+    under = [False] * len(spans)
+    if not segs or not spans:
+        return under
+
+    # Оставляем сегменты, которые лежат (почти) внутри inner и не касаются border ячейки
+    filtered = []
+    for (x0, x1, y) in segs:
+        seg_bb = BBox(x0, y, x1, y)  # высота ≈ 0
+        if not rect_reasonably_inside(seg_bb, inner, 0.50):
+            continue
+        if touches_cell_border(seg_bb, cell_rect, tol=1.2):
+            continue
+        filtered.append((x0, x1, y))
+
+    if not filtered:
+        return under
+
+    for i, sp in enumerate(spans):
+        sb: BBox = sp["bbox"]
+        size = float(sp.get("size", 0.0)) if "size" in sp else 0.0
+        # вертикальный коридор поиска подчеркивания: чуть ниже нижней кромки текста
+        # используем as-is: [y1 - y_tol, y1 + y_tol] (PyMuPDF: y вниз)
+        y0 = sb.y1 - y_tol_pt
+        y1 = sb.y1 + y_tol_pt
+        for (x0, x1, y) in filtered:
+            if y0 <= y <= y1:
+                cover = _x_overlap_ratio(sb.x0, sb.x1, x0, x1)
+                if cover >= min_x_cover:
+                    under[i] = True
+                    break
+    return under
+# ---------- /НОВОЕ ----------
+
+
 def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                          tol_px: float = 2.0, padding: float = 1.5,
                          is_header: bool = False) -> CellContent:
@@ -500,7 +581,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
     span_sizes: List[float] = []
     span_colors: List[Tuple[int, int, int]] = []
     span_flags: List[int] = []
-    span_underline: List[bool] = []
+    span_underline_attr: List[bool] = []
 
     for b in text_dict.get("blocks", []):
         if b.get("type") != 0:
@@ -525,7 +606,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                         flags = int(flags_val)
                     except Exception:
                         flags = 0
-                    underline = bool(span.get("underline", False))
+                    underline_attr = bool(span.get("underline", False))  # редко встречается
 
                     span_boxes.append(sb)
                     span_texts.append(t)
@@ -533,7 +614,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                     span_sizes.append(sz)
                     span_colors.append(colv)
                     span_flags.append(flags)
-                    span_underline.append(underline)
+                    span_underline_attr.append(underline_attr)
 
     if span_boxes:
         # общий bbox текста
@@ -548,8 +629,8 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             "size": s,
             "color_rgb": c,
             "flags": fl,
-            "underline": ul,
-        } for t, b, f, s, c, fl, ul in zip(span_texts, span_boxes, span_fonts, span_sizes, span_colors, span_flags, span_underline)]
+            "underline_attr": ul,
+        } for t, b, f, s, c, fl, ul in zip(span_texts, span_boxes, span_fonts, span_sizes, span_colors, span_flags, span_underline_attr)]
         cc.text_bbox  = tb
 
         # вертикаль — по общему bbox
@@ -577,7 +658,6 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             cell_mid = 0.5 * (inner.x0 + inner.x1)
             content_mid = 0.5 * (tb.x0 + tb.x1)  # fallback по общему bbox
 
-        # базовые зазоры (уже есть в base_align.gaps)
         gaps = dict(base_align.gaps)
         gaps.update({
             "cell_mid_x":    cell_mid,
@@ -617,11 +697,18 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                 all_black = False
                 font_violations.append({"type": "color", "msg": f"Цвет RGB{c} не чёрный", "sample": t[:60], "font": f, "size": s})
 
-        for t, f, fl, ul in zip(span_texts, span_fonts, span_flags, span_underline):
+        # НОВОЕ: геометрический детект underline
+        # 1) по имени/флагам — только для bold/italic (underline_attr редко приходит)
+        underline_geo_flags = _detect_underlines_for_spans(page, inner, cell_rect, [
+            {"bbox": b, "size": s} for b, s in zip(span_boxes, span_sizes)
+        ], y_tol_pt=1.2, min_x_cover=0.65)
+
+        for idx, (t, f, fl, ul_attr) in enumerate(zip(span_texts, span_fonts, span_flags, span_underline_attr)):
             f_l = (f or "").lower()
-            is_bold = any(k in f_l for k in ["bold", "black", "heavy", "semibold", "demibold"]) or bool(fl & 1)
-            is_italic = any(k in f_l for k in ["italic", "oblique"]) or bool(fl & 2)
-            is_underlined = bool(ul) or bool(fl & 4)
+            is_bold = any(k in f_l for k in ["bold", "black", "heavy", "semibold", "demibold"])
+            is_italic = any(k in f_l for k in ["italic", "oblique"]) or bool(fl & 64)  # 64 = Italic
+            # underline = либо явный атрибут (редко), либо геометрически найденная линия
+            is_underlined = bool(ul_attr) or bool(underline_geo_flags[idx])
 
             if is_bold:
                 font_violations.append({"type": "style", "msg": "Жирный шрифт в ячейке недопустим", "sample": t[:60]})
@@ -684,7 +771,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                         xs.append(pts[k]); ys.append(pts[k + 1])
             if xs and ys:
                 vb = BBox(min(xs), min(ys), max(xs), max(ys))
-                if bbox_area(vb) < MIN_AREA_PT2:
+                if bbox_area(vb) <  MIN_AREA_PT2:
                     continue
                 # внутри и не касается границ ячейки — иначе это рамка/решётка
                 if rect_reasonably_inside(vb, inner, MIN_VEC_COVER) and not touches_cell_border(vb, cell_rect, tol=padding + 0.5):
@@ -711,7 +798,6 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             cc.text_bbox = None
             cc.alignment_text = None
             cc.is_formula_like = False
-            # font_report можно оставить (фиксирует реальные спаны)
 
     if cc.vector_bbox and (bbox_area(cc.vector_bbox) / max(1.0, cell_area) < 0.02):
         cc.vectors.clear()
@@ -745,11 +831,6 @@ def _abbr_align(a: Optional[object]) -> Optional[str]:
 
 
 def _cell_brief(cell_info: Dict, r: int, c: int) -> str:
-    """
-    Краткий отчёт по ячейке:
-    [r,c] T=C/M I=L/T V=R/B {F}
-    Отсутствующий тип не выводим.
-    """
     parts = [f"[{r},{c}]"]
 
     t = _abbr_align(cell_info.get("alignment_text"))
@@ -769,7 +850,6 @@ def _cell_brief(cell_info: Dict, r: int, c: int) -> str:
 
 
 def _add_text_annot_silent(page: fitz.Page, point_xy: Tuple[float, float], msg: str):
-    """Тихая точечная текстовая аннотация в стиле скрипта нумерации (без логов)."""
     try:
         ann = page.add_text_annot(fitz.Point(*point_xy), msg)
         ann.set_info(title="Сервис нормоконтроля", content=msg)
@@ -779,13 +859,6 @@ def _add_text_annot_silent(page: fitz.Page, point_xy: Tuple[float, float], msg: 
 
 
 def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=1.5):
-    """
-    Возвращает:
-      - user_summary
-      - admin_details: лог по страницам/таблицам и краткие строки по ячейкам
-      - table_bboxes_by_page (fitz-координаты)
-      - cell_analysis_by_page
-    """
     tol_px = float(tol_mm) * MM_TO_PT
     admin_lines = []
     error_pages = set()
@@ -817,7 +890,7 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
         admin_lines.append(f"[pdfplumber] Ошибка: {e}")
     admin_lines.append(f"[pdfplumber] Найдено {len(plumber_table_pages)} страниц с таблицами за {time.perf_counter() - t0:.2f} сек.")
 
-    # ---- Этап 2: Camelot — извлечение таблиц, проверка полей/центровки и анализ ячеек
+    # ---- Этап 2: Camelot
     t1 = time.perf_counter()
     camelot_tables_count = 0
     valid_pages: List[int] = []
@@ -839,7 +912,6 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                 )
                 camelot_tables_count = len(tables)
 
-                # Счётчик таблиц на каждой странице для красивого лога
                 per_page_table_counter: Dict[int, int] = {}
 
                 for t in tables:
@@ -850,16 +922,13 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                     page = pdf_document[page_num - 1]
                     page_width, page_height = page.rect.width, page.rect.height
 
-                    # bbox таблицы: miner -> fitz
                     x0_m, y0_m, x1_m, y1_m = t._bbox
                     tbl_rect = camelot_table_bbox_to_fitz(x0_m, y0_m, x1_m, y1_m, page_height)
 
-                    # копим bbox (в fitz-координаты)
                     table_bboxes_by_page.setdefault(page_num, []).append(
                         (float(tbl_rect.x0), float(tbl_rect.y0), float(tbl_rect.x1), float(tbl_rect.y1))
                     )
 
-                    # проверки на поля/центр
                     errors = []
                     if (tbl_rect.x0 < LEFT_MARGIN_PT - TOLERANCE_PT or
                         tbl_rect.x1 > page_width - RIGHT_MARGIN_PT + TOLERANCE_PT or
@@ -887,15 +956,15 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             f"fitz={tbl_rect.x0:.1f},{tbl_rect.y0:.1f},{tbl_rect.x1:.1f},{tbl_rect.y1:.1f} | ✅Таблица корректно расположена"
                         )
 
-                    # === CAPTION: поиск и валидация подписи
+                    # === CAPTION
                     global_table_counter += 1
-                    expected_number_str = str(global_table_counter)  # сквозная нумерация; при необходимости замени логикой глав/приложений
+                    expected_number_str = str(global_table_counter)
 
                     cap = find_table_caption(
                         page,
                         tbl_rect,
-                        search_band_mm=25.0,     # окно поиска над таблицей
-                        anchor_mode="workarea",  # "workarea" (левое поле) или "table" (левая грань таблицы)
+                        search_band_mm=25.0,
+                        anchor_mode="workarea",
                         tol_px=2.0
                     )
 
@@ -935,11 +1004,9 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
                     admin_lines.append(f"[Cells][Стр. {page_num}][Табл. {tbl_idx}] Размер: {rows}×{cols}")
 
-                    # флаг несоблюдения выравнивания в заголовках
                     table_has_header_alignment_issue = False
                     header_alignment_errors = []
 
-                    # ✅ аккумуляторы для комбинированной аннотации
                     table_font_size_issues: List[str] = []
                     table_has_font_size_issue = False
 
@@ -983,14 +1050,12 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                 }),
                             }
 
-                            # --- FONT REPORT (переносим из content) ---
                             fr = getattr(content, "font_report", None)
                             if fr is None:
                                 fr = {"max_size": 0.0, "all_times_new_roman": True, "all_black": True, "violations": [], "display": ""}
                             cell_info["font_report"] = fr
                             cell_info["fonts_display"] = fr.get("display", "")
 
-                            # ✅ копим нарушения шрифта/размера на уровне таблицы
                             for v in fr.get("violations", []):
                                 if v.get("type") in ("font", "size", "style"):
                                     table_has_font_size_issue = True
@@ -998,7 +1063,6 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                     sample = f' — «{sample}»' if sample else ""
                                     table_font_size_issues.append(f"[{r},{c}] {v.get('msg','')}{sample}")
 
-                            # Если есть нарушения — аннотация + лог (локально в ячейке)
                             if fr["violations"]:
                                 msgs = []
                                 for v in fr["violations"][:3]:
@@ -1013,7 +1077,6 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                     f"[Font][{r},{c}] max={fr['max_size']:.1f}pt | TNR={fr['all_times_new_roman']} | BLACK={fr['all_black']} | n={len(fr['violations'])}"
                                 )
 
-                            # Лог сводки шрифтов (видимый даже без нарушений)
                             if cell_info["fonts_display"]:
                                 row_debugs.append(f"[Fonts][{r},{c}] {cell_info['fonts_display']}")
 
@@ -1034,7 +1097,6 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                      f"T={g.get('top', 0):.2f} B={g.get('bottom', 0):.2f}")
                                 )
 
-                            # Проверки заголовков
                             if r == 0 or c == 0:
                                 alignment_errors = []
                                 if content.alignment_text:
@@ -1055,23 +1117,18 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                     table_has_header_alignment_issue = True
                                     header_alignment_errors.extend(alignment_errors)
 
-                        # после строки r — копим
                         table_report["cells"].append(row_cells)
                         table_briefs.append("  " + " | ".join(row_briefs) if row_briefs else "  —")
                         table_debugs.extend(row_debugs)
 
-                    # 1) Вся «сеточка»
                     for line in table_briefs:
                         admin_lines.append(line)
 
-                    # 2) Подробные debug-строчки
                     for dbg in table_debugs:
                         admin_lines.append(dbg)
 
                     page_tables.append(table_report)
 
-                    # ✅ ЕДИНАЯ АННОТАЦИЯ ПО ТАБЛИЦЕ:
-                    #    (выравнивание заголовков + шрифты/размеры)
                     if table_has_header_alignment_issue or table_has_font_size_issue:
                         parts = []
                         if table_has_header_alignment_issue:
@@ -1091,7 +1148,6 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                         _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), combined_text)
                         error_pages.add(page_num)
 
-                        # лог для админа
                         if table_has_header_alignment_issue:
                             admin_lines.append(f"[Alignment][Стр. {page_num}][Табл. {tbl_idx}] Обнаружены ошибки выравнивания заголовков:")
                             for error in header_alignment_errors:
@@ -1106,7 +1162,6 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
     admin_lines.append(f"[Camelot] Обработано {camelot_tables_count} таблиц за {time.perf_counter() - t1:.2f} сек.")
 
-    # ---- Итог
     if error_pages:
         user_summary = "⚠️Проверка таблиц: обнаружены нарушения на стр " + ", ".join(map(str, sorted(error_pages)))
     else:
