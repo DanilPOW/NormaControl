@@ -499,6 +499,8 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
     span_fonts: List[str] = []
     span_sizes: List[float] = []
     span_colors: List[Tuple[int, int, int]] = []
+    span_flags: List[int] = []
+    span_underline: List[bool] = []
 
     for b in text_dict.get("blocks", []):
         if b.get("type") != 0:
@@ -518,11 +520,20 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                     raw_col = span.get("color", span.get("fill", 0))
                     colv = _normalize_color_to_rgb255(raw_col)
 
+                    flags_val = span.get("flags", 0)
+                    try:
+                        flags = int(flags_val)
+                    except Exception:
+                        flags = 0
+                    underline = bool(span.get("underline", False))
+
                     span_boxes.append(sb)
                     span_texts.append(t)
                     span_fonts.append(fnt)
                     span_sizes.append(sz)
                     span_colors.append(colv)
+                    span_flags.append(flags)
+                    span_underline.append(underline)
 
     if span_boxes:
         # общий bbox текста
@@ -535,7 +546,9 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             "bbox": b,
             "font": f,
             "size": s,
-            "color_rgb": c
+            "color_rgb": c,
+            "flags": fl,
+            "underline": ul,
         } for t, b, f, s, c in zip(span_texts, span_boxes, span_fonts, span_sizes, span_colors)]
         cc.text_bbox  = tb
 
@@ -603,6 +616,19 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             if not is_black_rgb(c, tol=6):
                 all_black = False
                 font_violations.append({"type": "color", "msg": f"Цвет RGB{c} не чёрный", "sample": t[:60], "font": f, "size": s})
+
+        for t, f, fl, ul in zip(span_texts, span_fonts, span_flags, span_underline):
+            f_l = (f or "").lower()
+            is_bold = any(k in f_l for k in ["bold", "black", "heavy", "semibold", "demibold"]) or bool(fl & 1)
+            is_italic = any(k in f_l for k in ["italic", "oblique"]) or bool(fl & 2)
+            is_underlined = bool(ul) or bool(fl & 4)
+
+            if is_bold:
+                font_violations.append({"type": "style", "msg": "Жирный шрифт в ячейке недопустим", "sample": t[:60]})
+            if is_italic:
+                font_violations.append({"type": "style", "msg": "Курсив в ячейке недопустим", "sample": t[:60]})
+            if is_underlined:
+                font_violations.append({"type": "style", "msg": "Подчёркнутый текст в ячейке недопустим", "sample": t[:60]})
 
         cc.font_report = {
             "max_size": max_size,
@@ -966,7 +992,7 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
                             # ✅ копим нарушения шрифта/размера на уровне таблицы
                             for v in fr.get("violations", []):
-                                if v.get("type") in ("font", "size"):
+                                if v.get("type") in ("font", "size", "style"):
                                     table_has_font_size_issue = True
                                     sample = v.get("sample", "")
                                     sample = f' — «{sample}»' if sample else ""
@@ -1055,7 +1081,7 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                 body += f"\n... и ещё {len(header_alignment_errors) - 5} ошибок"
                             parts.append(head + "\n" + body)
                         if table_has_font_size_issue:
-                            head = "Ошибки шрифта/размера в ячейках:"
+                            head = "Ошибки оформления текста в ячейках:"
                             body = "\n".join(table_font_size_issues[:8])
                             if len(table_font_size_issues) > 8:
                                 body += f"\n... и ещё {len(table_font_size_issues) - 8} строк"
