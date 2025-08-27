@@ -129,10 +129,6 @@ def _has_foreign_line_between(all_lines: List[Dict], low: Dict, up: Dict,
 
 
 def _collect_text_lines(page: fitz.Page) -> List[Dict]:
-    """
-    Возвращает строки с bbox и стилем: [{'text','bbox','font','size','color'}, ...],
-    отсортированные сверху-вниз (y0 растёт вниз).
-    """
     out: List[Dict] = []
     td = page.get_text("dict")
     for b in td.get("blocks", []):
@@ -142,6 +138,7 @@ def _collect_text_lines(page: fitz.Page) -> List[Dict]:
             xs, ys = [], []
             line_text = []
             sizes, fonts, colors = [], [], []
+            spans_out = []
             for sp in line.get("spans", []):
                 x0, y0, x1, y1 = sp.get("bbox", (0, 0, 0, 0))
                 xs += [x0, x1]; ys += [y0, y1]
@@ -151,6 +148,13 @@ def _collect_text_lines(page: fitz.Page) -> List[Dict]:
                 sizes.append(float(sp.get("size", 0)))
                 fonts.append(sp.get("font", ""))
                 colors.append(sp.get("color", sp.get("fill", 0)))
+                spans_out.append({
+                    "text": t,
+                    "bbox": fitz.Rect(x0, y0, x1, y1),
+                    "size": float(sp.get("size", 0)),
+                    "font": sp.get("font", ""),
+                    "color": sp.get("color", sp.get("fill", 0)),
+                })
             if not xs:
                 continue
             text = "".join(line_text).strip()
@@ -160,20 +164,19 @@ def _collect_text_lines(page: fitz.Page) -> List[Dict]:
             size = sum(sizes)/len(sizes) if sizes else 0.0
             font = fonts[0] if fonts else ""
             color = colors[0] if colors else 0
-            out.append({"text": text, "bbox": rect, "font": font, "size": size, "color": color})
+            out.append({"text": text, "bbox": rect, "font": font, "size": size, "color": color, "spans": spans_out})
     out.sort(key=lambda L: (L["bbox"].y0, L["bbox"].x0))
     return out
 
 
 def _near_caption_lines_above_table(lines: List[Dict], tbl_rect: BBox, max_band_pt: float) -> List[Dict]:
-    """
-    Возвращает строки в «окне поиска» над таблицей: y1 ∈ [tbl_top - band, tbl_top).
-    Сортировка снизу-вверх (ближайшая к таблице сначала).
-    """
     top = tbl_rect.y0
     band_top = max(0, top - max_band_pt)
-    out = [L for L in lines if (band_top <= L["bbox"].y1 <= top - 0.5)]
-    out.sort(key=lambda L: -L["bbox"].y1)
+    EPS = 0.1  # небольшой люфт на округления
+    # раньше было: out = [L for L in lines if (band_top <= L["bbox"].y1 <= top - 0.5)]
+    out = [L for L in lines if (band_top <= L["bbox"].y0 <= top - EPS)]
+    # снизу-вверх: ближайшая к таблице сначала
+    out.sort(key=lambda L: -L["bbox"].y0)
     return out
 
 
@@ -262,7 +265,7 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
     BLANK_GAP_FACTOR = 1.75         # > этого считаем "пустой строкой"
     MAX_LEFT_SHIFT_PT = max(6.0, 0.5 * avg_pt)
     HANG_TOL = max(4.0, 0.6 * avg_pt)
-    OVERLAP_MIN = 0.40               # перекрытие с "полосой" подписи
+    OVERLAP_MIN = 0.25               # перекрытие с "полосой" подписи
 
     head_left = head["bbox"].x0
 
@@ -271,10 +274,20 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
         m = re.match(r"^(Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?\d+(?:\.\d+)*)\s–\s", line["text"])
         if not m:
             return None
-        prefix_len = len(m.group(0))
-        w = line["bbox"].x1 - line["bbox"].x0
-        frac = min(0.95, max(0.05, prefix_len / max(1, len(line["text"]))))
-        return line["bbox"].x0 + w * frac
+        cut = len(m.group(0))  # первый символ названия
+        passed = 0
+        for sp in line.get("spans", []):
+            t = sp["text"]
+            n = len(t)
+            if n == 0:
+                continue
+            if passed + n < cut:
+                passed += n
+                continue
+            inside = cut - passed
+            frac = 0.0 if n == 0 else max(0.0, min(1.0, inside / n))
+            return sp["bbox"].x0 + frac * (sp["bbox"].x1 - sp["bbox"].x0)
+        return line["bbox"].x1
 
     title_x = _title_start_x_for_line(head)
 
