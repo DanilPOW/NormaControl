@@ -106,6 +106,36 @@ def is_black_rgb(rgb: Tuple[int, int, int], tol: int = 6) -> bool:
     r, g, b = rgb
     return (r <= tol and g <= tol and b <= tol)
 
+def _horiz_overlap_ratio(a: fitz.Rect, b: fitz.Rect) -> float:
+    """Доля перекрытия по горизонтали относительно более узкой рамки."""
+    left  = max(a.x0, b.x0)
+    right = min(a.x1, b.x1)
+    inter = max(0.0, right - left)
+    denom = max(1.0, min(a.x1 - a.x0, b.x1 - b.x0))
+    return inter / denom
+
+def _has_foreign_line_between(all_lines: List[Dict], low: Dict, up: Dict],
+                              overlap_min: float = 0.35) -> bool:
+    """
+    Есть ли какая-то ДРУГАЯ строка текста между low(нижней из пары) и up(верхней из пары),
+    которая горизонтально перекрывается с их полосой.
+    """
+    y_top = up["bbox"].y1 + 0.5
+    y_bot = low["bbox"].y0 - 0.5
+    if y_bot <= y_top:
+        return False
+    # полоса — объединение по X двух строк
+    band = fitz.Rect(min(low["bbox"].x0, up["bbox"].x0), up["bbox"].y0,
+                     max(low["bbox"].x1, up["bbox"].x1), low["bbox"].y1)
+    for L in all_lines:
+        if L is low or L is up:
+            continue
+        y1 = L["bbox"].y1
+        if y_top <= y1 <= y_bot:
+            if _horiz_overlap_ratio(L["bbox"], band) >= overlap_min:
+                return True
+    return False
+
 
 def _collect_text_lines(page: fitz.Page) -> List[Dict]:
     """
@@ -224,34 +254,35 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
     cap_lines = [candidates[head_idx]]
     i = head_idx + 1
     
-    # Жёстко привязываемся к первой строке, но допускаем висячие отступы
+    # привязываемся к первой строке и её «полосе»
     head_left = cap_lines[0]["bbox"].x0
-    cap_hrect = fitz.Rect(cap_lines[0]["bbox"])  # текущая горизонт. «полоса» подписи (объединяем по мере роста)
+    cap_hrect = fitz.Rect(cap_lines[0]["bbox"])
     
-    # Пороги (чуть шире, чтобы поймать 1.5 интервал и небольшие сдвиги)
-    MAX_X_SHIFT_PT = 8.0      # допуск по левому краю
-    MAX_DY_FACTOR  = 2.6      # позволяет поймать 1.5 межстрочник
-    MIN_VERT_TOUCH = 0.6      # практически стык
-    OVERLAP_MIN    = 0.55     # минимум горизонтального перекрытия с первой строкой
+    # пороги
+    MAX_X_SHIFT_PT = 8.0      # допуск по левому краю (висячие отступы)
+    LINE_FACTOR_MAX = 1.5     # не более 1.5 межстрочного интервала
+    EPS_PT = 1.0
+    OVERLAP_MIN = 0.55        # горизонтальное перекрытие для надёжности
     
     while i < len(candidates):
         up = candidates[i]
-    
-        # расстояние по вертикали между текущей нижней строкой блока и новой верхней
+        # вертикальный зазор между текущей нижней строкой блока и новой верхней строкой
         dy = cap_lines[-1]["bbox"].y0 - up["bbox"].y1
         avg_sz = (up["size"] + cap_lines[-1]["size"]) / 2.0 if cap_lines else up["size"]
     
-        # тот же левый край (для «красивых» переносов)
+        # нет чужих строк между этими двумя?
+        no_foreign = not _has_foreign_line_between(candidates, cap_lines[-1], up)
+    
+        # условие «1.5 строки»: dy <= 1.5 * avg_size (+ небольшой люфт)
+        spacing_ok = dy <= (LINE_FACTOR_MAX * avg_sz + EPS_PT)
+    
+        # тот же левый край ИЛИ приличное перекрытие с текущей «полосой» заголовка
         same_left = abs(up["bbox"].x0 - head_left) <= MAX_X_SHIFT_PT
-        # либо приличное перекрытие по горизонтали с «полосой» подписи
         overlap_ok = _horiz_overlap_ratio(up["bbox"], cap_hrect) >= OVERLAP_MIN
     
-        # вертикально близко
-        close_y = (dy <= (MAX_DY_FACTOR * avg_sz + 1.0)) or (dy <= MIN_VERT_TOUCH)
-    
-        if close_y and (same_left or overlap_ok):
+        if no_foreign and spacing_ok and (same_left or overlap_ok):
             cap_lines.append(up)
-            # расширяем горизонтальную «полосу» подписи
+            # расширяем «полосу»
             cap_hrect = fitz.Rect(
                 min(cap_hrect.x0, up["bbox"].x0),
                 min(cap_hrect.y0, up["bbox"].y0),
