@@ -20,6 +20,7 @@ CAPTION_NUMBER_RE = re.compile(
     rf"\s*[{re.escape(DASH_CHARS)}]\s*"             # допустимые тире/дефисы
     rf"(?P<title>.+?)\s*$"
 )
+BAD_PREFIX_RE = re.compile(r"^\s*таб(?:\.|\b)", re.IGNORECASE)
 
 # ================== ДАТАКЛАССЫ ==================
 
@@ -33,6 +34,7 @@ class BBox:
 @dataclass
 class CaptionDetected:
     text: str
+    raw_text: str
     bbox: BBox
     lines: List[Dict]                 # сырые строки: {'text','bbox','font','size','color'}
     number_str: Optional[str]         # '3' | '1.2' | 'А.1' и т.п.
@@ -207,7 +209,9 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
     no_indent_ok = _is_no_par_indent_left(cap_lines[0], anchor_x, tol_px=tol_px)
 
     # Полный текст (нормализуем тире)
-    cap_text = " ".join(_normalize_dash(L["text"]) for L in cap_lines).strip()
+    raw_text = " ".join(L["text"] for L in cap_lines).strip()              # сырой
+    cap_text = " ".join(_normalize_dash(L["text"]) for L in cap_lines).strip()  # нормализованный
+
 
     # Парсим номер и заголовок
     m = CAPTION_NUMBER_RE.match(cap_text)
@@ -245,6 +249,7 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
 
     return CaptionDetected(
         text=cap_text,
+        raw_text=raw_text,
         bbox=cap_bbox,
         lines=cap_lines,
         number_str=number_str,
@@ -276,6 +281,10 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
     max_gap_pt: вместо em можно задать фикс. порог в pt (если None — используется em).
     """
     issues: List[str] = []
+    # 0) недопустимые сокращения "таб", "таб."
+    if BAD_PREFIX_RE.match(cap.raw_text):
+        issues.append("Подпись оформлена неверно: нельзя использовать «таб», «таб.» — должно быть «Таблица»")
+
 
     # Формат и ключевые признаки
     if not cap.starts_with_Tablitsa:
@@ -320,5 +329,30 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
         )
     if cap.lines_between_caption_and_table:
         issues.append("Между подписью и таблицей не должно быть других строк")
+
+    sep_m = re.match(
+        r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?(\d+(?:\.\d+)*)\s*(?P<sep>[-–—])\s*(?P<title>.+?)\s*$",
+        cap.raw_text
+    )
+    if sep_m:
+        sep_char = sep_m.group("sep")
+        # требуем ровно один пробел слева и справа от дефиса
+        exact_sep_ok = bool(re.search(
+            r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?\d+(?:\.\d+)*\s-\s",
+            cap.raw_text
+        ))
+        if sep_char != "-":
+            issues.append("Неверный разделитель: допускается только дефис '-' (не тире ‘–’/‘—’)")
+        if not exact_sep_ok:
+            issues.append("Разделитель должен иметь ровно один пробел по обеим сторонам: « - »")
+    # если не распарсилось — общая ошибка формата уже будет добавлена выше
+    
+    # 1.2) первая буква названия — прописная
+    if cap.title:
+        t = cap.title.lstrip(' «"„‚(\'')  # пропускаем начальные кавычки/пробелы
+        if t:
+            ch = t[0]
+            if ch.isalpha() and ch == ch.lower() and ch != ch.upper():  # кириллица/латиница
+                issues.append("Название таблицы должно начинаться с прописной буквы")
 
     return CaptionValidation(ok=(len(issues) == 0), issues=issues)
