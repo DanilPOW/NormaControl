@@ -215,11 +215,27 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
     # Многострочность: собираем блок подряд идущих строк над головной
     cap_lines = [candidates[head_idx]]
     i = head_idx + 1
+    
+    # жёстко привязываемся к левому краю ПЕРВОЙ строки подписи
+    head_left = cap_lines[0]["bbox"].x0
+    
+    # допуски (чуть шире, чтобы поймать 1.5 интервал и микросдвиги)
+    MAX_X_SHIFT_PT = 6.0              # было 2.0
+    MAX_DY_FACTOR  = 2.3              # было 1.6 (уместит ~1.5 интервал)
+    MIN_VERT_TOUCH = 0.6              # если почти стык по вертикали, считаем «рядом»
+    
     while i < len(candidates):
         up = candidates[i]
-        same_left = abs(up["bbox"].x0 - cap_lines[-1]["bbox"].x0) <= 2.0
+        # вертикальный зазор между текущим нижним краем «верхней» строки и верхом «нижней»
+        dy = cap_lines[-1]["bbox"].y0 - up["bbox"].y1
         avg_sz = (up["size"] + cap_lines[-1]["size"]) / 2.0
-        close_y = (cap_lines[-1]["bbox"].y0 - up["bbox"].y1) <= (1.6 * avg_sz + 1.0)
+    
+        # условие «тот же левый край», но против первой строки блока
+        same_left = abs(up["bbox"].x0 - head_left) <= MAX_X_SHIFT_PT
+    
+        # близость по вертикали: норм. зазор или почти стык
+        close_y = (dy <= (MAX_DY_FACTOR * avg_sz + 1.0)) or (dy <= MIN_VERT_TOUCH)
+    
         if same_left and close_y:
             cap_lines.append(up)
             i += 1
