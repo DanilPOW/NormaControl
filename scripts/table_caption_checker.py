@@ -70,6 +70,14 @@ def _normalize_dash(s: str) -> str:
     return s.replace("–", "-").replace("—", "-")
 
 
+def _horiz_overlap_ratio(a: fitz.Rect, b: fitz.Rect) -> float:
+    """Доля перекрытия по горизонтали относительно более узкой из двух рамок."""
+    left  = max(a.x0, b.x0)
+    right = min(a.x1, b.x1)
+    inter = max(0.0, right - left)
+    denom = max(1.0, min(a.x1 - a.x0, b.x1 - b.x0))
+    return inter / denom
+
 def _normalize_color_to_rgb255(c) -> Tuple[int, int, int]:
     """Нормализуем PyMuPDF color/fill к (R,G,B) в 0..255."""
     def clamp255(x):
@@ -216,28 +224,40 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
     cap_lines = [candidates[head_idx]]
     i = head_idx + 1
     
-    # жёстко привязываемся к левому краю ПЕРВОЙ строки подписи
+    # Жёстко привязываемся к первой строке, но допускаем висячие отступы
     head_left = cap_lines[0]["bbox"].x0
+    cap_hrect = fitz.Rect(cap_lines[0]["bbox"])  # текущая горизонт. «полоса» подписи (объединяем по мере роста)
     
-    # допуски (чуть шире, чтобы поймать 1.5 интервал и микросдвиги)
-    MAX_X_SHIFT_PT = 6.0              # было 2.0
-    MAX_DY_FACTOR  = 2.3              # было 1.6 (уместит ~1.5 интервал)
-    MIN_VERT_TOUCH = 0.6              # если почти стык по вертикали, считаем «рядом»
+    # Пороги (чуть шире, чтобы поймать 1.5 интервал и небольшие сдвиги)
+    MAX_X_SHIFT_PT = 8.0      # допуск по левому краю
+    MAX_DY_FACTOR  = 2.6      # позволяет поймать 1.5 межстрочник
+    MIN_VERT_TOUCH = 0.6      # практически стык
+    OVERLAP_MIN    = 0.55     # минимум горизонтального перекрытия с первой строкой
     
     while i < len(candidates):
         up = candidates[i]
-        # вертикальный зазор между текущим нижним краем «верхней» строки и верхом «нижней»
+    
+        # расстояние по вертикали между текущей нижней строкой блока и новой верхней
         dy = cap_lines[-1]["bbox"].y0 - up["bbox"].y1
-        avg_sz = (up["size"] + cap_lines[-1]["size"]) / 2.0
+        avg_sz = (up["size"] + cap_lines[-1]["size"]) / 2.0 if cap_lines else up["size"]
     
-        # условие «тот же левый край», но против первой строки блока
+        # тот же левый край (для «красивых» переносов)
         same_left = abs(up["bbox"].x0 - head_left) <= MAX_X_SHIFT_PT
+        # либо приличное перекрытие по горизонтали с «полосой» подписи
+        overlap_ok = _horiz_overlap_ratio(up["bbox"], cap_hrect) >= OVERLAP_MIN
     
-        # близость по вертикали: норм. зазор или почти стык
+        # вертикально близко
         close_y = (dy <= (MAX_DY_FACTOR * avg_sz + 1.0)) or (dy <= MIN_VERT_TOUCH)
     
-        if same_left and close_y:
+        if close_y and (same_left or overlap_ok):
             cap_lines.append(up)
+            # расширяем горизонтальную «полосу» подписи
+            cap_hrect = fitz.Rect(
+                min(cap_hrect.x0, up["bbox"].x0),
+                min(cap_hrect.y0, up["bbox"].y0),
+                max(cap_hrect.x1, up["bbox"].x1),
+                max(cap_hrect.y1, up["bbox"].y1),
+            )
             i += 1
         else:
             break
