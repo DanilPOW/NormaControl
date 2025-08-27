@@ -204,14 +204,24 @@ def _line_spacing_ok(lines: List[Dict], tol_ratio=(0.85, 1.30)) -> bool:
     lo, hi = tol_ratio
     return (lo <= ratio <= hi)
 
+# -------- Новые универсальные помощники по шрифту/стилю --------
 
-def is_times_new_roman_name(font_name: str) -> bool:
-    """Учитываем популярные варианты имён Times New Roman."""
+def _base_font_name(font_name: str) -> str:
     if not font_name:
+        return ""
+    return font_name.split("+", 1)[-1].lower().replace(" ", "")
+
+def _is_times_family(font_name: str) -> bool:
+    f = _base_font_name(font_name)
+    return ("timesnewroman" in f) or ("times-roman" in f) or ("timesnewromanps" in f) or (f in {"tnr","timesroman","times"})
+
+def _style_similar(a: Dict, b: Dict) -> bool:
+    # «Похоже» = один кегль (±0.5 pt), тот же цвет, то же семейство
+    if abs(float(a["size"]) - float(b["size"])) > 0.5:
         return False
-    base = font_name.split('+', 1)[-1]
-    f = base.replace(" ", "").lower()
-    return ("timesnewroman" in f) or ("times-roman" in f) or ("timesnewromanps" in f) or (f == "tnr") or ("times" in f)
+    if _is_times_family(a["font"]) != _is_times_family(b["font"]):
+        return False
+    return _normalize_color_to_rgb255(a["color"]) == _normalize_color_to_rgb255(b["color"])
 
 
 # ================== ПУБЛИЧНЫЕ АПИ ==================
@@ -241,48 +251,75 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
     if head_idx is None:
         return None
 
-    # Многострочность: собираем блок подряд идущих строк над головной
+    # Многострочность: собираем блок подряд идущих строк ВНИЗ (к таблице)
     cap_lines = [candidates[head_idx]]
-    i = head_idx + 1
-    
-    # привязываемся к первой строке и её «полосе»
-    head_left = cap_lines[0]["bbox"].x0
-    cap_hrect = fitz.Rect(cap_lines[0]["bbox"])
-    
-    # пороги
-    MAX_X_SHIFT_PT = 8.0      # допуск по левому краю (висячие отступы)
-    LINE_FACTOR_MAX = 1.5     # не более 1.5 межстрочного интервала
-    EPS_PT = 1.0
-    OVERLAP_MIN = 0.55        # горизонтальное перекрытие для надёжности
-    
-    while i < len(candidates):
-        up = candidates[i]
-        # вертикальный зазор между текущей нижней строкой блока и новой верхней строкой
-        dy = cap_lines[-1]["bbox"].y0 - up["bbox"].y1
-        avg_sz = (up["size"] + cap_lines[-1]["size"]) / 2.0 if cap_lines else up["size"]
-    
-        # нет чужих строк между этими двумя?
-        no_foreign = not _has_foreign_line_between(candidates, cap_lines[-1], up)
-    
-        # условие «1.5 строки»: dy <= 1.5 * avg_size (+ небольшой люфт)
+    head = cap_lines[0]
+
+    # --- базовые метрики и допуски ---
+    avg_pt = float(head["size"])
+    EPS_PT = 0.8
+    LINE_FACTOR_MAX = 1.40          # допустимая плотность межстрочника
+    BLANK_GAP_FACTOR = 1.75         # > этого считаем "пустой строкой"
+    MAX_LEFT_SHIFT_PT = max(6.0, 0.5 * avg_pt)
+    HANG_TOL = max(4.0, 0.6 * avg_pt)
+    OVERLAP_MIN = 0.40               # перекрытие с "полосой" подписи
+
+    head_left = head["bbox"].x0
+
+    # Прикидываем x позиции начала title ("после тире") по тексту
+    def _title_start_x_for_line(line: Dict) -> Optional[float]:
+        m = re.match(r"^(Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?\d+(?:\.\d+)*)\s–\s", line["text"])
+        if not m:
+            return None
+        prefix_len = len(m.group(0))
+        w = line["bbox"].x1 - line["bbox"].x0
+        frac = min(0.95, max(0.05, prefix_len / max(1, len(line["text"]))))
+        return line["bbox"].x0 + w * frac
+
+    title_x = _title_start_x_for_line(head)
+
+    # "Полоса" подписи для оценки перекрытия
+    cap_hrect = fitz.Rect(head["bbox"])
+
+    # --- склеиваем ВНИЗ: строки ближе к таблице ---
+    j = head_idx - 1
+    while j >= 0:
+        cand = candidates[j]
+
+        # останов, если стиль "уплыл"
+        if not _style_similar(head, cand):
+            break
+
+        # расстояние до предыдущей (нижней) строки блока
+        dy = cap_lines[-1]["bbox"].y0 - cand["bbox"].y1
+        avg_sz = (cand["size"] + cap_lines[-1]["size"]) / 2.0
         spacing_ok = dy <= (LINE_FACTOR_MAX * avg_sz + EPS_PT)
-    
-        # тот же левый край ИЛИ приличное перекрытие с текущей «полосой» заголовка
-        same_left = abs(up["bbox"].x0 - head_left) <= MAX_X_SHIFT_PT
-        overlap_ok = _horiz_overlap_ratio(up["bbox"], cap_hrect) >= OVERLAP_MIN
-    
-        if no_foreign and spacing_ok and (same_left or overlap_ok):
-            cap_lines.append(up)
-            # расширяем «полосу»
-            cap_hrect = fitz.Rect(
-                min(cap_hrect.x0, up["bbox"].x0),
-                min(cap_hrect.y0, up["bbox"].y0),
-                max(cap_hrect.x1, up["bbox"].x1),
-                max(cap_hrect.y1, up["bbox"].y1),
-            )
-            i += 1
+
+        # "пустая строка"?
+        if dy > (BLANK_GAP_FACTOR * avg_sz + EPS_PT):
+            break  # дальше это уже не единый блок подписи
+
+        # допустимые левые края (без отступа или висячий после ' – ')
+        same_left = abs(cand["bbox"].x0 - head_left) <= MAX_LEFT_SHIFT_PT
+        hang_left = (title_x is not None) and (abs(cand["bbox"].x0 - title_x) <= HANG_TOL)
+
+        # горизонтальная связность
+        overlap_ok = _horiz_overlap_ratio(cand["bbox"], cap_hrect) >= OVERLAP_MIN
+
+        # между соседями не должно быть "чужих" строк
+        foreign = _has_foreign_line_between(candidates, cap_lines[-1], cand, overlap_min=0.30)
+        if foreign:
+            break
+
+        if spacing_ok and (same_left or hang_left or overlap_ok):
+            cap_lines.append(cand)
+            cap_hrect = cap_hrect | cand["bbox"]
+            j -= 1
         else:
             break
+
+    # Сортировка сверху-вниз (по чтению)
+    cap_lines.sort(key=lambda L: (L["bbox"].y0, L["bbox"].x0))
 
     # Без абзацного отступа (по первой строке)
     no_indent_ok = _is_no_par_indent_left(cap_lines[0], anchor_x, tol_px=tol_px)
@@ -325,6 +362,16 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
         if (cap_bbox.y1 + 0.5) <= L["bbox"].y1 <= (tbl_rect.y0 - 0.5):
             lines_between.append(L)
 
+    # Отфильтруем реально «чужие» строки: существенное перекрытие по X и другой стиль
+    band_rect = fitz.Rect(cap_bbox.x0, cap_bbox.y0, cap_bbox.x1, tbl_rect.y0)
+    filtered_between = []
+    for L in lines_between:
+        if _horiz_overlap_ratio(L["bbox"], band_rect) < 0.60:
+            continue  # стоит в стороне — не считаем
+        if not _style_similar(first, L):
+            filtered_between.append(L)  # другой стиль → чужая строка
+    lines_between = filtered_between
+
     return CaptionDetected(
         text=cap_text,
         raw_text=raw_text,
@@ -337,7 +384,7 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
         rgb=rgb,
         no_indent_ok=no_indent_ok,
         line_spacing_ok=_line_spacing_ok(cap_lines),
-        starts_with_Tablitsa=raw_text.startswith(CAPTION_PREFIX),
+        starts_with_Tablitsa=raw_text.lstrip().startswith(CAPTION_PREFIX),
         ends_with_dot=raw_text.endswith("."),
         gap_to_table_pt=gap_to_table_pt,
         lines_between_caption_and_table=lines_between,
@@ -385,8 +432,8 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
         issues.append("Если наименование таблицы многострочное, межстрочный интервал должен быть одинарным")
 
     # 4) Шрифт/цвет/размер
-    if must_tnr and not is_times_new_roman_name(cap.font):
-        issues.append(f"Шрифт подписи не Times New Roman: {cap.font}")
+    if must_tnr and not _is_times_family(cap.font):
+        issues.append(f"Шрифт подписи не Times New Roman (семейство): {cap.font}")
     if cap.size > max_pt + 0.1:
         issues.append(f"Размер шрифта подписи {cap.size:.1f}pt > {max_pt:.0f}pt")
     if must_black and not is_black_rgb(cap.rgb, tol=6):
@@ -401,6 +448,7 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
 
     # 6) Зазор между подписью и таблицей / «пустая строка»
     allowed_gap = max_gap_pt if max_gap_pt is not None else (max_gap_em * max(1.0, cap.size))
+    allowed_gap = max(allowed_gap, 8.0)  # минимально допустимый зазор
     if cap.gap_to_table_pt > allowed_gap + 0.1:
         issues.append(
             f"Между подписью и таблицей слишком большой зазор ({cap.gap_to_table_pt:.1f} pt); "
@@ -410,20 +458,21 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
         issues.append("Между подписью и таблицей не должно быть других строк")
 
     # 7) Проверка типа разделителя и пробелов вокруг (строго ' – '):
-    sep_m = re.match(
-        r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?(\d+(?:\.\d+)*)\s*(?P<sep>[-–—])\s*(?P<title>.+?)\s*$",
-        cap.raw_text
-    )
-    if sep_m:
-        sep_char = sep_m.group("sep")
-        exact_en_ok = bool(re.match(
-            r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?\d+(?:\.\d+)*\s–\s",
+    if require_dash:
+        sep_m = re.match(
+            r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?(\d+(?:\.\d+)*)\s*(?P<sep>[-–—])\s*(?P<title>.+?)\s*$",
             cap.raw_text
-        ))
-        if sep_char != "–":
-            issues.append("Неверный разделитель: должно быть короткое тире ‘–’ (en dash), а не ‘—’ или ‘-’.")
-        if not exact_en_ok:
-            issues.append("Разделитель ‘–’ должен иметь ровно один пробел по обеим сторонам: « – ».")
+        )
+        if sep_m:
+            sep_char = sep_m.group("sep")
+            exact_en_ok = bool(re.match(
+                r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?\d+(?:\.\d+)*\s–\s",
+                cap.raw_text
+            ))
+            if sep_char != "–":
+                issues.append("Неверный разделитель: должно быть короткое тире ‘–’ (en dash), а не ‘—’ или ‘-’.")
+            if not exact_en_ok:
+                issues.append("Разделитель ‘–’ должен иметь ровно один пробел по обеим сторонам: « – ».")
 
     # 8) Первая буква названия — прописная
     if cap.title:
