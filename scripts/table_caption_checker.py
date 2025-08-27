@@ -1,3 +1,5 @@
+# scripts/table_caption_checker.py
+# -*- coding: utf-8 -*-
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
 import re
@@ -8,19 +10,23 @@ MM_TO_PT = 2.8346456693  # 1 мм = 2.8346 pt
 LEFT_MARGIN_PT = 3 * 28.35  # для режима anchor_mode="workarea"
 
 # Нормативные элементы
+# Оставим набор для нормализации, но в правилах ниже допускаем ТОЛЬКО короткое тире '–'
 DASH_CHARS = "-–—"                 # дефис, en dash, em dash
 CAPTION_PREFIX = "Таблица"
 
-# Регулярка формата: Таблица <№> - <Название>
-# Используем f-строки с re.escape для устойчивости и чтобы избежать SyntaxError из-за смешения форматирования.
+# Регулярка формата: Таблица <№> – <Название>
+# Разрешаем ТОЛЬКО en dash (короткое тире, U+2013) и ровно по одному пробелу вокруг него.
 CAPTION_NUMBER_RE = re.compile(
     rf"^Таблица\s+"
     rf"(?P<prefix>[A-Za-zА-Яа-я])?\.?\s*"           # необязательная буква для приложений: А.1
     rf"(?P<number>\d+(?:\.\d+)*)"                   # номер/подномер: 1, 1.1, 2.3.4
-    rf"\s*[{re.escape(DASH_CHARS)}]\s*"             # допустимые тире/дефисы
+    rf"\s–\s"                                       # строго « пробел – пробел »
     rf"(?P<title>.+?)\s*$"
 )
+
+# Явно запрещаем сокращения "таб", "таб." и др. в начале подписи
 BAD_PREFIX_RE = re.compile(r"^\s*таб(?:\.|\b)", re.IGNORECASE)
+
 
 # ================== ДАТАКЛАССЫ ==================
 
@@ -31,13 +37,14 @@ class BBox:
     x1: float
     y1: float
 
+
 @dataclass
 class CaptionDetected:
-    text: str
-    raw_text: str
+    text: str                    # нормализованный текст (дефисы/тире сведены)
+    raw_text: str                # сырой текст как в PDF (для точной проверки символов)
     bbox: BBox
-    lines: List[Dict]                 # сырые строки: {'text','bbox','font','size','color'}
-    number_str: Optional[str]         # '3' | '1.2' | 'А.1' и т.п.
+    lines: List[Dict]            # сырые строки: {'text','bbox','font','size','color'}
+    number_str: Optional[str]    # '3' | '1.2' | 'А.1' и т.п.
     title: Optional[str]
     font: str
     size: float
@@ -49,16 +56,19 @@ class CaptionDetected:
     gap_to_table_pt: float
     lines_between_caption_and_table: List[Dict]
 
+
 @dataclass
 class CaptionValidation:
     ok: bool
     issues: List[str]
 
+
 # ================== ВСПОМОГАТЕЛЬНЫЕ ==================
 
 def _normalize_dash(s: str) -> str:
-    """Единообразим все типы тире к обычному дефису для стабильного парсинга/сравнения."""
+    """Единообразим все типы тире к обычному дефису для стабильного сравнения/логов."""
     return s.replace("–", "-").replace("—", "-")
+
 
 def _normalize_color_to_rgb255(c) -> Tuple[int, int, int]:
     """Нормализуем PyMuPDF color/fill к (R,G,B) в 0..255."""
@@ -67,21 +77,27 @@ def _normalize_color_to_rgb255(c) -> Tuple[int, int, int]:
             return max(0, min(255, int(round(x))))
         except Exception:
             return 0
+
     if isinstance(c, str) and c.startswith("#") and len(c) == 7:
         r = int(c[1:3], 16); g = int(c[3:5], 16); b = int(c[5:7], 16)
         return (r, g, b)
+
     if isinstance(c, (list, tuple)) and len(c) == 3:
         if max(c) <= 1.0:
             return (clamp255(c[0]*255), clamp255(c[1]*255), clamp255(c[2]*255))
         return (clamp255(c[0]), clamp255(c[1]), clamp255(c[2]))
+
     if isinstance(c, (int, float)):
         v = clamp255(c*255 if c <= 1.0 else c)
         return (v, v, v)
+
     return (0, 0, 0)
+
 
 def is_black_rgb(rgb: Tuple[int, int, int], tol: int = 6) -> bool:
     r, g, b = rgb
     return (r <= tol and g <= tol and b <= tol)
+
 
 def _collect_text_lines(page: fitz.Page) -> List[Dict]:
     """
@@ -119,6 +135,7 @@ def _collect_text_lines(page: fitz.Page) -> List[Dict]:
     out.sort(key=lambda L: (L["bbox"].y0, L["bbox"].x0))
     return out
 
+
 def _near_caption_lines_above_table(lines: List[Dict], tbl_rect: BBox, max_band_pt: float) -> List[Dict]:
     """
     Возвращает строки в «окне поиска» над таблицей: y1 ∈ [tbl_top - band, tbl_top).
@@ -130,13 +147,15 @@ def _near_caption_lines_above_table(lines: List[Dict], tbl_rect: BBox, max_band_
     out.sort(key=lambda L: -L["bbox"].y1)
     return out
 
+
 def _is_no_par_indent_left(line: Dict, anchor_x: float, tol_px: float = 2.0) -> bool:
     """«Без абзацного отступа»: левая грань строки ≈ якорю (левое поле или левая граница таблицы)."""
     return abs(line["bbox"].x0 - anchor_x) <= tol_px
 
-def _line_spacing_ok(lines: List[Dict], tol_ratio=(0.85, 1.3)) -> bool:
+
+def _line_spacing_ok(lines: List[Dict], tol_ratio=(0.85, 1.30)) -> bool:
     """
-    Проверка «через один межстрочный интервал» ~ одиночный интервал.
+    Проверка «одинарного межстрочного интервала».
     Берём средний dy между соседними строками и делим на средний size.
     """
     if len(lines) < 2:
@@ -156,6 +175,7 @@ def _line_spacing_ok(lines: List[Dict], tol_ratio=(0.85, 1.3)) -> bool:
     lo, hi = tol_ratio
     return (lo <= ratio <= hi)
 
+
 def is_times_new_roman_name(font_name: str) -> bool:
     """Учитываем популярные варианты имён Times New Roman."""
     if not font_name:
@@ -163,6 +183,7 @@ def is_times_new_roman_name(font_name: str) -> bool:
     base = font_name.split('+', 1)[-1]
     f = base.replace(" ", "").lower()
     return ("timesnewroman" in f) or ("times-roman" in f) or ("timesnewromanps" in f) or (f == "tnr") or ("times" in f)
+
 
 # ================== ПУБЛИЧНЫЕ АПИ ==================
 
@@ -208,13 +229,12 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
     # Без абзацного отступа (по первой строке)
     no_indent_ok = _is_no_par_indent_left(cap_lines[0], anchor_x, tol_px=tol_px)
 
-    # Полный текст (нормализуем тире)
-    raw_text = " ".join(L["text"] for L in cap_lines).strip()              # сырой
-    cap_text = " ".join(_normalize_dash(L["text"]) for L in cap_lines).strip()  # нормализованный
+    # Полный текст
+    raw_text = " ".join(L["text"] for L in cap_lines).strip()                    # сырой (как в PDF)
+    cap_text = " ".join(_normalize_dash(L["text"]) for L in cap_lines).strip()   # нормализованный (для логов)
 
-
-    # Парсим номер и заголовок
-    m = CAPTION_NUMBER_RE.match(cap_text)
+    # Парсим номер и заголовок по raw_text (важен реальный символ разделителя)
+    m = CAPTION_NUMBER_RE.match(raw_text)
     if m:
         prefix = m.group("prefix") or ""
         number_str = ((prefix + ".") if prefix else "") + m.group("number")
@@ -236,7 +256,7 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
         ys += [L["bbox"].y0, L["bbox"].y1]
     cap_bbox = BBox(min(xs), min(ys), max(xs), max(ys))
 
-    # --- Новый блок: измеряем зазор до таблицы и собираем любые строки между подписью и таблицей
+    # Зазор до таблицы и лишние строки
     gap_to_table_pt = max(0.0, tbl_rect.y0 - cap_bbox.y1)
 
     cap_ids = {id(L) for L in cap_lines}
@@ -259,11 +279,12 @@ def find_table_caption(page: fitz.Page, tbl_rect: BBox,
         rgb=rgb,
         no_indent_ok=no_indent_ok,
         line_spacing_ok=_line_spacing_ok(cap_lines),
-        starts_with_Tablitsa=cap_text.startswith(CAPTION_PREFIX),
-        ends_with_dot=cap_text.endswith("."),
+        starts_with_Tablitsa=raw_text.startswith(CAPTION_PREFIX),
+        ends_with_dot=raw_text.endswith("."),
         gap_to_table_pt=gap_to_table_pt,
         lines_between_caption_and_table=lines_between,
     )
+
 
 def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
                            anchor_mode: str = "workarea",
@@ -281,31 +302,31 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
     max_gap_pt: вместо em можно задать фикс. порог в pt (если None — используется em).
     """
     issues: List[str] = []
-    # 0) недопустимые сокращения "таб", "таб."
+
+    # 0) Нельзя "таб", "таб."
     if BAD_PREFIX_RE.match(cap.raw_text):
         issues.append("Подпись оформлена неверно: нельзя использовать «таб», «таб.» — должно быть «Таблица»")
 
-
-    # Формат и ключевые признаки
+    # 1) Ключевые признаки формата
     if not cap.starts_with_Tablitsa:
         issues.append("Подпись должна начинаться со слова «Таблица» с прописной буквы")
 
     if cap.number_str is None or cap.title is None:
-        issues.append("Подпись не соответствует формату «Таблица N - Наименование»")
+        issues.append("Подпись не соответствует формату «Таблица N – Наименование»")
 
     if cap.ends_with_dot:
         issues.append("В конце подписи не должно быть точки")
 
-    # «Без абзацного отступа»
+    # 2) «Без абзацного отступа»
     if not cap.no_indent_ok:
         anchor = "левого поля страницы" if anchor_mode == "workarea" else "левой границы таблицы"
         issues.append(f"Подпись должна быть без абзацного отступа относительно {anchor}")
 
-    # Межстрочный интервал (для многострочных)
+    # 3) Межстрочный интервал (для многострочных)
     if len(cap.lines) >= 2 and not cap.line_spacing_ok:
-        issues.append("Межстрочный интервал в подписи должен быть одинарным")
+        issues.append("Если наименование таблицы многострочное, межстрочный интервал должен быть одинарным")
 
-    # Шрифт/цвет/размер
+    # 4) Шрифт/цвет/размер
     if must_tnr and not is_times_new_roman_name(cap.font):
         issues.append(f"Шрифт подписи не Times New Roman: {cap.font}")
     if cap.size > max_pt + 0.1:
@@ -313,14 +334,14 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
     if must_black and not is_black_rgb(cap.rgb, tol=6):
         issues.append(f"Цвет подписи не чёрный: RGB{cap.rgb}")
 
-    # Сверка номера
+    # 5) Сверка номера
     if cap.number_str is not None:
         got = cap.number_str.replace(" ", "")
         exp = expected_num_str.replace(" ", "")
         if got != exp:
             issues.append(f"Неверный номер таблицы: в подписи «{got}», ожидается «{exp}»")
 
-    # Зазор между подписью и таблицей / "пустая строка"
+    # 6) Зазор между подписью и таблицей / «пустая строка»
     allowed_gap = max_gap_pt if max_gap_pt is not None else (max_gap_em * max(1.0, cap.size))
     if cap.gap_to_table_pt > allowed_gap + 0.1:
         issues.append(
@@ -330,24 +351,23 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
     if cap.lines_between_caption_and_table:
         issues.append("Между подписью и таблицей не должно быть других строк")
 
+    # 7) Проверка типа разделителя и пробелов вокруг (строго ' – '):
     sep_m = re.match(
         r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?(\d+(?:\.\d+)*)\s*(?P<sep>[-–—])\s*(?P<title>.+?)\s*$",
         cap.raw_text
     )
     if sep_m:
         sep_char = sep_m.group("sep")
-        # требуем ровно один пробел слева и справа от дефиса
-        exact_sep_ok = bool(re.search(
-            r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?\d+(?:\.\d+)*\s-\s",
+        exact_en_ok = bool(re.match(
+            r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?\d+(?:\.\d+)*\s–\s",
             cap.raw_text
         ))
-        if sep_char != "-":
-            issues.append("Неверный разделитель: допускается только дефис '-' (не тире ‘–’/‘—’)")
-        if not exact_sep_ok:
-            issues.append("Разделитель должен иметь ровно один пробел по обеим сторонам: « - »")
-    # если не распарсилось — общая ошибка формата уже будет добавлена выше
-    
-    # 1.2) первая буква названия — прописная
+        if sep_char != "–":
+            issues.append("Неверный разделитель: должно быть короткое тире ‘–’ (en dash), а не ‘—’ или ‘-’.")
+        if not exact_en_ok:
+            issues.append("Разделитель ‘–’ должен иметь ровно один пробел по обеим сторонам: « – ».")
+
+    # 8) Первая буква названия — прописная
     if cap.title:
         t = cap.title.lstrip(' «"„‚(\'')  # пропускаем начальные кавычки/пробелы
         if t:
