@@ -69,15 +69,6 @@ def _normalize_dash(s: str) -> str:
     """Единообразим все типы тире к обычному дефису для стабильного сравнения/логов."""
     return s.replace("–", "-").replace("—", "-")
 
-
-def _horiz_overlap_ratio(a: fitz.Rect, b: fitz.Rect) -> float:
-    """Доля перекрытия по горизонтали относительно более узкой из двух рамок."""
-    left  = max(a.x0, b.x0)
-    right = min(a.x1, b.x1)
-    inter = max(0.0, right - left)
-    denom = max(1.0, min(a.x1 - a.x0, b.x1 - b.x0))
-    return inter / denom
-
 def _normalize_color_to_rgb255(c) -> Tuple[int, int, int]:
     """Нормализуем PyMuPDF color/fill к (R,G,B) в 0..255."""
     def clamp255(x):
@@ -114,7 +105,7 @@ def _horiz_overlap_ratio(a: fitz.Rect, b: fitz.Rect) -> float:
     denom = max(1.0, min(a.x1 - a.x0, b.x1 - b.x0))
     return inter / denom
 
-def _has_foreign_line_between(all_lines: List[Dict], low: Dict, up: Dict],
+def _has_foreign_line_between(all_lines: List[Dict], low: Dict, up: Dict,
                               overlap_min: float = 0.35) -> bool:
     """
     Есть ли какая-то ДРУГАЯ строка текста между low(нижней из пары) и up(верхней из пары),
