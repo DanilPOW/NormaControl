@@ -871,6 +871,7 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
     error_pages = set()
     table_bboxes_by_page: Dict[int, List[Tuple[float, float, float, float]]] = {}
     cell_analysis_by_page: Dict[int, List[Dict]] = {}
+    table_caption_bboxes_by_page: Dict[int, List[Tuple[float, float, float, float]]] = {}
 
     total_pages = len(pdf_document)
 
@@ -1002,6 +1003,9 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                 must_tnr=True,
                                 max_gap_pt=CONT_MAX_GAP_PT,
                             )
+                            table_caption_bboxes_by_page.setdefault(page_num, []).append(
+                                (cont_hint.bbox.x0, cont_hint.bbox.y0, cont_hint.bbox.x1, cont_hint.bbox.y1)
+                            )
                             if cont_val.ok:
                                 admin_lines.append(f"[ContCaption][Стр. {page_num}][Табл. {tbl_idx}] ✅ «{cont_hint.raw_text}»")
                             else:
@@ -1046,6 +1050,9 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                 must_tnr=True,
                                 require_dash=True,
                                 max_gap_em=0.6,
+                            )
+                            table_caption_bboxes_by_page.setdefault(page_num, []).append(
+                                (cap.bbox.x0, cap.bbox.y0, cap.bbox.x1, cap.bbox.y1)
                             )
                             if val.ok:
                                 admin_lines.append(f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] ✅ «{cap.text}»")
@@ -1298,4 +1305,5 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
         "admin_details": "\n".join(admin_lines),
         "table_bboxes_by_page": table_bboxes_by_page,
         "cell_analysis_by_page": cell_analysis_by_page,
+        "table_caption_bboxes_by_page": table_caption_bboxes_by_page,
     }
