@@ -101,16 +101,21 @@ def process_pdf_file(pdf_path: str):
         image_user = image_results['user_summary']
         image_admin = image_results['admin_details']
 
+        body_results = check_body_text(pdf_doc, table_bboxes_by_page=table_bboxes_by_page, start_page=1)
+        body_user = body_results['user_summary']
+        body_admin = body_results['admin_details']
+
         pdf_doc.save(out_path)
 
-    user_notes = f"{quote_user_message}\n{margin_user}\n{page_num_user}\n{double_space_user}\n{table_user}\n{image_user}"
+    user_notes = f"{quote_user_message}\n{margin_user}\n{page_num_user}\n{double_space_user}\n{table_user}\n{image_user}\n{body_user}"
     admin_logs = (
         quote_admin_logs + "\n\n"
         "[MarginCheck]\n" + margin_admin +
         "\n\n[PageNumbering]\n" + page_num_admin +
         "\n\n[DoubleSpaceCheck]\n" + double_space_admin +
         "\n\n[TableCheck]\n" + table_admin +
-        "\n\n[ImageCheck]\n" + image_admin 
+        "\n\n[ImageCheck]\n" + image_admin +
+        "\n\n[BodyText]\n" + body_admin
     )
     return (
         out_path,
@@ -194,8 +199,9 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
         - Проверка, что элементы не выходят за поля. *Проверка, что поля шире пока не реализована.
         - Проверка нумерации страниц
         - Проверка на двойные пробелы
-        - Проверка рисунков
-        - Проверка таблиц
+        - Проверка рисунков/подрисуночных подписей
+        - Проверка таблиц/подписей таблиц
+        - Проверка основного текста
         
         Формат выходного файла:
         `<ИсходноеИмя>_Проверено_DD.MM.YYYY_в_HH:MM.pdf`
