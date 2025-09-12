@@ -401,7 +401,7 @@ def check_body_text(pdf_document: fitz.Document,
     if bad_paras:
         user_summary = f"⚠️Проверка основного текста: нарушений в {bad_paras} из {total_paras} абзацев"
     else:
-        user_summary = "✅Проверка основного текста: нарушений не обнаружено"
+        user_summary = "✅Проверка основного текста"
 
     admin_details = (
         f"[BodyText] Проверено абзацев: {total_paras}, нарушений: {bad_paras}\n" +
