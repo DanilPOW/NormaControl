@@ -748,6 +748,7 @@ def validate_table_continuation_caption(cont: ContCaptionDetected,
                                         max_pt: float = 14.0,
                                         must_black: bool = True,
                                         must_tnr: bool = True,
+                                        max_gap_pt: Optional[float] = None,
                                         singleline_max_gap_pt: float = 2.0,
                                         multiline_gap_target_pt: float = 8.0,
                                         multiline_gap_tol_pt: float = 1.5) -> CaptionValidation:
