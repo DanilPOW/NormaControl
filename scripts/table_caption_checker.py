@@ -238,7 +238,7 @@ def _horiz_overlap_ratio(a: fitz.Rect, b: fitz.Rect) -> float:
     denom = max(1.0, min(a.x1 - a.x0, b.x1 - b.x0))
     return inter / denom
 
-def _has_foreign_line_between(all_lines: List[Dict], low: Dict, up: Dict],
+def _has_foreign_line_between(all_lines: List[Dict], low: Dict, up: Dict,
                               overlap_min: float = 0.35) -> bool:
     y_top = up["bbox"].y1 + 0.5
     y_bot = low["bbox"].y0 - 0.5
