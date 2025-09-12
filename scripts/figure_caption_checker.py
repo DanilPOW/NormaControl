@@ -231,7 +231,7 @@ def find_figure_caption(
     # Находим первую строку, начинающуюся с «Рисунок»
     head_idx = None
     for i, L in enumerate(candidates):
-        if L["text"].lstrip().startswith(require_prefix):
+        if L["text"].lstrip().lower().startswith(("рисунок", "рис.", "рис-", "картинка", "изображение", "фото", "figure", "fig.")):
             head_idx = i
             break
     if head_idx is None:
