@@ -1,3 +1,4 @@
+# table_caption_checker.py
 # -*- coding: utf-8 -*-
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
