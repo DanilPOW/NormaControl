@@ -10,6 +10,7 @@ from scripts.pdf_page_number_checker import check_page_numbering_and_annotate
 from scripts.double_space_checker import check_double_spaces
 from scripts.image_checker import check_images
 from scripts.pdf_table_checker import check_tables
+from scripts.body_text_checker import check_body_text
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
