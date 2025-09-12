@@ -523,7 +523,10 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
                            must_tnr: bool = True,
                            require_dash: bool = True,
                            max_gap_em: float = 0.6,
-                           max_gap_pt: Optional[float] = None) -> CaptionValidation:
+                           max_gap_pt: Optional[float] = None,
+                           singleline_max_gap_pt: float = 2.0,
+                           multiline_gap_target_pt: float = 8.0,    # ГОСТ: 8 pt после многострочной подписи
+                           multiline_gap_tol_pt: float = 1.5) -> CaptionValidation:
     """
     Проверка соответствия подписи требованиям.
     expected_num_str: ожидаемый номер таблицы (например '3', '1.2', 'А.1').
@@ -572,16 +575,31 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
             issues.append(f"Неверный номер таблицы: в подписи «{got}», ожидается «{exp}»")
 
     # 6) Зазор между подписью и таблицей / «пустая строка»
-    allowed_gap = max_gap_pt if max_gap_pt is not None else (max_gap_em * max(1.0, cap.size))
-    allowed_gap = max(allowed_gap, 8.0)
-    if cap.gap_to_table_pt > allowed_gap + 0.1:
-        issues.append(
-            f"Между подписью и таблицей слишком большой зазор ({cap.gap_to_table_pt:.1f} pt); "
-            f"не должно быть пустой строки"
-        )
+    if len(cap.lines) == 1:
+        # Однострочная подпись: интервал после подписи НЕ допускается
+        if cap.gap_to_table_pt > singleline_max_gap_pt + 0.1:
+            issues.append(
+                f"Однострочная подпись: после подписи не допускается пустая строка "
+                f"(обнаружен зазор {cap.gap_to_table_pt:.1f} pt > {singleline_max_gap_pt:.1f} pt)."
+            )
+    else:
+        # Многострочная подпись: интервал ≈ 8 pt (с допуском)
+        lo = multiline_gap_target_pt - multiline_gap_tol_pt
+        hi = multiline_gap_target_pt + multiline_gap_tol_pt
+        if cap.gap_to_table_pt < lo - 0.1:
+            issues.append(
+                f"Многострочная подпись: зазор до таблицы слишком маленький "
+                f"({cap.gap_to_table_pt:.1f} pt < {lo:.1f} pt); требуется около {multiline_gap_target_pt:.0f} pt."
+            )
+        elif cap.gap_to_table_pt > hi + 0.1:
+            issues.append(
+                f"Многострочная подпись: зазор до таблицы слишком большой "
+                f"({cap.gap_to_table_pt:.1f} pt > {hi:.1f} pt); требуется около {multiline_gap_target_pt:.0f} pt."
+            )
+
+    # Независимо от количества строк — никаких других строк между подписью и таблицей
     if cap.lines_between_caption_and_table:
         issues.append("Между подписью и таблицей не должно быть других строк")
-
     # 7) Разделитель « – »
     if require_dash:
         sep_m = re.match(
