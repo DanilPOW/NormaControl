@@ -103,6 +103,10 @@ def process_pdf_file(pdf_path: str):
         image_user = image_results['user_summary']
         image_admin = image_results['admin_details']
 
+        figures = image_results.get('figures', [])  # список вида {'page', 'bbox', 'fig_index'}
+        figcap_results = check_figure_captions(pdf_doc, figures)
+        figure_caption_bboxes_by_page = figcap_results.get('figure_caption_bboxes_by_page', {})
+
         body_results = check_body_text(pdf_doc, table_bboxes_by_page=table_bboxes_by_page, table_caption_bboxes_by_page=table_caption_bboxes_by_page, figure_caption_bboxes_by_page=figure_caption_bboxes_by_page, start_page=1)
         body_user = body_results['user_summary']
         body_admin = body_results['admin_details']
@@ -117,6 +121,7 @@ def process_pdf_file(pdf_path: str):
         "\n\n[DoubleSpaceCheck]\n" + double_space_admin +
         "\n\n[TableCheck]\n" + table_admin +
         "\n\n[ImageCheck]\n" + image_admin +
+        "\n\n[FigureCaptions]\n" + figcap_admin +
         "\n\n[BodyText]\n" + body_admin
     )
     return (
