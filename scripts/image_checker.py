@@ -1,7 +1,8 @@
 # scripts/image_checker.py
 import fitz
 import math
-import re  
+import re
+from scripts.figure_caption_checker import check_figure_captions
 
 CM_TO_PT = 28.35
 MM_TO_PT = 2.834646
@@ -496,9 +497,9 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             f"сгруппировано в {grouped_raster_count} ряд(ов)"
         )
 
-        try:
-            tbl_bboxes = table_bboxes_by_page.get(page_num, [])
+        tbl_bboxes = table_bboxes_by_page.get(page_num, [])
 
+        try:
             for ri, row in enumerate(raster_rows, 1):
                 row_bbox = row["bbox"]
 
@@ -683,8 +684,13 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             error_pages.append(page_num)
 
     all_figs, page_to_figs = _enumerate_figures_single_column(
-        pdf_document, raster_rows_by_page, vector_groups_by_page
+    pdf_document, raster_rows_by_page, vector_groups_by_page
     )
+    fig_caption_result = check_figure_captions(pdf_document, all_figs) or {}
+    cap_admin   = fig_caption_result.get("admin_details", "Нет деталей по подписям (пустой ответ)")
+    cap_summary = fig_caption_result.get("user_summary", "✅Проверка подрисуночных подписей")
+    cap_err_pages = set(fig_caption_result.get("error_pages", []))
+    
     if all_figs:
         admin_lines.append("\n[Нумерация рисунков]")
         for it in all_figs:
@@ -706,13 +712,24 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
     admin_details = (
         counts_summary +
         ("\n\n" + "\n".join(vector_summary_lines)) +
-        ("\n\n" + "\n".join(admin_lines) if admin_lines else "\n\nНарушений по графике не найдено.")
+        ("\n\n" + "\n".join(admin_lines) if admin_lines else "\n\nНарушений по графике не найдено.") +
+        ("\n\n[FigureCaptions]\n" + cap_admin)
     )
 
-    if error_pages:
-        user_summary = f"⚠️Проверка рисунков: нарушения на страницах {', '.join(map(str, sorted(error_pages)))}"
+    if cap_err_pages:
+        error_pages = sorted(set(error_pages) | cap_err_pages)
+
+    graphics_ok = (len(error_pages) == 0)
+    captions_ok = not cap_summary.startswith("⚠️")
+
+    if graphics_ok and captions_ok:
+        user_summary = "✅Проверка рисунков и подрисуночных подписей"
     else:
-        user_summary = "✅Проверка рисунков"
+        parts = []
+        if not graphics_ok:
+            parts.append(f"⚠️Проверка рисунков: нарушения на страницах {', '.join(map(str, error_pages))}")
+        parts.append(cap_summary)  # краткий статус из модуля подписей
+        user_summary = " | ".join(parts)
 
     return {
         "user_summary": user_summary,
