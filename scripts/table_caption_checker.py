@@ -62,8 +62,132 @@ class CaptionValidation:
     ok: bool
     issues: List[str]
 
+# === НОВОЕ: данные об упоминании таблицы ===
+@dataclass
+class TableMention:
+    page_index: int                 # 0-based
+    text: str                       # исходная строка с попаданием
+    bbox: BBox                      # bbox строки
+    is_lowercase_word: bool         # «таблица» в упоминании именно строчными
+    match_span: Tuple[int, int]     # (start, end) совпадения внутри text
+
+@dataclass
+class MentionValidation:
+    ok: bool
+    issues: List[str]
+    where: Optional[str]            # кратко: 'same_page_above', 'prev_page', 'same_page_below', None
+    found: Optional[TableMention]
+
 
 # ================== ВСПОМОГАТЕЛЬНЫЕ ==================
+
+# === НОВОЕ: поиск «таблица <номер>» ===
+
+def _mention_regex(expected_num_str: str) -> re.Pattern:
+    """
+    Ищем слово 'таблица' (полное слово) + пробелы + ожидаемый номер.
+    Разрешаем префикс вида 'А.' в expected_num_str (если он есть).
+    Чувствительность к регистру — case-insensitive, но отдельно проверим строчные.
+    """
+    # Экранируем точку после буквы-префикса (А.1)
+    exp = re.escape(expected_num_str)
+    # Слово 'таблица' как отдельное слово
+    return re.compile(rf"\bтаблица\s+{exp}\b", re.IGNORECASE)
+
+def _collect_text_lines_with_page(page: fitz.Page, page_index0: int) -> List[Dict]:
+    """Как _collect_text_lines, но добавляем индекс страницы в каждую запись."""
+    out = _collect_text_lines(page)
+    for L in out:
+        L["__page_idx0"] = page_index0
+    return out
+
+def _find_first_mention_on_page(
+        page: fitz.Page,
+        page_index0: int,
+        expected_num_str: str,
+        *,
+        exclude_line_ids: Optional[set] = None,
+        y_upper_limit: Optional[float] = None,   # искать только выше этой Y (PyMuPDF: чем меньше, тем выше)
+    ) -> Optional[TableMention]:
+        rx = _mention_regex(expected_num_str)
+        for L in _collect_text_lines_with_page(page, page_index0):
+            if exclude_line_ids and id(L) in exclude_line_ids:
+                continue
+            # если задан верхний предел — строки ДОЛЖНЫ быть выше него
+            if y_upper_limit is not None and not (L["bbox"].y1 <= y_upper_limit + 0.1):
+                continue
+            m = rx.search(L["text"])
+            if m:
+                s, e = m.span()
+                frag = L["text"][s:e]
+                word = frag.split()[0] if frag else ""
+                is_lower = (word == "таблица")
+                return TableMention(
+                    page_index=page_index0,
+                    text=L["text"],
+                    bbox=BBox(L["bbox"].x0, L["bbox"].y0, L["bbox"].x1, L["bbox"].y1),
+                    is_lowercase_word=is_lower,
+                    match_span=(s, e),
+                )
+        return None
+
+def validate_table_mention_placement(
+        expected_num_str: str,
+        tbl_rect: BBox,
+        current_page: fitz.Page,
+        current_page_index0: int,
+        caption: Optional[CaptionDetected],
+        prev_page: Optional[fitz.Page] = None,
+        prev_page_index0: Optional[int] = None,
+        max_dist_pt_same_page: float = 3000.0
+    ) -> MentionValidation:
+        issues: List[str] = []
+        found: Optional[TableMention] = None
+        where: Optional[str] = None
+
+        # если подпись есть — ищем упоминание ТОЛЬКО ВЫШЕ подписи
+        exclude_ids = set(id(L) for L in (caption.lines if caption else []))
+        if caption is not None:
+            cur_first = _find_first_mention_on_page(
+                current_page,
+                current_page_index0,
+                expected_num_str,
+                exclude_line_ids=exclude_ids,
+                y_upper_limit=caption.bbox.y0,  # строго выше подписи
+            )
+        else:
+            # если подписи нет, можно либо считать «не найдено», либо (мягко) искать выше самой таблицы
+            cur_first = _find_first_mention_on_page(
+                current_page,
+                current_page_index0,
+                expected_num_str,
+                exclude_line_ids=None,
+                y_upper_limit=tbl_rect.y0,      # выше самой таблицы
+            )
+
+        if cur_first:
+            found = cur_first
+            where = "same_page_above"
+            if not cur_first.is_lowercase_word:
+                issues.append("В упоминании должно быть «таблица» строчными буквами.")
+            return MentionValidation(ok=(len(issues) == 0), issues=issues, where=where, found=found)
+
+        # не нашли на текущей странице выше — пробуем предыдущую страницу (без ограничений по Y,
+        # но всё равно игнорируем строки подписи, хотя подпись на prev_page обычно отсутствует)
+        if prev_page is not None and prev_page_index0 is not None:
+            prev_first = _find_first_mention_on_page(
+                prev_page, prev_page_index0, expected_num_str, exclude_line_ids=None, y_upper_limit=None
+            )
+            if prev_first:
+                found = prev_first
+                where = "prev_page"
+                if not prev_first.is_lowercase_word:
+                    issues.append("В упоминании должно быть «таблица» строчными буквами.")
+                return MentionValidation(ok=(len(issues) == 0), issues=issues, where=where, found=found)
+
+        # совсем не нашли
+        issues.append("Не найдено корректное упоминание «таблица N» выше подписи/таблицы или на предыдущей странице.")
+        return MentionValidation(ok=False, issues=issues, where=None, found=None)
 
 def _normalize_dash(s: str) -> str:
     """Единообразим все типы тире к обычному дефису для стабильного сравнения/логов."""
