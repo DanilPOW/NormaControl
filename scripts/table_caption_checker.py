@@ -221,7 +221,6 @@ def _normalize_color_to_rgb255(c) -> Tuple[int, int, int]:
         if max(c) <= 1.0:
             return (clamp255(c[0]*255), clamp255(c[1]*255), clamp255(c[2]*255))
         return (clamp255(c[0]), clamp255(c[1]), clamp255(c[2]))
-
     if isinstance(c, (int, float)):
         v = clamp255(c*255 if c <= 1.0 else c)
         return (v, v, v)
@@ -522,8 +521,8 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
                            must_black: bool = True,
                            must_tnr: bool = True,
                            require_dash: bool = True,
-                           max_gap_em: float = 0.6,
-                           max_gap_pt: Optional[float] = None,
+                           max_gap_em: float = 0.6,               # исторический параметр (не используется в новой логике)
+                           max_gap_pt: Optional[float] = None,    # исторический параметр (не используется в новой логике)
                            singleline_max_gap_pt: float = 2.0,
                            multiline_gap_target_pt: float = 8.0,    # ГОСТ: 8 pt после многострочной подписи
                            multiline_gap_tol_pt: float = 1.5) -> CaptionValidation:
@@ -531,8 +530,9 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
     Проверка соответствия подписи требованиям.
     expected_num_str: ожидаемый номер таблицы (например '3', '1.2', 'А.1').
     anchor_mode: для формулировки предупреждения про «без абзацного отступа».
-    max_gap_em: допустимый зазор между подписью и таблицей в "em" (от размера шрифта подписи).
-    max_gap_pt: вместо em можно задать фикс. порог в pt (если None — используется em).
+    Примечание: правила интервала после подписи:
+      - если подпись однострочная — интервал после подписи не допускается (≤ singleline_max_gap_pt);
+      - если подпись многострочная — интервал ≈ multiline_gap_target_pt ± multiline_gap_tol_pt.
     """
     issues: List[str] = []
 
@@ -574,7 +574,7 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
         if got != exp:
             issues.append(f"Неверный номер таблицы: в подписи «{got}», ожидается «{exp}»")
 
-    # 6) Зазор между подписью и таблицей / «пустая строка»
+    # 6) Зазор между подписью и таблицей / «пустая строка» (ГОСТ-логика)
     if len(cap.lines) == 1:
         # Однострочная подпись: интервал после подписи НЕ допускается
         if cap.gap_to_table_pt > singleline_max_gap_pt + 0.1:
@@ -600,6 +600,7 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
     # Независимо от количества строк — никаких других строк между подписью и таблицей
     if cap.lines_between_caption_and_table:
         issues.append("Между подписью и таблицей не должно быть других строк")
+
     # 7) Разделитель « – »
     if require_dash:
         sep_m = re.match(
@@ -609,7 +610,7 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
         if sep_m:
             sep_char = sep_m.group("sep")
             exact_en_ok = bool(re.match(
-                r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?\d+(?:\.\d+)*\s–\s",
+                r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?\d+(?:\.\д+)*\s–\s",
                 cap.raw_text
             ))
             if sep_char != "–":
@@ -643,6 +644,7 @@ def find_table_continuation_caption(page: fitz.Page, tbl_rect: BBox,
     candidates = _near_caption_lines_above_table(lines, tbl_rect, max_band_pt)
     anchor_x = LEFT_MARGIN_PT if anchor_mode == "workarea" else tbl_rect.x0
 
+    # Находим первую снизу строку, начинающуюся с «Продолжение таблицы»
     head_idx = None
     for i, L in enumerate(candidates):
         if L["text"].strip().lower().startswith(CONTINUATION_PREFIX.lower()):
@@ -651,13 +653,57 @@ def find_table_continuation_caption(page: fitz.Page, tbl_rect: BBox,
     if head_idx is None:
         return None
 
-    first = candidates[head_idx]
+    # --- склейка многострочной подписи продолжения (вверх по документу, как у основной подписи) ---
+    cap_lines = [candidates[head_idx]]
+    head = cap_lines[0]
 
-    xs, ys = [first["bbox"].x0, first["bbox"].x1], [first["bbox"].y0, first["bbox"].y1]
+    avg_pt = float(head["size"])
+    EPS_PT = 0.8
+    LINE_FACTOR_MAX = 1.40
+    BLANK_GAP_FACTOR = 1.75
+    MAX_LEFT_SHIFT_PT = max(6.0, 0.5 * avg_pt)
+    OVERLAP_MIN = 0.25
+
+    cap_hrect = fitz.Rect(head["bbox"])
+    j = head_idx - 1
+    while j >= 0:
+        cand = candidates[j]
+        if not _style_similar(head, cand):
+            break
+
+        dy = cap_lines[-1]["bbox"].y0 - cand["bbox"].y1
+        avg_sz = (cand["size"] + cap_lines[-1]["size"]) / 2.0
+        spacing_ok = dy <= (LINE_FACTOR_MAX * avg_sz + EPS_PT)
+
+        if dy > (BLANK_GAP_FACTOR * avg_sz + EPS_PT):
+            break
+
+        same_left = abs(cand["bbox"].x0 - head["bbox"].x0) <= MAX_LEFT_SHIFT_PT
+        overlap_ok = _horiz_overlap_ratio(cand["bbox"], cap_hrect) >= OVERLAP_MIN
+
+        foreign = _has_foreign_line_between(candidates, cap_lines[-1], cand, overlap_min=0.30)
+        if foreign:
+            break
+
+        if spacing_ok and (same_left or overlap_ok):
+            cap_lines.append(cand)
+            cap_hrect = cap_hrect | cand["bbox"]
+            j -= 1
+        else:
+            break
+
+    cap_lines.sort(key=lambda L: (L["bbox"].y0, L["bbox"].x0))
+
+    # Геометрия/текст
+    first = cap_lines[0]
+    xs, ys = [], []
+    for L in cap_lines:
+        xs += [L["bbox"].x0, L["bbox"].x1]
+        ys += [L["bbox"].y0, L["bbox"].y1]
     cap_bbox = BBox(min(xs), min(ys), max(xs), max(ys))
 
     no_indent_ok = _is_no_par_indent_left(first, anchor_x, tol_px=tol_px)
-    raw_text = first["text"].strip()
+    raw_text = " ".join(L["text"] for L in cap_lines).strip()
 
     m = CONT_NUMBER_RE.match(raw_text)
     if m:
@@ -672,10 +718,11 @@ def find_table_continuation_caption(page: fitz.Page, tbl_rect: BBox,
 
     gap_to_table_pt = max(0.0, tbl_rect.y0 - cap_bbox.y1)
 
+    # Строки между подписью продолжения и таблицей
     lines_between: List[Dict] = []
     band_rect = fitz.Rect(cap_bbox.x0, cap_bbox.y0, cap_bbox.x1, tbl_rect.y0)
     for L in lines:
-        if L is first:
+        if id(L) in {id(x) for x in cap_lines}:
             continue
         if (cap_bbox.y1 + 0.5) <= L["bbox"].y1 <= (tbl_rect.y0 - 0.5):
             if _horiz_overlap_ratio(L["bbox"], band_rect) >= 0.60:
@@ -684,7 +731,7 @@ def find_table_continuation_caption(page: fitz.Page, tbl_rect: BBox,
     return ContCaptionDetected(
         raw_text=raw_text,
         bbox=cap_bbox,
-        lines=[first],
+        lines=cap_lines,
         number_str=number_str,
         font=font,
         size=size,
@@ -701,15 +748,19 @@ def validate_table_continuation_caption(cont: ContCaptionDetected,
                                         max_pt: float = 14.0,
                                         must_black: bool = True,
                                         must_tnr: bool = True,
-                                        max_gap_pt: float = 14.0) -> CaptionValidation:
+                                        singleline_max_gap_pt: float = 2.0,
+                                        multiline_gap_target_pt: float = 8.0,
+                                        multiline_gap_tol_pt: float = 1.5) -> CaptionValidation:
     """
     Проверяем подпись продолжения. Требования:
-    - Текст начинается с «Продолжение таблицы», обязательно указан номер N.
-    - Без абзацного отступа (от левого поля или левого края таблицы — по anchor_mode).
-    - Шрифт Times New Roman, чёрный, не более 14 pt.
-    - Между подписью продолжения и таблицей зазор не более одной строки (<= max_gap_pt; по умолчанию 14 pt).
-    - Между подписью продолжения и таблицей не должно быть других строк.
-    - Если expected_num_str задан — номер должен совпадать.
+      - Текст начинается с «Продолжение таблицы», обязательно указан номер N.
+      - Без абзацного отступа (от левого поля или левого края таблицы — по anchor_mode).
+      - Шрифт Times New Roman, чёрный, не более 14 pt.
+      - Интервал после подписи:
+          * если подпись однострочная — интервал не допускается (≤ singleline_max_gap_pt);
+          * если многострочная — около multiline_gap_target_pt ± multiline_gap_tol_pt.
+      - Между подписью продолжения и таблицей не должно быть других строк.
+      - Если expected_num_str задан — номер должен совпадать.
     """
     issues: List[str] = []
 
@@ -737,8 +788,28 @@ def validate_table_continuation_caption(cont: ContCaptionDetected,
         if got != exp:
             issues.append(f"Номер в подписи продолжения «{got}» должен совпадать с номером основной части «{exp}».")
 
-    if cont.gap_to_table_pt > max_gap_pt + 0.1:
-        issues.append(f"Между подписью продолжения и таблицей слишком большой зазор ({cont.gap_to_table_pt:.1f} pt); допускается не более {max_gap_pt:.0f} pt.")
+    # --- Интервал после подписи продолжения (ГОСТ-логика) ---
+    if len(cont.lines) == 1:
+        if cont.gap_to_table_pt > singleline_max_gap_pt + 0.1:
+            issues.append(
+                f"Однострочная подпись продолжения: после подписи не допускается пустая строка "
+                f"(зазор {cont.gap_to_table_pt:.1f} pt > {singleline_max_gap_pt:.1f} pt)."
+            )
+    else:
+        lo = multiline_gap_target_pt - multiline_gap_tol_pt
+        hi = multiline_gap_target_pt + multiline_gap_tol_pt
+        if cont.gap_to_table_pt < lo - 0.1:
+            issues.append(
+                f"Многострочная подпись продолжения: зазор слишком маленький "
+                f"({cont.gap_to_table_pt:.1f} pt < {lo:.1f} pt); нужно около {multiline_gap_target_pt:.0f} pt."
+            )
+        elif cont.gap_to_table_pt > hi + 0.1:
+            issues.append(
+                f"Многострочная подпись продолжения: зазор слишком большой "
+                f"({cont.gap_to_table_pt:.1f} pt > {hi:.1f} pt); нужно около {multiline_gap_target_pt:.0f} pt."
+            )
+
+    # Посторонние строки между подписью и таблицей
     if cont.lines_between_caption_and_table:
         issues.append("Между подписью продолжения и таблицей не должно быть других строк.")
 
