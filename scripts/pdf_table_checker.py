@@ -12,6 +12,7 @@ import fitz  # PyMuPDF
 from scripts.table_caption_checker import (
     find_table_caption,
     validate_table_caption,
+    validate_table_mention_placement,
 )
 
 # Константы макета страницы
@@ -698,7 +699,6 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                 font_violations.append({"type": "color", "msg": f"Цвет RGB{c} не чёрный", "sample": t[:60], "font": f, "size": s})
 
         # НОВОЕ: геометрический детект underline
-        # 1) по имени/флагам — только для bold/italic (underline_attr редко приходит)
         underline_geo_flags = _detect_underlines_for_spans(page, inner, cell_rect, [
             {"bbox": b, "size": s} for b, s in zip(span_boxes, span_sizes)
         ], y_tol_pt=1.2, min_x_cover=0.65)
@@ -707,7 +707,6 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             f_l = (f or "").lower()
             is_bold = any(k in f_l for k in ["bold", "black", "heavy", "semibold", "demibold"])
             is_italic = any(k in f_l for k in ["italic", "oblique"]) or bool(fl & 64)  # 64 = Italic
-            # underline = либо явный атрибут (редко), либо геометрически найденная линия
             is_underlined = bool(ul_attr) or bool(underline_geo_flags[idx])
 
             if is_bold:
@@ -793,7 +792,8 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
     if cc.image_bbox:
         img_area = bbox_area(cc.image_bbox)
         txt_area = bbox_area(cc.text_bbox) if cc.text_bbox else 0.0
-        if img_area > 0 and (txt_area / img_area) <= TINY_TEXT_VS_IMG:
+    #    если картинка доминирует — убираем «шумной» мелкий текст
+        if img_area > 0 and (txt_area / img_area) <= 0.15:
             cc.text_spans.clear()
             cc.text_bbox = None
             cc.alignment_text = None
@@ -925,31 +925,37 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                     x0_m, y0_m, x1_m, y1_m = t._bbox
                     tbl_rect = camelot_table_bbox_to_fitz(x0_m, y0_m, x1_m, y1_m, page_height)
 
+                    # аккумуляторы аннотаций для этой таблицы
+                    caption_notes: List[str] = []
+                    table_notes: List[str] = []
+
                     table_bboxes_by_page.setdefault(page_num, []).append(
                         (float(tbl_rect.x0), float(tbl_rect.y0), float(tbl_rect.x1), float(tbl_rect.y1))
                     )
 
-                    errors = []
+                    # --- ошибки расположения (не аннотируем сразу; копим)
+                    loc_errors = []
                     if (tbl_rect.x0 < LEFT_MARGIN_PT - TOLERANCE_PT or
                         tbl_rect.x1 > page_width - RIGHT_MARGIN_PT + TOLERANCE_PT or
                         tbl_rect.y0 < TOP_MARGIN_PT - TOLERANCE_PT or
                         tbl_rect.y1 > page_height - BOTTOM_MARGIN_PT + TOLERANCE_PT):
-                        errors.append("Таблица выходит за пределы полей")
+                        loc_errors.append("Таблица выходит за пределы полей")
 
                     work_w = page_width - LEFT_MARGIN_PT - RIGHT_MARGIN_PT
                     work_cx = LEFT_MARGIN_PT + work_w / 2
                     tbl_cx = (tbl_rect.x0 + tbl_rect.x1) / 2
                     if abs(tbl_cx - work_cx) > 2:
-                        errors.append("Таблица не по центру относительно полей")
+                        loc_errors.append("Таблица не по центру относительно полей")
 
-                    if errors:
+                    if loc_errors:
                         admin_lines.append(
                             f"[Camelot][Стр. {page_num}][Табл. {tbl_idx}] bbox(miner)={t._bbox} | "
                             f"fitz={tbl_rect.x0:.1f},{tbl_rect.y0:.1f},{tbl_rect.x1:.1f},{tbl_rect.y1:.1f} | " +
-                            "; ".join(errors)
+                            "; ".join(loc_errors)
                         )
                         error_pages.add(page_num)
-                        _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), "Ошибки расположения таблицы:\n" + "\n".join(errors))
+                        table_notes.append("Ошибки расположения таблицы:")
+                        table_notes += [f"• {e}" for e in loc_errors]
                     else:
                         admin_lines.append(
                             f"[Camelot][Стр. {page_num}][Табл. {tbl_idx}] bbox(miner)={t._bbox} | "
@@ -970,8 +976,7 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
                     if cap is None:
                         admin_lines.append(f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] Подпись не найдена")
-                        _add_text_annot_silent(page, (tbl_rect.x0, max(tbl_rect.y0 - 6, 0)),
-                                               "Нет подписи таблицы")
+                        table_notes.append("Нет подписи таблицы")
                         error_pages.add(page_num)
                     else:
                         val = validate_table_caption(
@@ -990,14 +995,70 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             admin_lines.append(
                                 f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] Ошибки:\n  - " + "\n  - ".join(val.issues)
                             )
-                            note = "Подпись таблицы:\n" + "\n".join(f"• {e}" for e in val.issues[:8])
-                            _add_text_annot_silent(page, (cap.bbox.x0, cap.bbox.y0), note)
+                            caption_notes.append("Подпись таблицы:")
+                            caption_notes += [f"• {e}" for e in val.issues[:8]]
                             error_pages.add(page_num)
 
                     # ---------- логическая сетка
                     X, Y = build_logical_grid(t, page_height, min_frac=0.30, eps=1.0)
                     rows = max(0, len(Y) - 1)
                     cols = max(0, len(X) - 1)
+
+                    # === MENTION: проверка текстового упоминания «таблица <номер>»
+                    try:
+                        prev_pg = pdf_document[page_num - 2] if page_num - 2 >= 0 else None  # 0-based
+                    except Exception:
+                        prev_pg = None
+
+                    mention_val = validate_table_mention_placement(
+                        expected_num_str=expected_number_str,
+                        tbl_rect=tbl_rect,
+                        current_page=page,
+                        current_page_index0=page_num - 1,
+                        caption=cap,                          # может быть None
+                        prev_page=prev_pg,
+                        prev_page_index0=(page_num - 2 if prev_pg is not None else None),
+                    )
+
+                    # --- Новая логика вывода/аннотаций по упоминанию ---
+                    if mention_val.found:
+                        if mention_val.ok:
+                            where_map = {
+                                "same_page_above": "на той же странице выше",
+                                "prev_page": "на предыдущей странице",
+                            }
+                            where_msg = where_map.get(mention_val.where, "найдено")
+                            admin_lines.append(
+                                f"[Mention][Стр. {page_num}][Табл. {tbl_idx}] Найдено упоминание «таблица {expected_number_str}» ({where_msg})"
+                            )
+                            # ВАЖНО: никаких аннотаций не ставим в корректном случае
+                        else:
+                            # Упоминание есть, но оформлено неверно
+                            admin_lines.append(
+                                f"[Mention][Стр. {page_num}][Табл. {tbl_idx}] Упоминание оформлено неверно: " +
+                                ("; ".join(mention_val.issues) if mention_val.issues else "см. аннотацию")
+                            )
+                            msg = [f"Упоминание «таблица {expected_number_str}»: оформление неверно"]
+                            msg += [f"• {e}" for e in mention_val.issues]
+                            if cap is not None:
+                                caption_notes += msg    # есть подпись — аннотация на подписи
+                            else:
+                                table_notes += msg      # подписи нет — аннотация у таблицы
+                            error_pages.add(page_num)
+                    else:
+                        # упоминание совсем не найдено
+                        admin_lines.append(
+                            f"[Mention][Стр. {page_num}][Табл. {tbl_idx}] Упоминание не найдено (ожидалось «таблица {expected_number_str}»)"
+                        )
+                        msg = [f"Для данной таблицы должно быть упоминание «таблица {expected_number_str}» "
+                               f"в тексте до таблицы (на этой странице выше или на предыдущей странице)."]
+                        if cap is not None:
+                            caption_notes += msg
+                        else:
+                            table_notes += msg
+                        error_pages.add(page_num)
+
+                    # (Удалено) точечная подсветка места упоминания — теперь не делаем
 
                     page_tables = cell_analysis_by_page.setdefault(page_num, [])
                     table_report = {"shape": (rows, cols), "cells": []}
@@ -1063,16 +1124,8 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                                     sample = f' — «{sample}»' if sample else ""
                                     table_font_size_issues.append(f"[{r},{c}] {v.get('msg','')}{sample}")
 
+                            # УБРАНО: точечные аннотации по каждой ячейке
                             if fr["violations"]:
-                                msgs = []
-                                for v in fr["violations"][:3]:
-                                    msgs.append(f"• {v['msg']}")
-                                if len(fr["violations"]) > 3:
-                                    msgs.append(f"... и ещё {len(fr['violations']) - 3}")
-                                annot_text = "Нарушения шрифта:\n" + "\n".join(msgs)
-                                _add_text_annot_silent(page, (cell_rect.x0 + 2, cell_rect.y0 + 2), annot_text)
-                                error_pages.add(page_num)
-
                                 row_debugs.append(
                                     f"[Font][{r},{c}] max={fr['max_size']:.1f}pt | TNR={fr['all_times_new_roman']} | BLACK={fr['all_black']} | n={len(fr['violations'])}"
                                 )
@@ -1129,6 +1182,7 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
                     page_tables.append(table_report)
 
+                    # --- сводные замечания по выравниванию/шрифтам копим в table_notes
                     if table_has_header_alignment_issue or table_has_font_size_issue:
                         parts = []
                         if table_has_header_alignment_issue:
@@ -1145,7 +1199,7 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             parts.append(head + "\n" + body)
 
                         combined_text = "\n\n".join(parts)
-                        _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), combined_text)
+                        table_notes.append(combined_text)
                         error_pages.add(page_num)
 
                         if table_has_header_alignment_issue:
@@ -1156,6 +1210,13 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             admin_lines.append(f"[Fonts][Стр. {page_num}][Табл. {tbl_idx}] Обнаружены нарушения шрифта/размера:")
                             for line in table_font_size_issues[:12]:
                                 admin_lines.append(f"  {line}")
+
+                    # --- в самом конце: ставим 1–2 аннотации
+                    if caption_notes and cap is not None:
+                        _add_text_annot_silent(page, (cap.bbox.x0, cap.bbox.y0), "\n".join(caption_notes))
+
+                    if table_notes:
+                        _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), "\n\n".join(table_notes))
 
             except Exception as e:
                 admin_lines.append(f"[Camelot] Ошибка: {e}")
