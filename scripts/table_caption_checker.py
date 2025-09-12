@@ -325,6 +325,38 @@ def _line_spacing_ok(lines: List[Dict], tol_ratio=(0.85, 1.30)) -> bool:
     lo, hi = tol_ratio
     return (lo <= ratio <= hi)
 
+def _base_font_name(font_name: str) -> str:
+    if not font_name:
+        return ""
+    return font_name.split("+", 1)[-1].lower().replace(" ", "")
+
+def is_times_family(font_name: str) -> bool:
+    f = _base_font_name(font_name)
+    return (
+        "timesnewroman" in f
+        or "times-roman" in f
+        or "timesnewromanps" in f
+        or f in {"tnr", "timesroman", "times"}
+    )
+
+# обратная совместимость со старым именем, которое вызывается в validate_table_caption
+_is_times_family = is_times_family
+
+def _style_similar(a: Dict, b: Dict) -> bool:
+    """«Похожий стиль» для склейки многострочных подписей:
+       близкий кегль, та же цветовая тройка, то же семейство (Times или нет)."""
+    try:
+        if abs(float(a.get("size", 0.0)) - float(b.get("size", 0.0))) > 0.5:
+            return False
+        same_family = is_times_family(a.get("font", "")) == is_times_family(b.get("font", ""))
+        if not same_family:
+            return False
+        ca = _normalize_color_to_rgb255(a.get("color", 0))
+        cb = _normalize_color_to_rgb255(b.get("color", 0))
+        return ca == cb
+    except Exception:
+        return False
+
 
 # ================== ПУБЛИЧНЫЕ АПИ ==================
 
