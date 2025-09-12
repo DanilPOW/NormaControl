@@ -11,6 +11,7 @@ from scripts.double_space_checker import check_double_spaces
 from scripts.image_checker import check_images
 from scripts.pdf_table_checker import check_tables
 from scripts.body_text_checker import check_body_text
+from scripts.figure_caption_checker import check_figure_captions
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
@@ -96,12 +97,13 @@ def process_pdf_file(pdf_path: str):
         table_user = table_results['user_summary']
         table_admin = table_results['admin_details']
         table_bboxes_by_page = table_results.get('table_bboxes_by_page', {})
+        table_caption_bboxes_by_page = table_results.get('table_caption_bboxes_by_page', {})
 
         image_results = check_images(pdf_doc, pdf_path=tmp_path, table_bboxes_by_page=table_bboxes_by_page, debug_draw=False)
         image_user = image_results['user_summary']
         image_admin = image_results['admin_details']
 
-        body_results = check_body_text(pdf_doc, table_bboxes_by_page=table_bboxes_by_page, start_page=1)
+        body_results = check_body_text(pdf_doc, table_bboxes_by_page=table_bboxes_by_page, table_caption_bboxes_by_page=table_caption_bboxes_by_page, figure_caption_bboxes_by_page=figure_caption_bboxes_by_page, start_page=1)
         body_user = body_results['user_summary']
         body_admin = body_results['admin_details']
 
