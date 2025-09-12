@@ -8,11 +8,13 @@ import camelot
 import pdfplumber
 import fitz  # PyMuPDF
 
-# === CAPTION: импортируем функции поиска и валидации подписи таблицы
+# === CAPTION: импортируем функции поиска и валидации подписи таблицы и продолжения
 from scripts.table_caption_checker import (
     find_table_caption,
     validate_table_caption,
     validate_table_mention_placement,
+    find_table_continuation_caption,
+    validate_table_continuation_caption,
 )
 
 # Константы макета страницы
@@ -22,6 +24,14 @@ TOP_MARGIN_PT    = 2 * 28.35
 BOTTOM_MARGIN_PT = 2 * 28.35
 TOLERANCE_PT     = 2
 MM_TO_PT = 2.8346456693  # 1 мм = 2.8346 pt
+
+# === НОВОЕ: эвристика «таблица — продолжение» по положению
+# 4 см от верхнего края страницы, при этом верхнее поле уже 2 см => дополнительно 2 см от границы области набора.
+CONT_NEAR_TOP_EXTRA_MM = 20.0  # 2 см сверх верхнего поля
+CONT_NEAR_TOP_EXTRA_PT = CONT_NEAR_TOP_EXTRA_MM * MM_TO_PT
+
+# Максимальный допустимый зазор между подписью «Продолжение таблицы …» и самой таблицей — 1 строка 12–14 pt
+CONT_MAX_GAP_PT = 14.0
 
 
 @dataclass
@@ -543,9 +553,7 @@ def _detect_underlines_for_spans(page: fitz.Page, inner: BBox, cell_rect: BBox,
 
     for i, sp in enumerate(spans):
         sb: BBox = sp["bbox"]
-        size = float(sp.get("size", 0.0)) if "size" in sp else 0.0
         # вертикальный коридор поиска подчеркивания: чуть ниже нижней кромки текста
-        # используем as-is: [y1 - y_tol, y1 + y_tol] (PyMuPDF: y вниз)
         y0 = sb.y1 - y_tol_pt
         y1 = sb.y1 + y_tol_pt
         for (x0, x1, y) in filtered:
@@ -571,7 +579,6 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
     MIN_IMG_COVER  = 0.70   # ≥70% картинки лежит в ячейке
     MIN_VEC_COVER  = 0.70   # ≥70% вектора лежит в ячейке
     MIN_AREA_PT2   = 8.0 * 8.0  # минимальная площадь содержимого
-    TINY_TEXT_VS_IMG = 0.15      # крошечный текст относительно картинки
 
     text_dict = page.get_text("dict")
 
@@ -634,30 +641,30 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
         } for t, b, f, s, c, fl, ul in zip(span_texts, span_boxes, span_fonts, span_sizes, span_colors, span_flags, span_underline_attr)]
         cc.text_bbox  = tb
 
-        # вертикаль — по общему bbox
-        base_align = classify_alignment(cell_rect, tb, tol_px=tol_px, padding=padding)
-        line_boxes = _lines_in_inner(page, inner, min_cover=0.5)
+        # выравнивание
+        base_align = classify_alignment(cell_rect, tb, tol_px=2.0, padding=padding)
+        line_boxes = _lines_in_inner(page, bbox_inset(cell_rect, padding), min_cover=0.5)
         h_align = _decide_halign_strict_center(
-            inner, line_boxes, tol_px=tol_px, ignore_last_line=True, is_header=is_header
+            bbox_inset(cell_rect, padding), line_boxes, tol_px=2.0, ignore_last_line=True, is_header=is_header
         )
 
         # вычислим центры и построчные медианы — для логов:
         import statistics as st
         if line_boxes:
-            L = [max(0.0, lb.x0 - inner.x0) for lb in line_boxes]
-            R = [max(0.0, inner.x1 - lb.x1) for lb in line_boxes]
+            L = [max(0.0, lb.x0 - bbox_inset(cell_rect, padding).x0) for lb in line_boxes]
+            R = [max(0.0, bbox_inset(cell_rect, padding).x1 - lb.x1) for lb in line_boxes]
             Lm = st.median(L); Rm = st.median(R)
             content_x0 = min(lb.x0 for lb in line_boxes)
             content_x1 = max(lb.x1 for lb in line_boxes)
             content_mid = 0.5 * (content_x0 + content_x1)
-            cell_mid    = 0.5 * (inner.x0 + inner.x1)
+            cell_mid    = 0.5 * (bbox_inset(cell_rect, padding).x0 + bbox_inset(cell_rect, padding).x1)
             center_gap  = abs(cell_mid - content_mid)
-            inner_w     = max(1.0, inner.width())
+            inner_w     = max(1.0, bbox_inset(cell_rect, padding).width())
             fills_ratio = (content_x1 - content_x0) / inner_w
         else:
             Lm = Rm = center_gap = fills_ratio = 0.0
-            cell_mid = 0.5 * (inner.x0 + inner.x1)
-            content_mid = 0.5 * (tb.x0 + tb.x1)  # fallback по общему bbox
+            cell_mid = 0.5 * (bbox_inset(cell_rect, padding).x0 + bbox_inset(cell_rect, padding).x1)
+            content_mid = 0.5 * (tb.x0 + tb.x1)  # fallback
 
         gaps = dict(base_align.gaps)
         gaps.update({
@@ -699,7 +706,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                 font_violations.append({"type": "color", "msg": f"Цвет RGB{c} не чёрный", "sample": t[:60], "font": f, "size": s})
 
         # НОВОЕ: геометрический детект underline
-        underline_geo_flags = _detect_underlines_for_spans(page, inner, cell_rect, [
+        underline_geo_flags = _detect_underlines_for_spans(page, bbox_inset(cell_rect, padding), cell_rect, [
             {"bbox": b, "size": s} for b, s in zip(span_boxes, span_sizes)
         ], y_tol_pt=1.2, min_x_cover=0.65)
 
@@ -741,9 +748,9 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
     for b in text_dict.get("blocks", []):
         if b.get("type") == 1 and "bbox" in b:
             ib = fitz_rect_to_bbox(fitz.Rect(b["bbox"]))
-            if bbox_area(ib) < MIN_AREA_PT2:
+            if bbox_area(ib) < 64.0:  # MIN_AREA_PT2
                 continue
-            if rect_reasonably_inside(ib, inner, MIN_IMG_COVER):
+            if rect_reasonably_inside(ib, bbox_inset(cell_rect, padding), 0.70):
                 img_boxes.append(ib)
 
     if img_boxes:
@@ -752,7 +759,7 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             ibb = ib if ibb is None else bbox_union(ibb, ib)
         cc.images = img_boxes
         cc.image_bbox = ibb
-        cc.alignment_image = classify_alignment(cell_rect, ibb, tol_px=tol_px, padding=padding)
+        cc.alignment_image = classify_alignment(cell_rect, ibb, tol_px=2.0, padding=padding)
 
     # -------- ВЕКТОРЫ (НЕ РАМКИ) --------
     vec_boxes: List[BBox] = []
@@ -770,10 +777,10 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
                         xs.append(pts[k]); ys.append(pts[k + 1])
             if xs and ys:
                 vb = BBox(min(xs), min(ys), max(xs), max(ys))
-                if bbox_area(vb) <  MIN_AREA_PT2:
+                if bbox_area(vb) < 64.0:
                     continue
                 # внутри и не касается границ ячейки — иначе это рамка/решётка
-                if rect_reasonably_inside(vb, inner, MIN_VEC_COVER) and not touches_cell_border(vb, cell_rect, tol=padding + 0.5):
+                if rect_reasonably_inside(vb, bbox_inset(cell_rect, padding), 0.70) and not touches_cell_border(vb, cell_rect, tol=padding + 0.5):
                     vec_boxes.append(vb)
     except Exception:
         pass
@@ -784,15 +791,15 @@ def extract_cell_content(page: fitz.Page, cell_rect: BBox,
             vbb = vb if vbb is None else bbox_union(vbb, vb)
         cc.vectors = vec_boxes
         cc.vector_bbox = vbb
-        cc.alignment_vector = classify_alignment(cell_rect, vbb, tol_px=tol_px, padding=padding)
+        cc.alignment_vector = classify_alignment(cell_rect, vbb, tol_px=2.0, padding=padding)
 
     # -------- Конфликтология --------
-    cell_area = bbox_area(inner)
+    cell_area = bbox_area(bbox_inset(cell_rect, padding))
 
     if cc.image_bbox:
         img_area = bbox_area(cc.image_bbox)
         txt_area = bbox_area(cc.text_bbox) if cc.text_bbox else 0.0
-    #    если картинка доминирует — убираем «шумной» мелкий текст
+        # если картинка доминирует — убираем «шумной» мелкий текст
         if img_area > 0 and (txt_area / img_area) <= 0.15:
             cc.text_spans.clear()
             cc.text_bbox = None
@@ -927,7 +934,8 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
 
                     # аккумуляторы аннотаций для этой таблицы
                     caption_notes: List[str] = []
-                    table_notes: List[str] = []
+                    cont_notes: List[str] = []
+                    table_notes: List[str] = []  # общая сводка по таблице (в т.ч. если продолжение оформлено неверно)
 
                     table_bboxes_by_page.setdefault(page_num, []).append(
                         (float(tbl_rect.x0), float(tbl_rect.y0), float(tbl_rect.x1), float(tbl_rect.y1))
@@ -962,103 +970,150 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             f"fitz={tbl_rect.x0:.1f},{tbl_rect.y0:.1f},{tbl_rect.x1:.1f},{tbl_rect.y1:.1f} | ✅Таблица корректно расположена"
                         )
 
-                    # === CAPTION
-                    global_table_counter += 1
-                    expected_number_str = str(global_table_counter)
-
-                    cap = find_table_caption(
+                    # === ЭВРИСТИКА: является ли эта таблица продолжением по макету?
+                    is_near_top = (tbl_rect.y0 <= TOP_MARGIN_PT + CONT_NEAR_TOP_EXTRA_PT)
+                    cont_hint = find_table_continuation_caption(
                         page,
                         tbl_rect,
                         search_band_mm=25.0,
                         anchor_mode="workarea",
                         tol_px=2.0
                     )
+                    has_cont_caption_above = bool(cont_hint is not None)
+                    is_continuation_layout = is_near_top or has_cont_caption_above
 
-                    if cap is None:
-                        admin_lines.append(f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] Подпись не найдена")
-                        table_notes.append("Нет подписи таблицы")
-                        error_pages.add(page_num)
+                    # === CAPTION / СЧЁТЧИК
+                    if not is_continuation_layout:
+                        global_table_counter += 1
+                        expected_number_str = str(global_table_counter)
                     else:
-                        val = validate_table_caption(
-                            cap,
-                            expected_num_str=expected_number_str,
-                            anchor_mode="workarea",
-                            max_pt=14.0,
-                            must_black=True,
-                            must_tnr=True,
-                            require_dash=True,
-                            max_gap_em=0.6,
-                        )
-                        if val.ok:
-                            admin_lines.append(f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] ✅ «{cap.text}»")
-                        else:
-                            admin_lines.append(
-                                f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] Ошибки:\n  - " + "\n  - ".join(val.issues)
+                        expected_number_str = None  # у продолжений нет собственного номера в счётчике
+
+                    # === ВАЛИДАЦИИ ПОДПИСЕЙ / УПОМИНАНИЙ
+                    if is_continuation_layout:
+                        # Валидируем подпись «Продолжение таблицы N», если есть. Иначе — ошибка.
+                        if cont_hint is not None:
+                            cont_val = validate_table_continuation_caption(
+                                cont_hint,
+                                expected_num_str=None,  # при желании можно сверять с номером основной части
+                                anchor_mode="workarea",
+                                max_pt=14.0,
+                                must_black=True,
+                                must_tnr=True,
+                                max_gap_pt=CONT_MAX_GAP_PT,
                             )
-                            caption_notes.append("Подпись таблицы:")
-                            caption_notes += [f"• {e}" for e in val.issues[:8]]
+                            if cont_val.ok:
+                                admin_lines.append(f"[ContCaption][Стр. {page_num}][Табл. {tbl_idx}] ✅ «{cont_hint.raw_text}»")
+                            else:
+                                admin_lines.append(
+                                    f"[ContCaption][Стр. {page_num}][Табл. {tbl_idx}] Ошибки:\n  - " + "\n  - ".join(cont_val.issues)
+                                )
+                                cont_notes.append("Подпись продолжения таблицы:")
+                                cont_notes += [f"• {e}" for e in cont_val.issues[:8]]
+                                # Любые ошибки продолжения — это ошибки оформления таблицы в целом
+                                table_notes.append("Обнаружены ошибки в продолжении таблицы (считается, что таблица оформлена неверно).")
+                                error_pages.add(page_num)
+                        else:
+                            admin_lines.append(f"[ContCaption][Стр. {page_num}][Табл. {tbl_idx}] Продолжение по расположению (верх страницы), подпись-продолжения не найдена")
+                            cont_notes.append("Таблица выглядит как продолжение (расположена у верхнего поля), но подпись «Продолжение таблицы N» не найдена.")
+                            table_notes.append("Продолжение таблицы без подписи — оформление таблицы неверно.")
+                            error_pages.add(page_num)
+
+                        # Для продолжений не проверяем «упоминание в тексте» и не ожидаем обычной подписи «Таблица N – …»
+                        cap = None
+
+                    else:
+                        # Это «первая часть»: ищем обычную подпись
+                        cap = find_table_caption(
+                            page,
+                            tbl_rect,
+                            search_band_mm=25.0,
+                            anchor_mode="workarea",
+                            tol_px=2.0
+                        )
+
+                        if cap is None:
+                            admin_lines.append(f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] Подпись не найдена")
+                            table_notes.append("Нет подписи таблицы «Таблица N – Наименование».")
+                            error_pages.add(page_num)
+                        else:
+                            val = validate_table_caption(
+                                cap,
+                                expected_num_str=expected_number_str or "",
+                                anchor_mode="workarea",
+                                max_pt=14.0,
+                                must_black=True,
+                                must_tnr=True,
+                                require_dash=True,
+                                max_gap_em=0.6,
+                            )
+                            if val.ok:
+                                admin_lines.append(f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] ✅ «{cap.text}»")
+                            else:
+                                admin_lines.append(
+                                    f"[Caption][Стр. {page_num}][Табл. {tbl_idx}] Ошибки:\n  - " + "\n  - ".join(val.issues)
+                                )
+                                caption_notes.append("Подпись таблицы:")
+                                caption_notes += [f"• {e}" for e in val.issues[:8]]
+                                error_pages.add(page_num)
+
+                        # === MENTION: проверка текстового упоминания — только для «первых частей»
+                        try:
+                            prev_pg = pdf_document[page_num - 2] if page_num - 2 >= 0 else None  # 0-based
+                        except Exception:
+                            prev_pg = None
+
+                        mention_val = validate_table_mention_placement(
+                            expected_num_str=(expected_number_str or ""),
+                            tbl_rect=tbl_rect,
+                            current_page=page,
+                            current_page_index0=page_num - 1,
+                            caption=cap,                          # может быть None
+                            prev_page=prev_pg,
+                            prev_page_index0=(page_num - 2 if prev_pg is not None else None),
+                        )
+
+                        # --- Новая логика вывода/аннотаций по упоминанию ---
+                        if mention_val.found:
+                            if mention_val.ok:
+                                where_map = {
+                                    "same_page_above": "на той же странице выше",
+                                    "prev_page": "на предыдущей странице",
+                                }
+                                where_msg = where_map.get(mention_val.where, "найдено")
+                                admin_lines.append(
+                                    f"[Mention][Стр. {page_num}][Табл. {tbl_idx}] Найдено упоминание «таблица {expected_number_str}» ({where_msg})"
+                                )
+                                # корректный случай — без аннотаций
+                            else:
+                                admin_lines.append(
+                                    f"[Mention][Стр. {page_num}][Табл. {tbl_idx}] Упоминание оформлено неверно: " +
+                                    ("; ".join(mention_val.issues) if mention_val.issues else "см. аннотацию")
+                                )
+                                msg = [f"Упоминание «таблица {expected_number_str}»: оформление неверно"]
+                                msg += [f"• {e}" for e in mention_val.issues]
+                                if cap is not None:
+                                    caption_notes += msg    # есть подпись — аннотация на подписи
+                                else:
+                                    table_notes += msg      # подписи нет — аннотация у таблицы
+                                error_pages.add(page_num)
+                        else:
+                            # упоминание совсем не найдено
+                            admin_lines.append(
+                                f"[Mention][Стр. {page_num}][Табл. {tbl_idx}] Упоминание не найдено (ожидалось «таблица {expected_number_str}»)"
+                            )
+                            msg = [f"Для данной таблицы должно быть упоминание «таблица {expected_number_str}» "
+                                   f"в тексте до таблицы (на этой странице выше или на предыдущей странице)."]
+                            if cap is not None:
+                                caption_notes += msg
+                            else:
+                                table_notes += msg
                             error_pages.add(page_num)
 
                     # ---------- логическая сетка
                     X, Y = build_logical_grid(t, page_height, min_frac=0.30, eps=1.0)
                     rows = max(0, len(Y) - 1)
                     cols = max(0, len(X) - 1)
-
-                    # === MENTION: проверка текстового упоминания «таблица <номер>»
-                    try:
-                        prev_pg = pdf_document[page_num - 2] if page_num - 2 >= 0 else None  # 0-based
-                    except Exception:
-                        prev_pg = None
-
-                    mention_val = validate_table_mention_placement(
-                        expected_num_str=expected_number_str,
-                        tbl_rect=tbl_rect,
-                        current_page=page,
-                        current_page_index0=page_num - 1,
-                        caption=cap,                          # может быть None
-                        prev_page=prev_pg,
-                        prev_page_index0=(page_num - 2 if prev_pg is not None else None),
-                    )
-
-                    # --- Новая логика вывода/аннотаций по упоминанию ---
-                    if mention_val.found:
-                        if mention_val.ok:
-                            where_map = {
-                                "same_page_above": "на той же странице выше",
-                                "prev_page": "на предыдущей странице",
-                            }
-                            where_msg = where_map.get(mention_val.where, "найдено")
-                            admin_lines.append(
-                                f"[Mention][Стр. {page_num}][Табл. {tbl_idx}] Найдено упоминание «таблица {expected_number_str}» ({where_msg})"
-                            )
-                            # ВАЖНО: никаких аннотаций не ставим в корректном случае
-                        else:
-                            # Упоминание есть, но оформлено неверно
-                            admin_lines.append(
-                                f"[Mention][Стр. {page_num}][Табл. {tbl_idx}] Упоминание оформлено неверно: " +
-                                ("; ".join(mention_val.issues) if mention_val.issues else "см. аннотацию")
-                            )
-                            msg = [f"Упоминание «таблица {expected_number_str}»: оформление неверно"]
-                            msg += [f"• {e}" for e in mention_val.issues]
-                            if cap is not None:
-                                caption_notes += msg    # есть подпись — аннотация на подписи
-                            else:
-                                table_notes += msg      # подписи нет — аннотация у таблицы
-                            error_pages.add(page_num)
-                    else:
-                        # упоминание совсем не найдено
-                        admin_lines.append(
-                            f"[Mention][Стр. {page_num}][Табл. {tbl_idx}] Упоминание не найдено (ожидалось «таблица {expected_number_str}»)"
-                        )
-                        msg = [f"Для данной таблицы должно быть упоминание «таблица {expected_number_str}» "
-                               f"в тексте до таблицы (на этой странице выше или на предыдущей странице)."]
-                        if cap is not None:
-                            caption_notes += msg
-                        else:
-                            table_notes += msg
-                        error_pages.add(page_num)
-
-                    # (Удалено) точечная подсветка места упоминания — теперь не делаем
 
                     page_tables = cell_analysis_by_page.setdefault(page_num, [])
                     table_report = {"shape": (rows, cols), "cells": []}
@@ -1211,9 +1266,19 @@ def check_tables(pdf_path, pdf_document, start_page=2, tol_mm=2.0, cell_padding=
                             for line in table_font_size_issues[:12]:
                                 admin_lines.append(f"  {line}")
 
-                    # --- в самом конце: ставим 1–2 аннотации
-                    if caption_notes and cap is not None:
-                        _add_text_annot_silent(page, (cap.bbox.x0, cap.bbox.y0), "\n".join(caption_notes))
+                    # --- в самом конце: ставим 1–3 аннотации
+                    if caption_notes:
+                        # если нашли корректную/некорректную подпись основной таблицы
+                        if 'cap' in locals() and cap is not None:
+                            _add_text_annot_silent(page, (cap.bbox.x0, cap.bbox.y0), "\n".join(caption_notes))
+                        else:
+                            _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), "\n".join(caption_notes))
+
+                    if cont_notes:
+                        if cont_hint is not None:
+                            _add_text_annot_silent(page, (cont_hint.bbox.x0, cont_hint.bbox.y0), "\n".join(cont_notes))
+                        else:
+                            _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), "\n".join(cont_notes))
 
                     if table_notes:
                         _add_text_annot_silent(page, (tbl_rect.x0, tbl_rect.y0), "\n\n".join(table_notes))
