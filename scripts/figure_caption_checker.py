@@ -512,6 +512,7 @@ def check_figure_captions(
     """
     admin_lines: List[str] = []
     error_pages = set()
+    figure_caption_bboxes_by_page: Dict[int, List[Tuple[float,float,float,float]]] = {}
 
     for fig in figures:
         page_num = int(fig["page"])
@@ -535,6 +536,9 @@ def check_figure_captions(
             figure_notes.append("Нет подрисуночной подписи.")
             error_pages.add(page_num)
         else:
+            figure_caption_bboxes_by_page.setdefault(page_num, []).append(
+                (cap.bbox.x0, cap.bbox.y0, cap.bbox.x1, cap.bbox.y1)
+            )
             # ============ [ДОБАВЬ ЭТО: диагностические числа по зазорам] ============
             # Формулы те же, что в validate_figure_caption()
             gap_to_cap_pt = cap.gap_from_figure_pt
@@ -647,5 +651,6 @@ def check_figure_captions(
 
     return {
         "user_summary": user_summary,
-        "admin_details": admin_details
+        "admin_details": admin_details,
+        "figure_caption_bboxes_by_page": figure_caption_bboxes_by_page,
     }
