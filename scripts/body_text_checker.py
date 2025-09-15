@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 import re
 import fitz  # PyMuPDF
+import math
+from collections import defaultdict
 
 # --- Геометрия страницы / поля ---
 MM_TO_PT = 2.8346456693
@@ -24,8 +26,8 @@ FONT_MAX_PT = 14.0
 # --- Критерии «это основной абзац» ---
 CLOSE_TO_EDGE_TOL_PT = 8.0                     # «рядом с полем»
 MIN_BODY_FILL_RATIO = 0.60                     # медианная ширина строк ≥ 60% рабочей области
-MIN_LEFT_COHESION_FRAC = 0.70                  # доля строк core, совпадающих с локальным левым краем
-MAX_MED_RIGHT_AIR_PT = 24.0                    # допустимый медианный правый «воздух» для ragged-right (~8 мм)
+MIN_LEFT_COHESION_FRAC = 0.70                  # доля строк core в доминирующем левом кластере
+MAX_MED_RIGHT_AIR_PT = 24.0                    # допустимый медианный правый «воздух» ragged-right (~8 мм)
 
 # --- эвристики исключений по тексту ---
 CAPTION_PREFIXES = ("рисунок", "таблица", "продолжение таблицы", "примечание", "схема")
@@ -33,8 +35,9 @@ HEADING_WORDS = ("раздел", "глава", "введение", "заключ
 LIST_BULLETS = ("•", "–", "-", "—", "∙", "·", "●")
 
 # --- лимиты логов ---
-MAX_REASONS_PER_PAR = 6
-MAX_FONT_ISSUES_PER_PAR = 6
+MAX_REASONS_PER_PAR = 8
+MAX_FONT_ISSUES_PER_PAR = 8
+MAX_PER_LINE_DEBUG = 40  # максимум строк, которые детально дампим в логи (чтобы не раздувать отчёт)
 
 @dataclass
 class Line:
@@ -262,19 +265,81 @@ def _add_text_annot_silent(page: fitz.Page, point_xy: Tuple[float, float], msg: 
     except Exception:
         pass
 
-# ---------- «Это основной абзац» + причины отказа ----------
-def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bool, List[str], Dict[str, float]]:
+# ---------- Вспомогательные диагностические функции ----------
+def _cluster_left_edges(x0s: List[float], bin_pt: float = 2.0) -> Tuple[float, Dict[int, List[float]]]:
     """
-    Возвращает: (is_body, reasons[], metrics{})
+    Кластеризация левых краёв по гистограмме с шагом bin_pt.
+    Возвращает (dominant_left, buckets), где dominant_left — центр «самого населённого» бина.
+    """
+    if not x0s: 
+        return 0.0, {}
+    buckets: Dict[int, List[float]] = defaultdict(list)
+    for x in x0s:
+        k = int(round(x / bin_pt))
+        buckets[k].append(x)
+    # выбрать самый заполненный бин
+    best_k = max(buckets.keys(), key=lambda k: len(buckets[k]))
+    # центр бина
+    dominant_left = _median(buckets[best_k])
+    return dominant_left, buckets
+
+def _detect_drop_cap(lines: List[Line], dominant_left: float, work_left: float) -> int:
+    """
+    Простой детектор буквицы/обтекания.
+    Возвращает N — сколько первых строк можно «простить» (исключить из left-cohesion),
+    если они отклоняются от доминирующего левого края, но затем абзац стабилизируется.
+    """
+    if len(lines) < 3:
+        return 0
+    # первая строка заметно уже медианы по «тушке»?
+    widths = [(ln.bbox.x1 - ln.bbox.x0) for ln in lines]
+    med_w = _median(widths[1:]) if len(widths) > 1 else widths[0]
+    if widths[0] < 0.5 * med_w:  # очень узкая первая строка — типично для буквицы
+        # сколько первых строк имеют x0 существенно правее доминирующего?
+        max_forgive = min(5, len(lines)-2)  # обычно обтекание длится 2–3 строки, реже 4–5
+        forgive = 0
+        for i in range(1, 1 + max_forgive):
+            if abs(lines[i].bbox.x0 - dominant_left) > 8.0 and lines[i].bbox.x0 > work_left + 4.0:
+                forgive += 1
+            else:
+                break
+        return forgive
+    return 0
+
+def _dump_paragraph_debug(par: Paragraph, page: fitz.Page, dominant_left: float, work_left: float, work_right: float) -> str:
+    lines = par.lines
+    out = []
+    hdr = "    [per-line] # | x0  | x1  | w   | off(workL) | off(domL) | rightAir | text"
+    out.append(hdr)
+    for idx, ln in enumerate(lines[:MAX_PER_LINE_DEBUG], 1):
+        x0 = ln.bbox.x0; x1 = ln.bbox.x1
+        w = x1 - x0
+        off_work = x0 - work_left
+        off_dom  = x0 - dominant_left
+        r_air = max(0.0, work_right - x1)
+        t = ln.text.strip().replace("\n"," ")
+        if len(t) > 40: t = t[:40] + "…"
+        out.append(f"      {idx:>2} | {x0:>4.1f} | {x1:>4.1f} | {w:>4.1f} | {off_work:>9.1f} | {off_dom:>9.1f} | {r_air:>8.1f} | {t}")
+    if len(lines) > MAX_PER_LINE_DEBUG:
+        out.append(f"      … (+{len(lines)-MAX_PER_LINE_DEBUG} строк скрыто)")
+    return "\n".join(out)
+
+# ---------- «Это основной абзац» + причины отказа ----------
+def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bool, List[str], Dict[str, float], Dict[str, str]]:
+    """
+    Возвращает: (is_body, reasons[], metrics{}, debug{})
     reasons — почему НЕ прошёл (пусто, если прошёл).
+    metrics — численные метрики.
+    debug — диагностические строки (например, по-строчный дамп).
     """
     reasons: List[str] = []
     lines = par.lines
     metrics: Dict[str, float] = {}
+    debug: Dict[str, str] = {}
 
     if len(lines) < 2:
         reasons.append("Мало строк в абзаце (<2)")
-        return False, reasons, metrics
+        return False, reasons, metrics, debug
 
     work_left  = page.rect.x0 + LEFT_MARGIN_PT
     work_right = page.rect.x1 - RIGHT_MARGIN_PT
@@ -292,16 +357,21 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
     if fill_ratio < MIN_BODY_FILL_RATIO:
         reasons.append(f"Слишком узкий абзац: {fill_ratio*100:.0f}% ширины (нужно ≥ {int(MIN_BODY_FILL_RATIO*100)}%)")
 
-    # --- локальный левый край по строкам 2..N ---
-    body_left = _median([ln.bbox.x0 for ln in lines[1:]]) if len(lines) >= 2 else lines[0].bbox.x0
-    metrics["body_left"] = body_left
+    # --- доминирующий левый край через кластеризацию x0 по строкам 2..N ---
+    x0s_for_left = [ln.bbox.x0 for ln in lines[1:]] if len(lines) >= 2 else [lines[0].bbox.x0]
+    dominant_left, buckets = _cluster_left_edges(x0s_for_left, bin_pt=2.0)
+    metrics["dominant_left"] = dominant_left
     metrics["work_left"] = work_left
-    metrics["body_left_offset"] = abs(body_left - work_left)
+    metrics["body_left_offset"] = abs(dominant_left - work_left)
 
-    # --- «сцепление» левых краёв: считаем по body-core = lines[1:-1] ---
-    body_core = lines[1:-1] if len(lines) >= 3 else []
+    # --- простить буквицы/обтекание в первых N строках ---
+    forgive_n = _detect_drop_cap(lines, dominant_left, work_left)
+    metrics["forgive_first_n"] = float(forgive_n)
+
+    # --- «сцепление» левых краёв: считаем по body-core = lines[1+forgive_n : -1] ---
+    body_core = lines[1+forgive_n : -1] if len(lines) - (1+forgive_n) >= 1 else []
     if body_core:
-        left_cohesion = [abs(ln.bbox.x0 - body_left) <= 8.0 for ln in body_core]
+        left_cohesion = [abs(ln.bbox.x0 - dominant_left) <= 8.0 for ln in body_core]
         left_cohesion_ratio = sum(left_cohesion) / len(body_core)
         metrics["left_cohesion_ratio"] = left_cohesion_ratio
         metrics["left_cohesion_count"] = len(body_core)
@@ -310,7 +380,7 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
                 f"Левые края строк внутри абзаца «гуляют»: {left_cohesion_ratio*100:.0f}% совпадений по {len(body_core)} строкам (нужно ≥ {int(MIN_LEFT_COHESION_FRAC*100)}%)"
             )
     else:
-        # Нет статистики (абзац из 2 строк): не считаем это отказом
+        # Нет статистики (короткий абзац) — не считаем отказом
         metrics["left_cohesion_ratio"] = 1.0
         metrics["left_cohesion_count"] = 0
 
@@ -327,8 +397,11 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
             f"Правый край не justify и слишком «лохматый»: медианный отступ {med_right_air:.1f} pt (> {MAX_MED_RIGHT_AIR_PT:.0f} pt)"
         )
 
+    # --- подробный по-строчный дамп для диагностики отказов ---
+    debug["per_line_dump"] = _dump_paragraph_debug(par, page, dominant_left, work_left, work_right)
+
     is_body = (len(reasons) == 0)
-    return is_body, reasons[:MAX_REASONS_PER_PAR], metrics
+    return is_body, reasons[:MAX_REASONS_PER_PAR], metrics, debug
 
 # ---------- Главная функция ----------
 def check_body_text(
@@ -394,7 +467,7 @@ def check_body_text(
         # классификация + причины отказа
         body_paras: List[Paragraph] = []
         for par in paras:
-            is_body, reasons, metrics = _is_body_paragraph_with_reasons(par, page)
+            is_body, reasons, metrics, debug = _is_body_paragraph_with_reasons(par, page)
             if is_body:
                 body_paras.append(par)
             else:
@@ -409,13 +482,15 @@ def check_body_text(
                 msg = (
                     f"[BodyText-Reject][Стр. {page_idx0+1}] Абзац отвергнут как «основной»: «{sample}»\n"
                     + ("  - " + "\n  - ".join(reasons) if reasons else "  - Нет явных причин (проверьте эвристику)")
-                    + "\n  [метрики] fill={:.0f}%, leftCoh={:.0f}%, nCore={}, medRightAir={:.1f} pt, bodyLeftOffset={:.1f} pt"
+                    + "\n  [метрики] fill={:.0f}%, leftCoh={:.0f}%, nCore={}, medRightAir={:.1f} pt, bodyLeftOffset={:.1f} pt, forgiveFirstN={:.0f}\n"
+                    + debug.get("per_line_dump", "")
                 ).format(
                     metrics.get("fill_ratio", 0.0) * 100.0,
                     metrics.get("left_cohesion_ratio", 0.0) * 100.0,
                     int(metrics.get("left_cohesion_count", 0)),
                     metrics.get("med_right_air", -1.0),
                     metrics.get("body_left_offset", -1.0),
+                    metrics.get("forgive_first_n", 0.0),
                 )
                 rejected_details.append(msg)
                 _add_text_annot_silent(page, (par_bbox.x0, par_bbox.y0),
