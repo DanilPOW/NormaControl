@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 import re
 import fitz  # PyMuPDF
-import math
 from collections import defaultdict
 
 # --- Геометрия страницы / поля ---
@@ -274,67 +273,6 @@ def _group_lines_into_paragraphs(lines: List[Line], y_gap_break_ratio=1.75) -> L
 
     return [Paragraph(page_index0=-1, lines=p) for p in merged]
 
-def _measure_line_spacing_ratio(lines: List[Line]) -> Optional[float]:
-    if len(lines) < 2: return None
-    d, s = [], []
-    for i in range(1, len(lines)):
-        d.append(lines[i].bbox.y0 - lines[i-1].bbox.y0)
-        s.append((lines[i].size + lines[i-1].size) / 2.0)
-    if not d or not s: return None
-    mean_d = sum(d) / len(d)
-    mean_s = max(1.0, sum(s) / len(s))
-    return mean_d / mean_s
-
-def _measure_line_spacing_ratio_robust(lines: List[Line], skip_first: int = 0) -> Optional[float]:
-    """
-    Робастная оценка межстрочного интервала: медиана по нормализованным промежуткам
-    с отсечением почти нулевых dy и лёгким отбрасыванием крайних 10% как выбросов.
-    skip_first — сколько первых строк пропустить (лесенка/буквица).
-    """
-    if len(lines) - skip_first < 2:
-        return None
-    ratios: List[float] = []
-    for i in range(skip_first + 1, len(lines)):
-        dy = lines[i].bbox.y0 - lines[i-1].bbox.y0
-        avg_sz = max(1.0, (lines[i].size + lines[i-1].size) / 2.0)
-        if avg_sz <= 0:
-            continue
-        r = dy / avg_sz
-        # отсечём «почти нулевые» разрывы (остатки псевдо-линий)
-        if r < 0.3:
-            continue
-        ratios.append(r)
-    if not ratios:
-        return None
-    ratios_sorted = sorted(ratios)
-    if len(ratios_sorted) >= 10:
-        k = int(0.1 * len(ratios_sorted))
-        core = ratios_sorted[k: len(ratios_sorted)-k] if k > 0 else ratios_sorted
-    else:
-        core = ratios_sorted
-    return _median(core)
-
-def _detect_justify(lines: List[Line], work_left: float, work_right: float, tol_pt=4.0) -> str:
-    if not lines or len(lines) == 1: return "unknown"
-    x1s = [ln.bbox.x1 for ln in lines[:-1]]
-    spread = max(x1s) - min(x1s) if x1s else 0.0
-    right_air = [max(0.0, work_right - x1) for x1 in x1s]
-    if spread <= tol_pt and (sum(ra <= CLOSE_TO_EDGE_TOL_PT for ra in right_air) >= max(1, int(0.7*len(x1s)))):
-        return "justify"
-    x0s = [ln.bbox.x0 for ln in lines[:-1]]
-    left_spread = max(x0s) - min(x0s) if x0s else 0.0
-    if left_spread <= tol_pt and spread <= 2.5 * tol_pt:
-        return "center/right"
-    return "left"
-
-def _add_text_annot_silent(page: fitz.Page, point_xy: Tuple[float, float], msg: str):
-    try:
-        ann = page.add_text_annot(fitz.Point(*point_xy), msg)
-        ann.set_info(title="Сервис нормоконтроля", content=msg)
-        ann.update()
-    except Exception:
-        pass
-
 # ---------- Вспомогательные диагностические функции ----------
 def _cluster_left_edges(x0s: List[float], bin_pt: float = 2.0) -> Tuple[float, Dict[int, List[float]]]:
     """
@@ -394,6 +332,67 @@ def _dump_paragraph_debug(par: Paragraph, page: fitz.Page, dominant_left: float,
     if len(lines) > MAX_PER_LINE_DEBUG:
         out.append(f"      … (+{len(lines)-MAX_PER_LINE_DEBUG} строк скрыто)")
     return "\n".join(out)
+
+# ---------- КАЛИБРОВАННЫЙ межстрочный интервал ----------
+def _estimate_line_height_scale(lines: List[Line]) -> float:
+    """
+    Оценка коэффициента перевода «кегль -> реальная высота строки»:
+    scale ≈ median( (y1-y0) / size ) по строкам абзаца.
+    """
+    ratios: List[float] = []
+    for ln in lines:
+        h = max(0.1, ln.bbox.y1 - ln.bbox.y0)
+        s = max(0.1, ln.size)
+        ratios.append(h / s)
+    if not ratios:
+        return 1.20
+    m = _median(sorted(ratios))
+    # хард-клип против артефактов PDF
+    return min(1.35, max(1.05, m))
+
+def _line_spacing_ok_generic(
+    lines: List[Line],
+    *,
+    target: float,          # 1.0 (одинарный) или 1.5 (полуторный)
+    tol: float,             # допуск в «кратностях» (например, 0.08 -> ±0.08)
+    skip_first: int = 0,    # пропустить начальные строки (буквица/лесенка)
+    calibrated: bool = True # True: denom = avg_size*scale; False: denom = avg_size
+) -> Tuple[bool, Optional[float]]:
+    """
+    Возвращает (ok, ratio), где ratio = медиана_i ( (y0[i]-y0[i-1]) / denom_i ).
+    denom_i = avg_size_i * (scale|1) в зависимости от calibrated.
+    """
+    if len(lines) - skip_first < 2:
+        return True, None
+
+    scale = _estimate_line_height_scale(lines) if calibrated else 1.0
+
+    ratios: List[float] = []
+    for i in range(skip_first + 1, len(lines)):
+        dy = lines[i].bbox.y0 - lines[i-1].bbox.y0
+        avg_sz = max(1.0, (lines[i].size + lines[i-1].size) / 2.0)
+        denom = avg_sz * scale
+        if denom <= 0:
+            continue
+        r = dy / denom
+        # отсечь «почти нулевые» разрывы (псевдо-линии/склейка)
+        if r < 0.35:
+            continue
+        ratios.append(r)
+
+    if not ratios:
+        return True, None
+
+    ratios.sort()
+    if len(ratios) >= 10:
+        k = int(0.1 * len(ratios))
+        core = ratios[k: len(ratios)-k] if k > 0 else ratios
+    else:
+        core = ratios
+    ratio = _median(core)
+
+    lo, hi = target - tol, target + tol
+    return (lo <= ratio <= hi), ratio
 
 # ---------- «Это основной абзац» + причины отказа ----------
 def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bool, List[str], Dict[str, float], Dict[str, str]]:
@@ -487,6 +486,27 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
 
     is_body = (len(reasons) == 0)
     return is_body, reasons[:MAX_REASONS_PER_PAR], metrics, debug
+
+def _detect_justify(lines: List[Line], work_left: float, work_right: float, tol_pt=4.0) -> str:
+    if not lines or len(lines) == 1: return "unknown"
+    x1s = [ln.bbox.x1 for ln in lines[:-1]]
+    spread = max(x1s) - min(x1s) if x1s else 0.0
+    right_air = [max(0.0, work_right - x1) for x1 in x1s]
+    if spread <= tol_pt and (sum(ra <= CLOSE_TO_EDGE_TOL_PT for ra in right_air) >= max(1, int(0.7*len(x1s)))):
+        return "justify"
+    x0s = [ln.bbox.x0 for ln in lines[:-1]]
+    left_spread = max(x0s) - min(x0s) if x0s else 0.0
+    if left_spread <= tol_pt and spread <= 2.5 * tol_pt:
+        return "center/right"
+    return "left"
+
+def _add_text_annot_silent(page: fitz.Page, point_xy: Tuple[float, float], msg: str):
+    try:
+        ann = page.add_text_annot(fitz.Point(*point_xy), msg)
+        ann.set_info(title="Сервис нормоконтроля", content=msg)
+        ann.update()
+    except Exception:
+        pass
 
 # ---------- Главная функция ----------
 def check_body_text(
@@ -610,19 +630,21 @@ def check_body_text(
                     if bool(sp.get("underline", False)):
                         font_issues.append("Подчёркнутый текст недопустим")
 
-            # --- межстрочный интервал (робастный) ---
+            # --- межстрочный интервал (калиброванный) ---
             spacing_issue = None
-            # локальная оценка доминирующего левого и forgive_n для пропуска "лесенки"
+            # локальная оценка доминирующего левого и skip для буквицы/лесенки
             x0s_for_left = [ln.bbox.x0 for ln in lines[1:]] if len(lines) >= 2 else [lines[0].bbox.x0]
             dominant_left_local, _ = _cluster_left_edges(x0s_for_left, bin_pt=2.0)
             work_left_local = pdf_document[par.page_index0].rect.x0 + LEFT_MARGIN_PT
             forgive_n_local = _detect_drop_cap(lines, dominant_left_local, work_left_local)
+            skip = max(1 + forgive_n_local, 1)
 
-            ratio = _measure_line_spacing_ratio_robust(lines, skip_first=max(1 + forgive_n_local, 1))
-            if ratio is not None:
-                lo, hi = LINE_SPACING_TOL
-                if not (lo <= ratio <= hi):
-                    spacing_issue = f"Межстрочный интервал не 1.5 (получено {ratio:.2f})"
+            ok_spacing, spacing_ratio = _line_spacing_ok_generic(
+                lines, target=1.5, tol=0.04,  # окно ~ (1.38..1.62); можно сузить до 0.08
+                skip_first=skip, calibrated=True
+            )
+            if (not ok_spacing) and (spacing_ratio is not None):
+                spacing_issue = f"Межстрочный интервал не 1.5 (получено {spacing_ratio:.2f})"
 
             # --- красная строка ---
             indent_issue = None
