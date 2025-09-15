@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 import re
 import fitz  # PyMuPDF
+import math
 
-# --- Геометрия страницы / поля (как в ваших скриптах) ---
+# --- Геометрия страницы / поля ---
 MM_TO_PT = 2.8346456693
 CM_TO_PT = 28.35
 
@@ -16,20 +17,25 @@ BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
 
 # --- Нормы основного текста ---
 FIRST_LINE_INDENT_PT = 1.25 * CM_TO_PT         # 1.25 см
-FIRST_LINE_INDENT_TOL_PT = 4.0
+FIRST_LINE_INDENT_TOL_PT = 4.0                 # допуск ~1.4 мм
 LINE_SPACING_TOL = (1.45, 1.62)                # "1.5 строки" с допуском
 FONT_MIN_PT = 12.0
 FONT_MAX_PT = 14.0
 
-# --- Критерий «это похоже на основной абзац» ---
-CLOSE_TO_EDGE_TOL_PT = 8.0            # «рядом с полем» слева/справа
-MIN_BODY_FILL_RATIO = 0.60            # ширина текста ≥60% рабочей области
-MIN_BODY_STRICT_LINES_FRAC = 0.7      # доля строк (кроме последней), прилипших к полям
+# --- Критерий «это похоже на основной абзац» (обновлено) ---
+CLOSE_TO_EDGE_TOL_PT = 8.0                     # «рядом с полем» слева/справа
+MIN_BODY_FILL_RATIO = 0.70                     # медианная ширина строки ≥70% рабочей области
+MIN_LEFT_STICK_FRAC = 0.70                     # доля строк, прижатых к левому краю
+MAX_MED_RIGHT_AIR_PT = 24.0                    # допустимый медианный правый «воздух» для ragged-right (~8 мм)
 
 # --- эвристики исключений по тексту ---
 CAPTION_PREFIXES = ("рисунок", "таблица", "продолжение таблицы", "примечание", "схема")
 HEADING_WORDS = ("раздел", "глава", "введение", "заключение", "список литературы", "содержание", "приложение")
 LIST_BULLETS = ("•", "–", "-", "—", "∙", "·", "●")
+
+# --- диагностические лимиты на объём логов (чтоб не разрастались на гигабайты) ---
+MAX_REASONS_PER_PAR = 6
+MAX_FONT_ISSUES_PER_PAR = 6
 
 @dataclass
 class Line:
@@ -44,7 +50,16 @@ class Paragraph:
     page_index0: int
     lines: List[Line]
 
-# ---------- Утилиты шрифтов ----------
+# ---------- Утилиты ----------
+def _median(values: List[float]) -> float:
+    if not values: return 0.0
+    vals = sorted(values)
+    n = len(vals)
+    mid = n // 2
+    if n % 2:
+        return vals[mid]
+    return (vals[mid - 1] + vals[mid]) / 2.0
+
 def _font_base_name(font_name: str) -> str:
     if not font_name:
         return ""
@@ -139,8 +154,53 @@ def _collect_text_lines(page: fitz.Page) -> List[Line]:
     out.sort(key=lambda L: (L.bbox.y0, L.bbox.x0))
     return out
 
+# --- Пересечение с исключаемыми bbox: IoU + пороги по осям ---
+def _rect_iou(a: fitz.Rect, b: fitz.Rect) -> float:
+    inter = fitz.Rect(max(a.x0,b.x0), max(a.y0,b.y0), min(a.x1,b.x1), min(a.y1,b.y1))
+    if inter.is_empty:
+        return 0.0
+    inter_area = max(0.0, (inter.x1 - inter.x0)) * max(0.0, (inter.y1 - inter.y0))
+    if inter_area <= 0: return 0.0
+    area_a = max(1.0, (a.x1 - a.x0) * (a.y1 - a.y0))
+    area_b = max(1.0, (b.x1 - b.x0) * (b.y1 - b.y0))
+    return inter_area / (area_a + area_b - inter_area)
+
+def _line_intersects_any(
+    b: fitz.Rect,
+    boxes: List[Tuple[float,float,float,float]],
+    *,
+    min_cover_ratio: float = 0.30,
+    min_iou: float = 0.18,
+    min_vert_cover: float = 0.45,
+    min_horiz_cover: float = 0.25,
+) -> bool:
+    if not boxes: return False
+    bw = max(1.0, b.x1 - b.x0)
+    bh = max(1.0, b.y1 - b.y0)
+    b_area = bw * bh
+    for (x0,y0,x1,y1) in boxes:
+        bb = fitz.Rect(x0,y0,x1,y1)
+        inter = fitz.Rect(max(b.x0,x0), max(b.y0,y0), min(b.x1,x1), min(b.y1,y1))
+        if inter.is_empty: 
+            continue
+        inter_w = max(0.0, inter.x1 - inter.x0)
+        inter_h = max(0.0, inter.y1 - inter.y0)
+        inter_area = inter_w * inter_h
+        cover_ratio = inter_area / b_area
+        vert_cover = inter_h / bh
+        horiz_cover = inter_w / bw
+        iou = _rect_iou(b, bb)
+        if (cover_ratio >= min_cover_ratio) or (iou >= min_iou) or (vert_cover >= min_vert_cover and horiz_cover >= min_horiz_cover):
+            return True
+    return False
+
+# --- Группировка в абзацы с учётом стабильности левого края/ширины ---
 def _group_lines_into_paragraphs(lines: List[Line], y_gap_break_ratio=1.75) -> List[Paragraph]:
-    paras: List[Paragraph] = []
+    """
+    Первый проход — «грубая» группировка по вертикальному зазору.
+    Затем лёгкая постсклейка блоков, если совпадает левый край и зазор небольшой.
+    """
+    rough: List[List[Line]] = []
     cur: List[Line] = []
     for ln in lines:
         if not cur:
@@ -149,11 +209,41 @@ def _group_lines_into_paragraphs(lines: List[Line], y_gap_break_ratio=1.75) -> L
         dy = ln.bbox.y0 - prev.bbox.y0
         avg_sz = max(1.0, (ln.size + prev.size) / 2.0)
         if dy > y_gap_break_ratio * avg_sz:
-            paras.append(cur); cur = [ln]
+            rough.append(cur); cur = [ln]
         else:
             cur.append(ln)
-    if cur: paras.append(cur)
-    return [Paragraph(page_index0=-1, lines=p) for p in paras]
+    if cur: rough.append(cur)
+
+    # --- постсклейка «сколотых» абзацев ---
+    merged: List[List[Line]] = []
+    i = 0
+    while i < len(rough):
+        block = rough[i]
+        j = i + 1
+        while j < len(rough):
+            a_last = block[-1]
+            b_first = rough[j][0]
+            # вертикальный зазор между блоками
+            dy = b_first.bbox.y0 - a_last.bbox.y0
+            avg_sz = max(1.0, (a_last.size + b_first.size) / 2.0)
+            # оценка общего левого края (медиана x0)
+            a_x0s = [ln.bbox.x0 for ln in block]
+            b_x0s = [ln.bbox.x0 for ln in rough[j]]
+            a_left = _median(a_x0s)
+            b_left = _median(b_x0s)
+            # допускаем разницу левого края (учёт возможной красной строки)
+            left_ok = abs(a_left - b_left) <= 6.0 or abs((block[0].bbox.x0) - b_left) <= (FIRST_LINE_INDENT_PT + FIRST_LINE_INDENT_TOL_PT + 6.0)
+
+            # если зазор небольшой и левый край совпадает — склеиваем
+            if dy <= 1.4 * avg_sz and left_ok:
+                block = block + rough[j]
+                j += 1
+            else:
+                break
+        merged.append(block)
+        i = j
+
+    return [Paragraph(page_index0=-1, lines=p) for p in merged]
 
 def _measure_line_spacing_ratio(lines: List[Line]) -> Optional[float]:
     if len(lines) < 2: return None
@@ -168,27 +258,16 @@ def _measure_line_spacing_ratio(lines: List[Line]) -> Optional[float]:
 
 def _detect_justify(lines: List[Line], work_left: float, work_right: float, tol_pt=4.0) -> str:
     if not lines or len(lines) == 1: return "unknown"
-    # Правые края непоследних строк ≈ равны и близко к правому полю
     x1s = [ln.bbox.x1 for ln in lines[:-1]]
     spread = max(x1s) - min(x1s) if x1s else 0.0
     right_air = [max(0.0, work_right - x1) for x1 in x1s]
     if spread <= tol_pt and (sum(ra <= CLOSE_TO_EDGE_TOL_PT for ra in right_air) >= max(1, int(0.7*len(x1s)))):
         return "justify"
-    # иначе прикинем по общему виду
     x0s = [ln.bbox.x0 for ln in lines[:-1]]
     left_spread = max(x0s) - min(x0s) if x0s else 0.0
-    if left_spread <= tol_pt and spread <= 2.5 * tol_pt: return "center/right"
+    if left_spread <= tol_pt and spread <= 2.5 * tol_pt:
+        return "center/right"
     return "left"
-
-def _line_intersects_any(b: fitz.Rect, boxes: List[Tuple[float,float,float,float]], min_cover_ratio=0.30) -> bool:
-    if not boxes: return False
-    line_area = max(1.0, (b.x1 - b.x0) * (b.y1 - b.y0))
-    for (x0,y0,x1,y1) in boxes:
-        inter = fitz.Rect(max(b.x0,x0), max(b.y0,y0), min(b.x1,x1), min(b.y1,y1))
-        if inter.is_empty: continue
-        inter_area = (inter.x1 - inter.x0) * (inter.y1 - inter.y0)
-        if inter_area / line_area >= min_cover_ratio: return True
-    return False
 
 def _add_text_annot_silent(page: fitz.Page, point_xy: Tuple[float, float], msg: str):
     try:
@@ -198,38 +277,64 @@ def _add_text_annot_silent(page: fitz.Page, point_xy: Tuple[float, float], msg: 
     except Exception:
         pass
 
-# ---------- Критерий «это основной абзац» ----------
-def _is_body_paragraph(par: Paragraph, page: fitz.Page) -> bool:
+# ---------- Критерий «это основной абзац» + подробные причины ----------
+def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bool, List[str], Dict[str, float]]:
+    """
+    Возвращает: (is_body, reasons[], metrics{})
+    reasons — список причин, ПОЧЕМУ НЕ ПРОШЁЛ (пустой, если прошёл).
+    metrics — полезные метрики для отладки.
+    """
+    reasons: List[str] = []
     lines = par.lines
+    metrics: Dict[str, float] = {}
+
     if len(lines) < 2:
-        return False  # минимум 2 строки
+        reasons.append("Мало строк в абзаце (<2)")
+        return False, reasons, metrics
 
     work_left  = page.rect.x0 + LEFT_MARGIN_PT
     work_right = page.rect.x1 - RIGHT_MARGIN_PT
     work_w = max(1.0, work_right - work_left)
 
-    # ширина абзаца относительно рабочей области
-    par_x0 = min(ln.bbox.x0 for ln in lines)
-    par_x1 = max(ln.bbox.x1 for ln in lines)
-    if (par_x1 - par_x0) / work_w < MIN_BODY_FILL_RATIO:
-        return False
+    # медианные ширины строк (кроме последней)
+    core = lines[:-1] if len(lines) > 1 else lines
+    widths = [(ln.bbox.x1 - ln.bbox.x0) for ln in (core or lines)]
+    med_w = _median(widths) if widths else 0.0
+    fill_ratio = med_w / work_w
+    metrics["med_line_width"] = med_w
+    metrics["work_width"] = work_w
+    metrics["fill_ratio"] = fill_ratio
 
-    # для всех строк, кроме последней — «близко к полям» слева и справа
-    core = lines[:-1]
-    if not core:  # на всякий случай
-        return False
-    ok = 0
-    for ln in core:
-        left_gap  = abs(ln.bbox.x0 - work_left)
-        right_gap = abs(work_right - ln.bbox.x1)
-        if left_gap <= CLOSE_TO_EDGE_TOL_PT and right_gap <= CLOSE_TO_EDGE_TOL_PT:
-            ok += 1
-    return (ok / len(core)) >= MIN_BODY_STRICT_LINES_FRAC
+    if fill_ratio < MIN_BODY_FILL_RATIO:
+        reasons.append(f"Слишком узкий абзац: {fill_ratio*100:.0f}% ширины (нужно ≥ {int(MIN_BODY_FILL_RATIO*100)}%)")
+
+    # левый край: доля строк, прижатых к левому полю
+    left_stick = [abs(ln.bbox.x0 - work_left) <= CLOSE_TO_EDGE_TOL_PT for ln in core]
+    left_ratio = sum(left_stick) / max(1, len(core))
+    metrics["left_stick_ratio"] = left_ratio
+    if left_ratio < MIN_LEFT_STICK_FRAC:
+        reasons.append(f"Недостаточно строк, прижатых к левому краю: {left_ratio*100:.0f}% (нужно ≥ {int(MIN_LEFT_STICK_FRAC*100)}%)")
+
+    # правый край: либо justify, либо умеренный медианный «воздух»
+    right_air = [max(0.0, work_right - ln.bbox.x1) for ln in core]
+    med_right_air = _median(right_air) if right_air else 999.0
+    metrics["med_right_air"] = med_right_air
+    align = _detect_justify(lines, work_left, work_right, tol_pt=4.0)
+    metrics["align_guess"] = {"left":0,"center/right":1,"justify":2}.get(align, -1)
+
+    if not (align == "justify" or med_right_air <= MAX_MED_RIGHT_AIR_PT):
+        reasons.append(
+            f"Правый край не justify и слишком «лохматый»: медианный отступ {med_right_air:.1f} pt (> {MAX_MED_RIGHT_AIR_PT:.0f} pt)"
+        )
+
+    # Итог
+    is_body = (len(reasons) == 0)
+    return is_body, reasons[:MAX_REASONS_PER_PAR], metrics
 
 # ---------- Главная функция ----------
 def check_body_text(
     pdf_document: fitz.Document,
-    *,
+    * ,
     table_bboxes_by_page: Optional[Dict[int, List[Tuple[float,float,float,float]]]] = None,
     figure_caption_bboxes_by_page: Optional[Dict[int, List[Tuple[float,float,float,float]]]] = None,
     table_caption_bboxes_by_page: Optional[Dict[int, List[Tuple[float,float,float,float]]]] = None,
@@ -248,6 +353,9 @@ def check_body_text(
     scanned_paras = 0
     bad_paras = 0
 
+    # для диагностики отказов
+    rejected_details: List[str] = []
+
     for page_idx0 in range(len(pdf_document)):
         page_num = page_idx0 + 1
         if page_num < start_page:
@@ -262,29 +370,60 @@ def check_body_text(
 
         # собрать строки и отфильтровать
         all_lines = _collect_text_lines(page)
-        lines = []
+        filtered_lines = []
         for ln in all_lines:
-            # 1) исключить попадание в bbox таблиц/подписей
-            if _line_intersects_any(ln.bbox, ex_boxes, min_cover_ratio=0.30):
+            # 1) исключить попадание в bbox таблиц/подписей (осторожнее)
+            if _line_intersects_any(ln.bbox, ex_boxes,
+                                    min_cover_ratio=0.30,
+                                    min_iou=0.18,
+                                    min_vert_cover=0.45,
+                                    min_horiz_cover=0.25):
                 continue
             # 2) исключить служебные элементы по тексту
             if _is_caption_like(ln.text):     continue
             if _is_list_like(ln.text):        continue
             if _looks_like_formula(ln.text):  continue
             if _is_heading_like(ln.text, ln.size): continue
-            lines.append(ln)
-        if not lines:
+            filtered_lines.append(ln)
+        if not filtered_lines:
             continue
 
         # разбить на абзацы
-        paras = _group_lines_into_paragraphs(lines, y_gap_break_ratio=1.75)
+        paras = _group_lines_into_paragraphs(filtered_lines, y_gap_break_ratio=1.75)
         for p in paras:
             p.page_index0 = page_idx0
 
-        # оставить только «похожие на основной текст»
-        body_paras = [p for p in paras if _is_body_paragraph(p, page)]
-
         total_paras += len(paras)
+
+        # определить «основные абзацы» и собрать причины отказов для остальных
+        body_paras: List[Paragraph] = []
+        for par in paras:
+            is_body, reasons, metrics = _is_body_paragraph_with_reasons(par, page)
+            if is_body:
+                body_paras.append(par)
+            else:
+                # детализация отказа
+                sample = par.lines[0].text
+                sample = (sample[:120] + "…") if len(sample) > 120 else sample
+                par_bbox = fitz.Rect(
+                    min(ln.bbox.x0 for ln in par.lines),
+                    min(ln.bbox.y0 for ln in par.lines),
+                    max(ln.bbox.x1 for ln in par.lines),
+                    max(ln.bbox.y1 for ln in par.lines),
+                )
+                msg = "[BodyText-Reject][Стр. {}] Абзац отвергнут как «основной»: «{}»\n  - {}\n  [метрики] fill={:.0f}%, left_stick={:.0f}%, medRightAir={:.1f} pt".format(
+                    page_idx0+1,
+                    sample,
+                    "\n  - ".join(reasons) if reasons else "Нет явных причин (проверьте эвристику)",
+                    metrics.get("fill_ratio", 0.0) * 100.0,
+                    metrics.get("left_stick_ratio", 0.0) * 100.0,
+                    metrics.get("med_right_air", -1.0)
+                )
+                rejected_details.append(msg)
+                # необязательная тонкая аннотация (серый коммент, чтобы не мусорить)
+                _add_text_annot_silent(page, (par_bbox.x0, par_bbox.y0),
+                                       "Отказ как «основной»:\n" + "\n".join(f"• {r}" for r in reasons))
+
         scanned_paras += len(body_paras)
 
         # проверки по каждому подходящему абзацу
@@ -322,21 +461,24 @@ def check_body_text(
 
             # --- красная строка (для 2+ строк) ---
             indent_issue = None
-            first_x0 = lines[0].bbox.x0
-            body_left = min(ln.bbox.x0 for ln in lines[1:])
-            indent = first_x0 - body_left
-            if abs(indent - FIRST_LINE_INDENT_PT) > FIRST_LINE_INDENT_TOL_PT:
-                if indent < (FIRST_LINE_INDENT_PT - FIRST_LINE_INDENT_TOL_PT):
-                    indent_issue = f"Нет/маленькая красная строка: {indent:.1f} pt (нужно ~{FIRST_LINE_INDENT_PT:.1f} pt)"
-                else:
-                    indent_issue = f"Слишком большая красная строка: {indent:.1f} pt (нужно ~{FIRST_LINE_INDENT_PT:.1f} pt)"
+            if len(lines) >= 2:
+                first_x0 = lines[0].bbox.x0
+                body_left_candidates = [ln.bbox.x0 for ln in lines[1:]]
+                body_left = _median(body_left_candidates) if body_left_candidates else first_x0
+                indent = first_x0 - body_left
+                if abs(indent - FIRST_LINE_INDENT_PT) > FIRST_LINE_INDENT_TOL_PT:
+                    if indent < (FIRST_LINE_INDENT_PT - FIRST_LINE_INDENT_TOL_PT):
+                        indent_issue = f"Нет/маленькая красная строка: {indent:.1f} pt (нужно ~{FIRST_LINE_INDENT_PT:.1f} pt)"
+                    else:
+                        indent_issue = f"Слишком большая красная строка: {indent:.1f} pt (нужно ~{FIRST_LINE_INDENT_PT:.1f} pt)"
 
-            # --- выравнивание по ширине ---
+            # --- выравнивание ---
             work_left  = page.rect.x0 + LEFT_MARGIN_PT
             work_right = page.rect.x1 - RIGHT_MARGIN_PT
             align_issue = None
             align = _detect_justify(lines, work_left, work_right, tol_pt=4.0)
             if align != "justify":
+                # теперь НЕ блокируем как не «основной», а просто фиксируем как нарушение
                 align_issue = "Неверное выравнивание: требуется по ширине"
 
             # собрать нарушения
@@ -346,7 +488,7 @@ def check_body_text(
                 for msg in font_issues:
                     if msg not in seen:
                         seen.add(msg); uniq.append(msg)
-                issues += uniq[:6]
+                issues += uniq[:MAX_FONT_ISSUES_PER_PAR]
             if spacing_issue: issues.append(spacing_issue)
             if indent_issue:  issues.append(indent_issue)
             if align_issue:   issues.append(align_issue)
@@ -365,11 +507,20 @@ def check_body_text(
                 )
 
     # --- отчёты ---
+    # Включаем полный список отказов, как ты просил
+    if rejected_details:
+        admin_rejects = "\n".join(rejected_details)
+    else:
+        admin_rejects = "[BodyText] Все абзацы прошли фильтр «основного»"
+
     if bad_paras:
         user_summary = f"⚠️Проверка основного текста: нарушений в {bad_paras} из {scanned_paras} абз."
     else:
         user_summary = "✅Проверка основного текста: нарушений не обнаружено"
 
-    admin_head = f"[BodyText] Выделено абзацев: всего={total_paras}, проверено как основной текст={scanned_paras}, нарушений={bad_paras}"
-    admin_details = admin_head + ("\n" + "\n".join(admin_lines) if admin_lines else "\n[BodyText] Нарушений не обнаружено")
+    admin_head = f"[BodyText] Абзацев: всего={total_paras}, проверено как основной текст={scanned_paras}, нарушений={bad_paras}"
+    admin_body = ("\n" + "\n".join(admin_lines) if admin_lines else "\n[BodyText] Нарушений не обнаружено")
+    admin_diag = "\n\n[BodyText-Diagnostics] Причины отказа абзацев от прохождения фильтра:\n" + admin_rejects
+
+    admin_details = admin_head + admin_body + admin_diag
     return {"user_summary": user_summary, "admin_details": admin_details}
