@@ -154,6 +154,47 @@ def _collect_text_lines(page: fitz.Page) -> List[Line]:
     out.sort(key=lambda L: (L.bbox.y0, L.bbox.x0))
     return out
 
+# --- Склейка «псевдо-линий» с одной базовой линией ---
+def _coalesce_same_baseline_lines(lines: List[Line], y_tol_pt: float = 0.8) -> List[Line]:
+    """
+    Склеивает соседние Line с почти одинаковой базовой линией (y0) в одну реальную строку.
+    Работает в пределах последовательности, где |y0_i - y0_j| <= y_tol_pt и есть заметное перекрытие по вертикали.
+    """
+    if not lines:
+        return []
+    out: List[Line] = []
+    cur: List[Line] = [lines[0]]
+
+    def same_baseline(a: Line, b: Line) -> bool:
+        ya0, ya1 = a.bbox.y0, a.bbox.y1
+        yb0, yb1 = b.bbox.y0, b.bbox.y1
+        vert_overlap = min(ya1, yb1) - max(ya0, yb0)
+        vert_span = max(1.0, max(ya1, yb1) - min(ya0, yb0))
+        return (abs(ya0 - yb0) <= y_tol_pt) and (vert_overlap / vert_span >= 0.6)
+
+    def merge_lines(chunk: List[Line]) -> Line:
+        chunk_sorted = sorted(chunk, key=lambda L: L.bbox.x0)
+        text = " ".join(L.text for L in chunk_sorted)
+        xs = [L.bbox.x0 for L in chunk_sorted] + [L.bbox.x1 for L in chunk_sorted]
+        ys = [L.bbox.y0 for L in chunk_sorted] + [L.bbox.y1 for L in chunk_sorted]
+        rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+        sizes = [L.size for L in chunk_sorted if L.size]
+        size = sum(sizes)/len(sizes) if sizes else chunk_sorted[0].size
+        font = chunk_sorted[0].font
+        spans: List[Dict] = []
+        for L in chunk_sorted:
+            spans.extend(L.spans)
+        return Line(text=text.strip(), bbox=rect, size=size, font=font, spans=spans)
+
+    for ln in lines[1:]:
+        if same_baseline(cur[-1], ln):
+            cur.append(ln)
+        else:
+            out.append(merge_lines(cur))
+            cur = [ln]
+    out.append(merge_lines(cur))
+    return out
+
 # --- Пересечение с исключаемыми bbox: IoU + пороги по осям ---
 def _rect_iou(a: fitz.Rect, b: fitz.Rect) -> float:
     inter = fitz.Rect(max(a.x0,b.x0), max(a.y0,b.y0), min(a.x1,b.x1), min(a.y1,b.y1))
@@ -244,6 +285,35 @@ def _measure_line_spacing_ratio(lines: List[Line]) -> Optional[float]:
     mean_s = max(1.0, sum(s) / len(s))
     return mean_d / mean_s
 
+def _measure_line_spacing_ratio_robust(lines: List[Line], skip_first: int = 0) -> Optional[float]:
+    """
+    Робастная оценка межстрочного интервала: медиана по нормализованным промежуткам
+    с отсечением почти нулевых dy и лёгким отбрасыванием крайних 10% как выбросов.
+    skip_first — сколько первых строк пропустить (лесенка/буквица).
+    """
+    if len(lines) - skip_first < 2:
+        return None
+    ratios: List[float] = []
+    for i in range(skip_first + 1, len(lines)):
+        dy = lines[i].bbox.y0 - lines[i-1].bbox.y0
+        avg_sz = max(1.0, (lines[i].size + lines[i-1].size) / 2.0)
+        if avg_sz <= 0:
+            continue
+        r = dy / avg_sz
+        # отсечём «почти нулевые» разрывы (остатки псевдо-линий)
+        if r < 0.3:
+            continue
+        ratios.append(r)
+    if not ratios:
+        return None
+    ratios_sorted = sorted(ratios)
+    if len(ratios_sorted) >= 10:
+        k = int(0.1 * len(ratios_sorted))
+        core = ratios_sorted[k: len(ratios_sorted)-k] if k > 0 else ratios_sorted
+    else:
+        core = ratios_sorted
+    return _median(core)
+
 def _detect_justify(lines: List[Line], work_left: float, work_right: float, tol_pt=4.0) -> str:
     if not lines or len(lines) == 1: return "unknown"
     x1s = [ln.bbox.x1 for ln in lines[:-1]]
@@ -293,11 +363,8 @@ def _detect_drop_cap(lines: List[Line], dominant_left: float, work_left: float) 
 
     widths = [(ln.bbox.x1 - ln.bbox.x0) for ln in lines]
     med_tail_w = _median(widths[1:]) if n > 1 else widths[0]
-    # «узкая» первая строка (часто одиночная буква/инициал) — сильный сигнал
     narrow_first = widths[0] <= 0.6 * med_tail_w or len(lines[0].text.strip()) <= 2
 
-    # сколько первых строк подряд сильно правее доминирующего левого?
-    # порог «сильно правее»: > dominant_left + 10 pt (≈3.5 мм)
     forgive = 0
     for i in range(1, n - 1):  # не трогаем последнюю
         if lines[i].bbox.x0 > dominant_left + 10.0:
@@ -305,8 +372,6 @@ def _detect_drop_cap(lines: List[Line], dominant_left: float, work_left: float) 
         else:
             break
 
-    # если первая строка явно узкая — прощаем всю начальную «лесенку»,
-    # иначе — прощаем только если хотя бы 2 строки подряд уходят вправо (устойчивый сдвиг)
     if narrow_first:
         return min(forgive, n - 2)
     else:
@@ -351,18 +416,6 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
     work_right = page.rect.x1 - RIGHT_MARGIN_PT
     work_w = max(1.0, work_right - work_left)
 
-    # --- ширина по медиане строк (кроме последней) ---
-    core_for_width = lines[:-1] if len(lines) > 1 else lines
-    widths = [(ln.bbox.x1 - ln.bbox.x0) for ln in (core_for_width or lines)]
-    med_w = _median(widths) if widths else 0.0
-    fill_ratio = med_w / work_w
-    metrics["med_line_width"] = med_w
-    metrics["work_width"] = work_w
-    metrics["fill_ratio"] = fill_ratio
-
-    if fill_ratio < MIN_BODY_FILL_RATIO:
-        reasons.append(f"Слишком узкий абзац: {fill_ratio*100:.0f}% ширины (нужно ≥ {int(MIN_BODY_FILL_RATIO*100)}%)")
-
     # --- доминирующий левый край через кластеризацию x0 по строкам 2..N ---
     x0s_for_left = [ln.bbox.x0 for ln in lines[1:]] if len(lines) >= 2 else [lines[0].bbox.x0]
     dominant_left, _ = _cluster_left_edges(x0s_for_left, bin_pt=2.0)
@@ -374,9 +427,28 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
     forgive_n = _detect_drop_cap(lines, dominant_left, work_left)
     metrics["forgive_first_n"] = float(forgive_n)
 
+    # --- ширина по медиане строк (ядро без первых 1+forgive_n и без последней) ---
+    start_idx = max(1 + forgive_n, 0)
+    end_idx = max(len(lines) - 1, start_idx + 1)
+    core_for_width = lines[start_idx:end_idx] if end_idx - start_idx >= 1 else (lines[:-1] if len(lines) > 1 else lines)
+
+    widths = [(ln.bbox.x1 - ln.bbox.x0) for ln in (core_for_width or lines)]
+    if len(widths) >= 5:
+        widths_sorted = sorted(widths)
+        cut = int(0.2 * len(widths_sorted))   # отрезать нижние 20% узких как выбросы
+        widths_robust = widths_sorted[cut:]
+        med_w = _median(widths_robust)
+    else:
+        med_w = _median(widths)
+    fill_ratio = med_w / work_w
+    metrics["med_line_width"] = med_w
+    metrics["work_width"] = work_w
+    metrics["fill_ratio"] = fill_ratio
+
+    if fill_ratio < MIN_BODY_FILL_RATIO:
+        reasons.append(f"Слишком узкий абзац: {fill_ratio*100:.0f}% ширины (нужно ≥ {int(MIN_BODY_FILL_RATIO*100)}%)")
+
     # --- «сцепление» левых краёв: считаем по body-core = lines[1+forgive_n : -1] ---
-    start_idx = 1 + forgive_n
-    end_idx = len(lines) - 1
     body_core = lines[start_idx:end_idx] if end_idx - start_idx >= 1 else []
     if body_core:
         left_cohesion = [abs(ln.bbox.x0 - dominant_left) <= 8.0 for ln in body_core]
@@ -391,11 +463,17 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
         metrics["left_cohesion_ratio"] = 1.0
         metrics["left_cohesion_count"] = 0
 
-    # --- правый край: justify ИЛИ умеренный «воздух» ---
-    core_for_right = lines[:-1] if len(lines) > 1 else lines
+    # --- правый край: justify ИЛИ умеренный «воздух» (на ядре без первых forgive_n) ---
+    core_for_right = lines[start_idx:end_idx] if end_idx - start_idx >= 1 else (lines[:-1] if len(lines) > 1 else lines)
     right_air = [max(0.0, work_right - ln.bbox.x1) for ln in core_for_right]
-    med_right_air = _median(right_air) if right_air else 999.0
+    if len(right_air) >= 5:
+        ra_sorted = sorted(right_air)
+        cut = int(0.2 * len(ra_sorted))
+        med_right_air = _median(ra_sorted[cut:])
+    else:
+        med_right_air = _median(right_air) if right_air else 999.0
     metrics["med_right_air"] = med_right_air
+
     align = _detect_justify(lines, work_left, work_right, tol_pt=4.0)
     metrics["align_guess"] = {"left":0,"center/right":1,"justify":2}.get(align, -1)
 
@@ -448,6 +526,8 @@ def check_body_text(
 
         # собрать строки и отфильтровать
         all_lines = _collect_text_lines(page)
+        all_lines = _coalesce_same_baseline_lines(all_lines, y_tol_pt=0.8)
+
         filtered_lines = []
         for ln in all_lines:
             if _line_intersects_any(ln.bbox, ex_boxes,
@@ -530,9 +610,15 @@ def check_body_text(
                     if bool(sp.get("underline", False)):
                         font_issues.append("Подчёркнутый текст недопустим")
 
-            # --- межстрочный интервал ---
+            # --- межстрочный интервал (робастный) ---
             spacing_issue = None
-            ratio = _measure_line_spacing_ratio(lines)
+            # локальная оценка доминирующего левого и forgive_n для пропуска "лесенки"
+            x0s_for_left = [ln.bbox.x0 for ln in lines[1:]] if len(lines) >= 2 else [lines[0].bbox.x0]
+            dominant_left_local, _ = _cluster_left_edges(x0s_for_left, bin_pt=2.0)
+            work_left_local = pdf_document[par.page_index0].rect.x0 + LEFT_MARGIN_PT
+            forgive_n_local = _detect_drop_cap(lines, dominant_left_local, work_left_local)
+
+            ratio = _measure_line_spacing_ratio_robust(lines, skip_first=max(1 + forgive_n_local, 1))
             if ratio is not None:
                 lo, hi = LINE_SPACING_TOL
                 if not (lo <= ratio <= hi):
