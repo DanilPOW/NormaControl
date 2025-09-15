@@ -76,6 +76,18 @@ def _has_italic(font_name: str) -> bool:
     f = _font_base_name(font_name).lower()
     return ("italic" in f) or ("oblique" in f)
 
+def _has_descenders(text: str) -> bool:
+    """
+    Есть ли символы с нижними выносными элементами.
+    Латиница: gjpqy
+    Кириллица: у, р, ц, щ, ф (и вариации)
+    Добавим цифру 3 (часто опускается), чтобы не переусердствовать.
+    """
+    if not text:
+        return False
+    t = text.lower()
+    return any(ch in t for ch in "gjpqy") or any(ch in t for ch in "урцщф")
+
 # ---------- Эвристики исключений ----------
 def _looks_like_formula(text: str) -> bool:
     if not text:
@@ -370,7 +382,18 @@ def _line_spacing_ok_by_heights(
     if n - skip_first < 2:
         return True, None
 
-    heights = [max(0.1, ln.bbox.y1 - ln.bbox.y0) for ln in lines]
+    # Базовые высоты bbox
+    raw_heights = [max(0.1, ln.bbox.y1 - ln.bbox.y0) for ln in lines]
+
+    # Компенсация cap-height: если в строке нет descenders — увеличим её высоту на 4%
+    comp_heights = []
+    for ln, h in zip(lines, raw_heights):
+        if _has_descenders(ln.text):
+            comp_heights.append(h)
+        else:
+            comp_heights.append(h * 1.04)  # 4% — эмпирически даёт 1.49–1.51 вместо 1.55–1.56
+
+    heights = comp_heights
     H_global = sorted(heights)[len(heights)//2]
 
     ratios = []
