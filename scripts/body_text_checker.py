@@ -21,10 +21,10 @@ LINE_SPACING_TOL = (1.45, 1.62)                # "1.5 строки" с допу�
 FONT_MIN_PT = 12.0
 FONT_MAX_PT = 14.0
 
-# --- Критерии «это основной абзац» (обновлено) ---
+# --- Критерии «это основной абзац» ---
 CLOSE_TO_EDGE_TOL_PT = 8.0                     # «рядом с полем»
 MIN_BODY_FILL_RATIO = 0.60                     # медианная ширина строк ≥ 60% рабочей области
-MIN_LEFT_COHESION_FRAC = 0.70                  # доля строк, совпадающих с локальным левым краем
+MIN_LEFT_COHESION_FRAC = 0.70                  # доля строк core, совпадающих с локальным левым краем
 MAX_MED_RIGHT_AIR_PT = 24.0                    # допустимый медианный правый «воздух» для ragged-right (~8 мм)
 
 # --- эвристики исключений по тексту ---
@@ -177,7 +177,7 @@ def _line_intersects_any(
     for (x0,y0,x1,y1) in boxes:
         bb = fitz.Rect(x0,y0,x1,y1)
         inter = fitz.Rect(max(b.x0,x0), max(b.y0,y0), min(b.x1,x1), min(b.y1,y1))
-        if inter.is_empty: 
+        if inter.is_empty:
             continue
         inter_w = max(0.0, inter.x1 - inter.x0)
         inter_h = max(0.0, inter.y1 - inter.y0)
@@ -281,8 +281,8 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
     work_w = max(1.0, work_right - work_left)
 
     # --- ширина по медиане строк (кроме последней) ---
-    core = lines[:-1] if len(lines) > 1 else lines
-    widths = [(ln.bbox.x1 - ln.bbox.x0) for ln in (core or lines)]
+    core_for_width = lines[:-1] if len(lines) > 1 else lines
+    widths = [(ln.bbox.x1 - ln.bbox.x0) for ln in (core_for_width or lines)]
     med_w = _median(widths) if widths else 0.0
     fill_ratio = med_w / work_w
     metrics["med_line_width"] = med_w
@@ -292,21 +292,31 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
     if fill_ratio < MIN_BODY_FILL_RATIO:
         reasons.append(f"Слишком узкий абзац: {fill_ratio*100:.0f}% ширины (нужно ≥ {int(MIN_BODY_FILL_RATIO*100)}%)")
 
-    # --- Локальный левый край абзаца (медиана x0 по строкам 2..N) ---
+    # --- локальный левый край по строкам 2..N ---
     body_left = _median([ln.bbox.x0 for ln in lines[1:]]) if len(lines) >= 2 else lines[0].bbox.x0
     metrics["body_left"] = body_left
     metrics["work_left"] = work_left
     metrics["body_left_offset"] = abs(body_left - work_left)
 
-    # --- «Сцепление» строк с локальным левым краем (а не с полем страницы!) ---
-    left_cohesion = [abs(ln.bbox.x0 - body_left) <= 6.0 for ln in core]
-    left_cohesion_ratio = sum(left_cohesion) / max(1, len(core))
-    metrics["left_cohesion_ratio"] = left_cohesion_ratio
-    if left_cohesion_ratio < MIN_LEFT_COHESION_FRAC:
-        reasons.append(f"Левые края строк внутри абзаца «гуляют»: {left_cohesion_ratio*100:.0f}% совпадений (нужно ≥ {int(MIN_LEFT_COHESION_FRAC*100)}%)")
+    # --- «сцепление» левых краёв: считаем по body-core = lines[1:-1] ---
+    body_core = lines[1:-1] if len(lines) >= 3 else []
+    if body_core:
+        left_cohesion = [abs(ln.bbox.x0 - body_left) <= 8.0 for ln in body_core]
+        left_cohesion_ratio = sum(left_cohesion) / len(body_core)
+        metrics["left_cohesion_ratio"] = left_cohesion_ratio
+        metrics["left_cohesion_count"] = len(body_core)
+        if left_cohesion_ratio < MIN_LEFT_COHESION_FRAC:
+            reasons.append(
+                f"Левые края строк внутри абзаца «гуляют»: {left_cohesion_ratio*100:.0f}% совпадений по {len(body_core)} строкам (нужно ≥ {int(MIN_LEFT_COHESION_FRAC*100)}%)"
+            )
+    else:
+        # Нет статистики (абзац из 2 строк): не считаем это отказом
+        metrics["left_cohesion_ratio"] = 1.0
+        metrics["left_cohesion_count"] = 0
 
-    # --- Правый край: justify ИЛИ умеренный «воздух» ---
-    right_air = [max(0.0, work_right - ln.bbox.x1) for ln in core]
+    # --- правый край: justify ИЛИ умеренный «воздух» ---
+    core_for_right = lines[:-1] if len(lines) > 1 else lines
+    right_air = [max(0.0, work_right - ln.bbox.x1) for ln in core_for_right]
     med_right_air = _median(right_air) if right_air else 999.0
     metrics["med_right_air"] = med_right_air
     align = _detect_justify(lines, work_left, work_right, tol_pt=4.0)
@@ -389,7 +399,7 @@ def check_body_text(
                 body_paras.append(par)
             else:
                 sample = par.lines[0].text
-                sample = (sample[:120] + "…") if len(sample) > 120 else sample
+                sample = (sample[:120] + "…" ) if len(sample) > 120 else sample
                 par_bbox = fitz.Rect(
                     min(ln.bbox.x0 for ln in par.lines),
                     min(ln.bbox.y0 for ln in par.lines),
@@ -399,10 +409,11 @@ def check_body_text(
                 msg = (
                     f"[BodyText-Reject][Стр. {page_idx0+1}] Абзац отвергнут как «основной»: «{sample}»\n"
                     + ("  - " + "\n  - ".join(reasons) if reasons else "  - Нет явных причин (проверьте эвристику)")
-                    + "\n  [метрики] fill={:.0f}%, left_cohesion={:.0f}%, medRightAir={:.1f} pt, bodyLeftOffset={:.1f} pt"
+                    + "\n  [метрики] fill={:.0f}%, leftCoh={:.0f}%, nCore={}, medRightAir={:.1f} pt, bodyLeftOffset={:.1f} pt"
                 ).format(
                     metrics.get("fill_ratio", 0.0) * 100.0,
                     metrics.get("left_cohesion_ratio", 0.0) * 100.0,
+                    int(metrics.get("left_cohesion_count", 0)),
                     metrics.get("med_right_air", -1.0),
                     metrics.get("body_left_offset", -1.0),
                 )
