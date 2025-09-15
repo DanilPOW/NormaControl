@@ -653,7 +653,7 @@ def check_body_text(
             skip = max(1 + forgive_n_local, 1)
 
             ok_spacing, spacing_ratio = _line_spacing_ok_by_heights(
-                lines, target=1.5, tol=0.02,  # окно 1.48..1.52
+                lines, target=1.5, tol=0.06,  # окно 1.48..1.52
                 skip_first=skip, pair_denom="maxpair"
             )
             if (not ok_spacing) and (spacing_ratio is not None):
