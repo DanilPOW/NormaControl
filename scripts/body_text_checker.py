@@ -350,33 +350,49 @@ def _estimate_line_height_scale(lines: List[Line]) -> float:
     # хард-клип против артефактов PDF
     return min(1.35, max(1.05, m))
 
-def _line_spacing_ok_generic(
+def _line_spacing_ok_by_heights(
     lines: List[Line],
     *,
-    target: float,          # 1.0 (одинарный) или 1.5 (полуторный)
-    tol: float,             # допуск в «кратностях» (например, 0.08 -> ±0.08)
-    skip_first: int = 0,    # пропустить начальные строки (буквица/лесенка)
-    calibrated: bool = True # True: denom = avg_size*scale; False: denom = avg_size
+    target: float,        # 1.0 или 1.5
+    tol: float,           # например 0.02 для 1.48..1.52
+    skip_first: int = 0,
+    pair_denom: str = "maxpair",  # "maxpair" | "medpair" | "global_median"
 ) -> Tuple[bool, Optional[float]]:
     """
-    Возвращает (ok, ratio), где ratio = медиана_i ( (y0[i]-y0[i-1]) / denom_i ).
-    denom_i = avg_size_i * (scale|1) в зависимости от calibrated.
+    ratio = медиана_i( dy_i / denom_i ), где
+      dy_i = y0[i] - y0[i-1]  (шаг между строками по top bbox)
+      denom_i:
+        - "maxpair": max(h_{i-1}, h_i)             — устойчиво к «узким» строкам
+        - "medpair": median(h_{i-1}, h_i)          — компромисс
+        - "global_median": H = median_j(h_j)       — единый знаменатель на абзац
     """
-    if len(lines) - skip_first < 2:
+    n = len(lines)
+    if n - skip_first < 2:
         return True, None
 
-    scale = _estimate_line_height_scale(lines) if calibrated else 1.0
+    heights = [max(0.1, ln.bbox.y1 - ln.bbox.y0) for ln in lines]
+    H_global = sorted(heights)[len(heights)//2]
 
-    ratios: List[float] = []
-    for i in range(skip_first + 1, len(lines)):
+    ratios = []
+    for i in range(skip_first + 1, n):
         dy = lines[i].bbox.y0 - lines[i-1].bbox.y0
-        avg_sz = max(1.0, (lines[i].size + lines[i-1].size) / 2.0)
-        denom = avg_sz * scale
-        if denom <= 0:
+        if dy <= 0.1:
             continue
+
+        h_prev = heights[i-1]; h_cur = heights[i]
+        if pair_denom == "maxpair":
+            denom = max(h_prev, h_cur)
+        elif pair_denom == "medpair":
+            denom = (h_prev + h_cur)/2.0
+        else:
+            denom = H_global
+
+        if denom <= 0.1:
+            continue
+
         r = dy / denom
-        # отсечь «почти нулевые» разрывы (псевдо-линии/склейка)
-        if r < 0.35:
+        # отсечь «слипшиеся» пары
+        if r < 0.45:
             continue
         ratios.append(r)
 
@@ -384,12 +400,9 @@ def _line_spacing_ok_generic(
         return True, None
 
     ratios.sort()
-    if len(ratios) >= 10:
-        k = int(0.1 * len(ratios))
-        core = ratios[k: len(ratios)-k] if k > 0 else ratios
-    else:
-        core = ratios
-    ratio = _median(core)
+    k = int(0.1 * len(ratios)) if len(ratios) >= 10 else 0
+    core = ratios[k: len(ratios)-k] if k > 0 else ratios
+    ratio = core[len(core)//2]
 
     lo, hi = target - tol, target + tol
     return (lo <= ratio <= hi), ratio
@@ -639,9 +652,9 @@ def check_body_text(
             forgive_n_local = _detect_drop_cap(lines, dominant_left_local, work_left_local)
             skip = max(1 + forgive_n_local, 1)
 
-            ok_spacing, spacing_ratio = _line_spacing_ok_generic(
-                lines, target=1.5, tol=0.04,  # окно ~ (1.38..1.62); можно сузить до 0.08
-                skip_first=skip, calibrated=True
+            ok_spacing, spacing_ratio = _line_spacing_ok_by_heights(
+                lines, target=1.5, tol=0.02,  # окно 1.48..1.52
+                skip_first=skip, pair_denom="maxpair"
             )
             if (not ok_spacing) and (spacing_ratio is not None):
                 spacing_issue = f"Межстрочный интервал не 1.5 (получено {spacing_ratio:.2f})"
