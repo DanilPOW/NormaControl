@@ -18,7 +18,11 @@ BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
 # --- Нормы основного текста ---
 FIRST_LINE_INDENT_PT = 1.25 * CM_TO_PT         # 1.25 см
 FIRST_LINE_INDENT_TOL_PT = 4.0                 # допуск ~1.4 мм
-LINE_SPACING_TOL = (1.45, 1.62)                # "1.5 строки" с допуском
+
+# Целевой межстрочный и допуск (настраиваемо):
+LINE_SPACING_TARGET = 1.50
+LINE_SPACING_TOL    = 0.06   # 0.06 => окно 1.44..1.56 ; поставь 0.02 для 1.48..1.52
+
 FONT_MIN_PT = 12.0
 FONT_MAX_PT = 14.0
 
@@ -80,8 +84,7 @@ def _has_descenders(text: str) -> bool:
     """
     Есть ли символы с нижними выносными элементами.
     Латиница: gjpqy
-    Кириллица: у, р, ц, щ, ф (и вариации)
-    Добавим цифру 3 (часто опускается), чтобы не переусердствовать.
+    Кириллица: у, р, ц, щ, ф
     """
     if not text:
         return False
@@ -167,10 +170,6 @@ def _collect_text_lines(page: fitz.Page) -> List[Line]:
 
 # --- Склейка «псевдо-линий» с одной базовой линией ---
 def _coalesce_same_baseline_lines(lines: List[Line], y_tol_pt: float = 0.8) -> List[Line]:
-    """
-    Склеивает соседние Line с почти одинаковой базовой линией (y0) в одну реальную строку.
-    Работает в пределах последовательности, где |y0_i - y0_j| <= y_tol_pt и есть заметное перекрытие по вертикали.
-    """
     if not lines:
         return []
     out: List[Line] = []
@@ -206,7 +205,7 @@ def _coalesce_same_baseline_lines(lines: List[Line], y_tol_pt: float = 0.8) -> L
     out.append(merge_lines(cur))
     return out
 
-# --- Пересечение с исключаемыми bbox: IoU + пороги по осям ---
+# --- Пересечение с исключаемыми bbox ---
 def _rect_iou(a: fitz.Rect, b: fitz.Rect) -> float:
     inter = fitz.Rect(max(a.x0,b.x0), max(a.y0,b.y0), min(a.x1,b.x1), min(a.y1,b.y1))
     if inter.is_empty: return 0.0
@@ -287,10 +286,6 @@ def _group_lines_into_paragraphs(lines: List[Line], y_gap_break_ratio=1.75) -> L
 
 # ---------- Вспомогательные диагностические функции ----------
 def _cluster_left_edges(x0s: List[float], bin_pt: float = 2.0) -> Tuple[float, Dict[int, List[float]]]:
-    """
-    Кластеризация левых краёв по гистограмме с шагом bin_pt.
-    Возвращает (dominant_left, buckets), где dominant_left — центр «самого населённого» бина.
-    """
     if not x0s:
         return 0.0, {}
     buckets: Dict[int, List[float]] = defaultdict(list)
@@ -302,15 +297,9 @@ def _cluster_left_edges(x0s: List[float], bin_pt: float = 2.0) -> Tuple[float, D
     return dominant_left, buckets
 
 def _detect_drop_cap(lines: List[Line], dominant_left: float, work_left: float) -> int:
-    """
-    Детектор буквицы/обтекания.
-    Возвращает N — сколько первых строк нужно «простить» (исключить из проверки лев. сцепления),
-    если начальные строки сдвинуты вправо и затем абзац возвращается к доминирующему левому краю.
-    """
     n = len(lines)
     if n < 3:
         return 0
-
     widths = [(ln.bbox.x1 - ln.bbox.x0) for ln in lines]
     med_tail_w = _median(widths[1:]) if n > 1 else widths[0]
     narrow_first = widths[0] <= 0.6 * med_tail_w or len(lines[0].text.strip()) <= 2
@@ -346,58 +335,48 @@ def _dump_paragraph_debug(par: Paragraph, page: fitz.Page, dominant_left: float,
     return "\n".join(out)
 
 # ---------- КАЛИБРОВАННЫЙ межстрочный интервал ----------
-def _estimate_line_height_scale(lines: List[Line]) -> float:
-    """
-    Оценка коэффициента перевода «кегль -> реальная высота строки»:
-    scale ≈ median( (y1-y0) / size ) по строкам абзаца.
-    """
-    ratios: List[float] = []
-    for ln in lines:
-        h = max(0.1, ln.bbox.y1 - ln.bbox.y0)
-        s = max(0.1, ln.size)
-        ratios.append(h / s)
-    if not ratios:
-        return 1.20
-    m = _median(sorted(ratios))
-    # хард-клип против артефактов PDF
-    return min(1.35, max(1.05, m))
-
 def _line_spacing_ok_by_heights(
     lines: List[Line],
     *,
     target: float,        # 1.0 или 1.5
-    tol: float,           # например 0.02 для 1.48..1.52
+    tol: float,           # например 0.02 для 1.48..1.52 или 0.06 для 1.44..1.56
     skip_first: int = 0,
-    pair_denom: str = "maxpair",  # "maxpair" | "medpair" | "global_median"
+    pair_denom: str = "global_median",  # "maxpair" | "medpair" | "global_median"
 ) -> Tuple[bool, Optional[float]]:
     """
     ratio = медиана_i( dy_i / denom_i ), где
       dy_i = y0[i] - y0[i-1]  (шаг между строками по top bbox)
       denom_i:
-        - "maxpair": max(h_{i-1}, h_i)             — устойчиво к «узким» строкам
-        - "medpair": median(h_{i-1}, h_i)          — компромисс
-        - "global_median": H = median_j(h_j)       — единый знаменатель на абзац
+        - "maxpair": max(h_{i-1}, h_i)
+        - "medpair": (h_{i-1}+h_i)/2
+        - "global_median": H = median_j(h_j)
+    Усиления точности:
+      • компенсация cap-height: строки без нижних выносных увеличиваем на 5%;
+      • игнор «последней короткой пары»;
+      • мягкий EPS на границе допуска (устраняет погрешность float).
     """
     n = len(lines)
     if n - skip_first < 2:
         return True, None
 
-    # Базовые высоты bbox
+    # высоты bbox строк
     raw_heights = [max(0.1, ln.bbox.y1 - ln.bbox.y0) for ln in lines]
 
-    # Компенсация cap-height: если в строке нет descenders — увеличим её высоту на 4%
-    comp_heights = []
-    for ln, h in zip(lines, raw_heights):
-        if _has_descenders(ln.text):
-            comp_heights.append(h)
-        else:
-            comp_heights.append(h * 1.04)  # 4% — эмпирически даёт 1.49–1.51 вместо 1.55–1.56
+    # компенсация для строк без descenders
+    NO_DESC_FACTOR = 1.05
+    heights = [ (h if _has_descenders(ln.text) else h * NO_DESC_FACTOR)
+                for ln, h in zip(lines, raw_heights) ]
 
-    heights = comp_heights
     H_global = sorted(heights)[len(heights)//2]
 
+    # детекция короткой последней строки, чтобы не учитывать пару (n-2, n-1)
+    widths = [max(1.0, ln.bbox.x1 - ln.bbox.x0) for ln in lines]
+    med_w  = sorted(widths)[len(widths)//2]
+    last_is_short = (widths[-1] < 0.65 * med_w)
+    last_idx = n - (2 if last_is_short else 1)
+
     ratios = []
-    for i in range(skip_first + 1, n):
+    for i in range(skip_first + 1, last_idx):
         dy = lines[i].bbox.y0 - lines[i-1].bbox.y0
         if dy <= 0.1:
             continue
@@ -414,8 +393,7 @@ def _line_spacing_ok_by_heights(
             continue
 
         r = dy / denom
-        # отсечь «слипшиеся» пары
-        if r < 0.45:
+        if r < 0.45:  # отсечь «слипшиеся» пары
             continue
         ratios.append(r)
 
@@ -428,16 +406,11 @@ def _line_spacing_ok_by_heights(
     ratio = core[len(core)//2]
 
     lo, hi = target - tol, target + tol
-    return (lo <= ratio <= hi), ratio
+    EPS = 1e-3  # сглаживание границы
+    return (ratio >= lo - EPS and ratio <= hi + EPS), ratio
 
 # ---------- «Это основной абзац» + причины отказа ----------
 def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bool, List[str], Dict[str, float], Dict[str, str]]:
-    """
-    Возвращает: (is_body, reasons[], metrics{}, debug{})
-    reasons — почему НЕ прошёл (пусто, если прошёл).
-    metrics — численные метрики.
-    debug — диагностические строки (например, по-строчный дамп).
-    """
     reasons: List[str] = []
     lines = par.lines
     metrics: Dict[str, float] = {}
@@ -458,7 +431,7 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
     metrics["work_left"] = work_left
     metrics["body_left_offset"] = abs(dominant_left - work_left)
 
-    # --- прощаем начальную «лесенку» при букве-инициале/обтекании ---
+    # --- прощаем начальную «лесенку» ---
     forgive_n = _detect_drop_cap(lines, dominant_left, work_left)
     metrics["forgive_first_n"] = float(forgive_n)
 
@@ -483,7 +456,7 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
     if fill_ratio < MIN_BODY_FILL_RATIO:
         reasons.append(f"Слишком узкий абзац: {fill_ratio*100:.0f}% ширины (нужно ≥ {int(MIN_BODY_FILL_RATIO*100)}%)")
 
-    # --- «сцепление» левых краёв: считаем по body-core = lines[1+forgive_n : -1] ---
+    # --- «сцепление» левых краёв ---
     body_core = lines[start_idx:end_idx] if end_idx - start_idx >= 1 else []
     if body_core:
         left_cohesion = [abs(ln.bbox.x0 - dominant_left) <= 8.0 for ln in body_core]
@@ -498,7 +471,7 @@ def _is_body_paragraph_with_reasons(par: Paragraph, page: fitz.Page) -> Tuple[bo
         metrics["left_cohesion_ratio"] = 1.0
         metrics["left_cohesion_count"] = 0
 
-    # --- правый край: justify ИЛИ умеренный «воздух» (на ядре без первых forgive_n) ---
+    # --- правый край ---
     core_for_right = lines[start_idx:end_idx] if end_idx - start_idx >= 1 else (lines[:-1] if len(lines) > 1 else lines)
     right_air = [max(0.0, work_right - ln.bbox.x1) for ln in core_for_right]
     if len(right_air) >= 5:
@@ -676,11 +649,16 @@ def check_body_text(
             skip = max(1 + forgive_n_local, 1)
 
             ok_spacing, spacing_ratio = _line_spacing_ok_by_heights(
-                lines, target=1.5, tol=0.06,  # окно 1.48..1.52
-                skip_first=skip, pair_denom="maxpair"
+                lines,
+                target=LINE_SPACING_TARGET,
+                tol=LINE_SPACING_TOL,
+                skip_first=skip,
+                pair_denom="global_median",
             )
             if (not ok_spacing) and (spacing_ratio is not None):
-                spacing_issue = f"Межстрочный интервал не 1.5 (получено {spacing_ratio:.2f})"
+                lo = LINE_SPACING_TARGET - LINE_SPACING_TOL
+                hi = LINE_SPACING_TARGET + LINE_SPACING_TOL
+                spacing_issue = f"Межстрочный интервал не {LINE_SPACING_TARGET:.2f} (получено {spacing_ratio:.2f}; допуск {lo:.2f}–{hi:.2f})"
 
             # --- красная строка ---
             indent_issue = None
