@@ -555,7 +555,7 @@ def check_body_text(
 
         # собрать строки и отфильтровать
         all_lines = _collect_text_lines(page)
-        all_lines = _coalesce_same_baseline_lines(all_lines, y_tol_pt=0.8)
+        all_lines = _coalesce_same_baseline_lines(all_lines, y_tol_pt=0.9)
 
         filtered_lines = []
         for ln in all_lines:
