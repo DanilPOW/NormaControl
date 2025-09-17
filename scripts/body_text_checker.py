@@ -609,8 +609,6 @@ def check_body_text(
                     metrics.get("forgive_first_n", 0.0),
                 )
                 rejected_details.append(msg)
-                _add_text_annot_silent(page, (par_bbox.x0, par_bbox.y0),
-                                       "Отказ как «основной»:\n" + "\n".join(f"• {r}" for r in reasons))
 
         scanned_paras += len(body_paras)
 
