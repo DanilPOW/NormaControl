@@ -108,12 +108,12 @@ class ContCaptionDetected:
 
 def _mention_regex(expected_num_str: str) -> re.Pattern:
     """
-    Ищем слово 'таблица' (полное слово) + пробелы + ожидаемый номер.
-    Разрешаем префикс вида 'А.' в expected_num_str (если он есть).
-    Чувствительность к регистру — case-insensitive, но отдельно проверим строчные.
+    Ищем слово «таблица» в любой падежной/числовой форме + номер (в т.ч. A.1 и т.п.).
+    Пример: «в таблице 3», «см. таблицу 5», «по таблицам 2–4» (последнее попадёт на «таблицам 2»).
     """
     exp = re.escape(expected_num_str)
-    return re.compile(rf"\bтаблица\s+{exp}\b", re.IGNORECASE)
+    forms = r"(?P<form>таблица|таблицы|таблице|таблицу|таблицей|таблицам|таблицами|таблицах)"
+    return re.compile(rf"\b{forms}\s+{exp}\b", re.IGNORECASE)
 
 def _collect_text_lines_with_page(page: fitz.Page, page_index0: int) -> List[Dict]:
     out = _collect_text_lines(page)
@@ -138,9 +138,9 @@ def _find_first_mention_on_page(
         m = rx.search(L["text"])
         if m:
             s, e = m.span()
-            frag = L["text"][s:e]
-            word = frag.split()[0] if frag else ""
-            is_lower = (word == "таблица")
+            # форма слова из именованной группы (?P<form>…)
+            form = m.group("form") if "form" in m.re.groupindex else L["text"][s:e].split()[0]
+            is_lower = (form == form.lower())
             return TableMention(
                 page_index=page_index0,
                 text=L["text"],
