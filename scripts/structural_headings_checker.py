@@ -198,9 +198,15 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
     found_names_in_order = [nm for (nm, _, _, _) in found]
     missing_core = [nm for nm in REQUIRED_ORDER_CORE if nm not in found_names_in_order]
     if missing_core:
-        issues_count += len(missing_core)
-        admin_lines.append("[StructHeadings] Отсутствуют обязательные заголовки: " + ", ".join(missing_core))
-
+      issues_count += len(missing_core)
+      msg = "Отсутствуют обязательные заголовки: " + ", ".join(missing_core)
+      admin_lines.append("[StructHeadings] " + msg)
+  
+      # ставим аннотацию на левый верхний угол второй страницы (или на первую, если всего 1 стр.)
+      target_page_index = 1 if len(pdf_document) > 1 else 0
+      target_page = pdf_document[target_page_index]
+      point = (LEFT_MARGIN_PT, TOP_MARGIN_PT)
+      _add_annot(target_page, point, msg)
     # --- Порядок: core строго по заданной последовательности ---
     found_core = [(nm, p, ln) for (nm, p, ln, k) in found if k == "core"]
     if found_core:
