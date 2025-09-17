@@ -12,6 +12,7 @@ from scripts.image_checker import check_images
 from scripts.pdf_table_checker import check_tables
 from scripts.body_text_checker import check_body_text
 from scripts.figure_caption_checker import check_figure_captions
+from scripts.structural_headings_checker import check_structural_headings
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
@@ -117,9 +118,13 @@ def process_pdf_file(pdf_path: str):
         body_user = body_results['user_summary']
         body_admin = body_results['admin_details']
 
+        struct_results = check_structural_headings(pdf_doc)
+        struct_user = struct_results['user_summary']
+        struct_admin = struct_results['admin_details']
+
         pdf_doc.save(out_path)
 
-    user_notes = f"{quote_user_message}\n{margin_user}\n{page_num_user}\n{double_space_user}\n{table_user}\n{image_user}\n{body_user}"
+    user_notes = f"{quote_user_message}\n{margin_user}\n{page_num_user}\n{double_space_user}\n{table_user}\n{image_user}\n{body_user}\n{struct_user}"
     admin_logs = (
         quote_admin_logs + "\n\n"
         "[MarginCheck]\n" + margin_admin +
@@ -127,7 +132,8 @@ def process_pdf_file(pdf_path: str):
         "\n\n[DoubleSpaceCheck]\n" + double_space_admin +
         "\n\n[TableCheck]\n" + table_admin +
         "\n\n[ImageCheck]\n" + image_admin +
-        "\n\n[BodyText]\n" + body_admin
+        "\n\n[BodyText]\n" + body_admin +
+        "\n\n[StructHeadings]\n" + struct_admin
     )
     return (
         out_path,
