@@ -1,3 +1,34 @@
+# -*- coding: utf-8 -*-
+"""
+Проверка заголовков структурных элементов (ГОСТ 7.32-2017, по ТЗ).
+
+Обязательные заголовки и строгий порядок:
+  1) "содержание"
+  2) "введение"
+  3) "заключение"
+  4) "список использованных источников"
+
+Опциональные заголовки:
+  - "приложение" — может отсутствовать; если есть, может встречаться многократно
+    и ДОЛЖНО идти ТОЛЬКО ПОСЛЕ «список использованных источников».
+    Допускаем формы вида: «ПРИЛОЖЕНИЕ», «ПРИЛОЖЕНИЕ А», «ПРИЛОЖЕНИЕ Б», «ПРИЛОЖЕНИЕ 1».
+
+Правила сопоставления:
+- Ищем по строкам каждой страницы. Для сравнения строка НОРМАЛИЗУЕТСЯ:
+  нижний регистр, схлопывание пробелов, удаление конечных '.'/';'.
+- Для обязательных заголовков в строке НЕ ДОЛЖНО быть ничего, кроме названия (строгое совпадение).
+- Для «приложения» допускается «приложение» ИЛИ «приложение <метка>» (одна метка из букв/цифр).
+- Заголовок ДОЛЖЕН быть ПЕРВОЙ текстовой строкой страницы: если над ним есть хоть одна
+  другая непустая текстовая строка (по y0), считаем нарушением.
+- По ОРИГИНАЛУ проверяем:
+  • все буквы заглавные,
+  • выравнивание по центру рабочих полей (левое 3 см, правое 1.5 см),
+  • нет точки/точки с запятой в конце.
+
+Ставит аннотации в PDF и возвращает:
+  { "user_summary": str, "admin_details": str }
+"""
+
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 import re
@@ -23,9 +54,11 @@ REQUIRED_ORDER_CORE = [
     "заключение",
     "список использованных источников",
 ]
-OPTIONAL_SINGLE = "приложение"  # может встречаться 0..N раз, но только ПОСЛЕ списка источников
 
-ALL_ALLOWED = REQUIRED_ORDER_CORE + [OPTIONAL_SINGLE]
+# «приложение» может встречаться 0..N раз; допустимы метки А/Б/... или цифры
+APP_REGEX = re.compile(r"^приложение(?:\s+[0-9a-zа-я])?$", re.IGNORECASE)
+
+ALL_ALLOWED_CORE = set(REQUIRED_ORDER_CORE)
 
 # --- Вспомогательные структуры и функции -------------------------------------
 
@@ -66,6 +99,9 @@ def _normalize_for_match(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
     s = _norm_trailing_re.sub("", s)  # убрать завершающие '.' или ';'
     return s.lower()
+
+def _is_appendix_norm(norm: str) -> bool:
+    return bool(APP_REGEX.match(norm))
 
 def _is_all_caps_letters(original: str) -> bool:
     has_letter = False
@@ -112,23 +148,26 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
     admin_lines: List[str] = []
     issues_count = 0
 
-    found_sequence: List[Tuple[str, int, TextLine]] = []  # (normalized_name, page_num, line)
-    pages_with_any_text: List[int] = []
+    # (name, page_num, line, kind) где kind: "core"|"appendix"
+    found: List[Tuple[str, int, TextLine, str]] = []
 
-    # --- Поиск всех заголовков и проверка «первая строка страницы» ---
     for pidx in range(len(pdf_document)):
         page = pdf_document[pidx]
         page_num = pidx + 1
         lines = _collect_text_lines(page)
         if not lines:
             continue
-        pages_with_any_text.append(page_num)
 
         for i, ln in enumerate(lines):
             norm = _normalize_for_match(ln.text)
-            if norm in ALL_ALLOWED:
-                # Строгое совпадение и отсутствие лишнего уже обеспечено нормализацией
-                is_first_on_page = (i == 0)
+
+            # ядро — строгое совпадение
+            if norm in ALL_ALLOWED_CORE:
+                found.append((norm, page_num, ln, "core"))
+
+                # Проверка «первая текстовая строка»: есть ли непустой текст выше по y0?
+                lines_above = [l for l in lines[:i] if l.text.strip()]
+                is_first_on_page = (len(lines_above) == 0)
                 if not is_first_on_page:
                     issues_count += 1
                     admin_lines.append(
@@ -137,18 +176,33 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
                     )
                     _add_annot(page, (ln.bbox.x0, ln.bbox.y0),
                                "Заголовки структурных элементов должны располагаться на новой странице")
-                found_sequence.append((norm, page_num, ln))
+                continue
 
-    # --- Полнота: требуем присутствие только core (приложение — опционально) ---
-    found_names_in_order = [nm for (nm, _, _) in found_sequence]
+            # «приложение» — разрешаем опциональную метку (один символ)
+            if _is_appendix_norm(norm):
+                found.append(("приложение", page_num, ln, "appendix"))
+
+                lines_above = [l for l in lines[:i] if l.text.strip()]
+                is_first_on_page = (len(lines_above) == 0)
+                if not is_first_on_page:
+                    issues_count += 1
+                    admin_lines.append(
+                        f"[StructHeadings][Стр. {page_num}] «{ln.text}» — Заголовки структурных элементов должны "
+                        f"располагаться на новой странице (должен быть первой строкой)."
+                    )
+                    _add_annot(page, (ln.bbox.x0, ln.bbox.y0),
+                               "Заголовки структурных элементов должны располагаться на новой странице")
+                continue
+
+    # --- Полнота: требуем присутствие только core (приложения — опциональны) ---
+    found_names_in_order = [nm for (nm, _, _, _) in found]
     missing_core = [nm for nm in REQUIRED_ORDER_CORE if nm not in found_names_in_order]
     if missing_core:
         issues_count += len(missing_core)
         admin_lines.append("[StructHeadings] Отсутствуют обязательные заголовки: " + ", ".join(missing_core))
 
     # --- Порядок: core строго по заданной последовательности ---
-    # Вытащим из найденного только core, в порядке появления
-    found_core = [(nm, p, ln) for (nm, p, ln) in found_sequence if nm in REQUIRED_ORDER_CORE]
+    found_core = [(nm, p, ln) for (nm, p, ln, k) in found if k == "core"]
     if found_core:
         expected = REQUIRED_ORDER_CORE
         idx_seq = [expected.index(nm) for (nm, _, _) in found_core]
@@ -160,37 +214,21 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
                                ", ".join(map(str, idx_seq)))
 
     # --- Порядок: все «приложение» должны идти ПОСЛЕ «список использованных источников» ---
-    found_appendices = [(nm, p, ln) for (nm, p, ln) in found_sequence if nm == OPTIONAL_SINGLE]
-    last_core_index_in_all = -1
-    # индекс последнего в REQUIRED_ORDER_CORE среди ВСЕХ найденных
-    filtered_all = [nm for (nm, _, _) in found_sequence if nm in REQUIRED_ORDER_CORE]
-    if filtered_all:
-        last_core_name = filtered_all[-1]
-        last_core_index_in_all = REQUIRED_ORDER_CORE.index(last_core_name)
-
-    # Чтобы быть строгими: требуем, чтобы ПОСЛЕДНИЙ core в документе был именно "список использованных источников"
-    if filtered_all:
-        if filtered_all[-1] != "список использованных источников":
-            # Если приложения есть, это точно ошибка порядка; если приложений нет — всё равно сообщим, т.к. core не завершён корректным пунктом
-            issues_count += 1
-            admin_lines.append("[StructHeadings] Последним обязательным заголовком должен быть «Список использованных источников».")
-
+    found_appendices = [(nm, p, ln) for (nm, p, ln, k) in found if k == "appendix"]
     if found_appendices:
-        # проверяем, что до первого «приложение» действительно встретился "список использованных источников"
         if "список использованных источников" not in found_names_in_order:
             issues_count += 1
             admin_lines.append("[StructHeadings] «Приложение» обнаружено, но в документе отсутствует «Список использованных источников».")
         else:
             # позиция последнего обязательного заголовка в общей последовательности
             last_core_pos_in_full = max(i for i, nm in enumerate(found_names_in_order) if nm in REQUIRED_ORDER_CORE)
-            # позиция первого приложения
-            first_app_pos = min(i for i, nm in enumerate(found_names_in_order) if nm == OPTIONAL_SINGLE)
+            first_app_pos = min(i for i, nm in enumerate(found_names_in_order) if nm == "приложение")
             if first_app_pos <= last_core_pos_in_full:
                 issues_count += 1
                 admin_lines.append("[StructHeadings] Все «Приложение» должны идти после «Список использованных источников».")
 
     # --- Детальные проверки по каждому найденному заголовку (по ОРИГИНАЛУ) ---
-    for (norm, page_num, ln) in found_sequence:
+    for (nm, page_num, ln, kind) in found:
         page = pdf_document[page_num - 1]
 
         # 1) Нет точки/«;» в конце
@@ -216,13 +254,20 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
                  f"left_air={metr['left_air']:.1f} pt, right_air={metr['right_air']:.1f} pt, |Δ|={metr['diff_air']:.1f} pt "
                  f"(допуск ±{CENTER_TOL_PT:.1f} pt).")
             )
+            # Подсказка о смещении центра
+            shift_pt = (metr['left_air'] - metr['right_air']) / 2.0
+            shift_mm = shift_pt / MM_TO_PT
+            admin_lines.append(
+                f"[StructHeadings][Стр. {page_num}] Подсказка: центр смещён на {shift_pt:+.1f} pt (~{shift_mm:+.1f} мм). "
+                "Вероятно, у абзаца задан левый/правый отступ или табуляция."
+            )
             _add_annot(page, (ln.bbox.x0, ln.bbox.y0), "Заголовок должен быть выровнен по центру рабочих полей")
 
     # --- Резюме ---
-    if issues_count == 0 and found_sequence and not missing_core:
+    if issues_count == 0 and found and not missing_core:
         user_summary = "✅Проверка заголовков структурных элементов: нарушений не обнаружено"
     else:
-        if not found_sequence:
+        if not found:
             admin_lines.append("[StructHeadings] Не найдено ни одного заголовка из перечня (включая опциональные).")
         user_summary = f"⚠️Проверка заголовков структурных элементов: найдено нарушений — {issues_count}"
 
