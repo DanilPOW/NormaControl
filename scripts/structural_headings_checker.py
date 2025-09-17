@@ -1,36 +1,5 @@
-# -*- coding: utf-8 -*-
-"""
-Проверка заголовков структурных элементов (ГОСТ 7.32-2017, по ТЗ).
-
-Обязательные заголовки и строгий порядок:
-  1) "содержание"
-  2) "введение"
-  3) "заключение"
-  4) "список использованных источников"
-
-Опциональные заголовки:
-  - "приложение" — может отсутствовать; если есть, может встречаться многократно
-    и ДОЛЖНО идти ТОЛЬКО ПОСЛЕ «список использованных источников».
-    Допускаем формы вида: «ПРИЛОЖЕНИЕ», «ПРИЛОЖЕНИЕ А», «ПРИЛОЖЕНИЕ Б», «ПРИЛОЖЕНИЕ 1».
-
-Правила сопоставления:
-- Ищем по строкам каждой страницы. Для сравнения строка НОРМАЛИЗУЕТСЯ:
-  нижний регистр, схлопывание пробелов, удаление конечных '.'/';'.
-- Для обязательных заголовков в строке НЕ ДОЛЖНО быть ничего, кроме названия (строгое совпадение).
-- Для «приложения» допускается «приложение» ИЛИ «приложение <метка>» (одна метка из букв/цифр).
-- Заголовок ДОЛЖЕН быть ПЕРВОЙ текстовой строкой страницы: если над ним есть хоть одна
-  другая непустая текстовая строка (по y0), считаем нарушением.
-- По ОРИГИНАЛУ проверяем:
-  • все буквы заглавные,
-  • выравнивание по центру рабочих полей (левое 3 см, правое 1.5 см),
-  • нет точки/точки с запятой в конце.
-
-Ставит аннотации в PDF и возвращает:
-  { "user_summary": str, "admin_details": str }
-"""
-
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 import re
 import fitz  # PyMuPDF
 
@@ -43,9 +12,12 @@ RIGHT_MARGIN_PT  = 1.5 * CM_TO_PT   # 1.5 см
 TOP_MARGIN_PT    = 2.0 * CM_TO_PT
 BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
 
-# --- Толерансы для «центра» ---
-CENTER_TOL_PT = 6.0        # допустимая разница «воздуха» слева/справа
-EDGE_TOL_PT   = 4.0        # допускаем лёгкое касание рабочих полей
+# --- Толерансы ---
+CENTER_TOL_PT = 6.0      # допустимая разница «воздуха» слева/справа
+EDGE_TOL_PT   = 4.0      # допускаем лёгкое касание рабочих полей
+
+FONT_MIN_PT = 12.0
+FONT_MAX_PT = 14.0
 
 # --- Обязательная последовательность и опциональные заголовки ---
 REQUIRED_ORDER_CORE = [
@@ -55,12 +27,11 @@ REQUIRED_ORDER_CORE = [
     "список использованных источников",
 ]
 
-# «приложение» может встречаться 0..N раз; допустимы метки А/Б/... или цифры
+# «приложение» может встречаться 0..N раз; допустимы метки А/Б/... или цифры (один символ)
 APP_REGEX = re.compile(r"^приложение(?:\s+[0-9a-zа-я])?$", re.IGNORECASE)
-
 ALL_ALLOWED_CORE = set(REQUIRED_ORDER_CORE)
 
-# --- Вспомогательные структуры и функции -------------------------------------
+# --- Структуры/утилиты -------------------------------------------------------
 
 @dataclass
 class TextLine:
@@ -111,6 +82,23 @@ def _is_all_caps_letters(original: str) -> bool:
             if not ch.isupper():
                 return False
     return has_letter
+
+def _font_base_name(font_name: str) -> str:
+    if not font_name:
+        return ""
+    return font_name.split("+", 1)[-1]
+
+def _is_times_family(font_name: str) -> bool:
+    f = _font_base_name(font_name).replace(" ", "").lower()
+    return ("timesnewroman" in f) or ("times-roman" in f) or ("timesnewromanps" in f) or (f in {"tnr","timesroman","times"})
+
+def _has_bold(font_name: str) -> bool:
+    f = _font_base_name(font_name).lower()
+    return any(k in f for k in ("bold","black","heavy","demibold","semibold"))
+
+def _has_italic(font_name: str) -> bool:
+    f = _font_base_name(font_name).lower()
+    return ("italic" in f) or ("oblique" in f)
 
 def _is_centered_in_workarea(bbox: fitz.Rect, page: fitz.Page) -> Tuple[bool, Dict[str, float]]:
     work_left  = page.rect.x0 + LEFT_MARGIN_PT
@@ -164,8 +152,7 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
             # ядро — строгое совпадение
             if norm in ALL_ALLOWED_CORE:
                 found.append((norm, page_num, ln, "core"))
-
-                # Проверка «первая текстовая строка»: есть ли непустой текст выше по y0?
+                # Первая текстовая строка? (нет непустых строк выше по y0)
                 lines_above = [l for l in lines[:i] if l.text.strip()]
                 is_first_on_page = (len(lines_above) == 0)
                 if not is_first_on_page:
@@ -178,10 +165,9 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
                                "Заголовки структурных элементов должны располагаться на новой странице")
                 continue
 
-            # «приложение» — разрешаем опциональную метку (один символ)
+            # приложения
             if _is_appendix_norm(norm):
                 found.append(("приложение", page_num, ln, "appendix"))
-
                 lines_above = [l for l in lines[:i] if l.text.strip()]
                 is_first_on_page = (len(lines_above) == 0)
                 if not is_first_on_page:
@@ -198,15 +184,14 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
     found_names_in_order = [nm for (nm, _, _, _) in found]
     missing_core = [nm for nm in REQUIRED_ORDER_CORE if nm not in found_names_in_order]
     if missing_core:
-      issues_count += len(missing_core)
-      msg = "Отсутствуют обязательные заголовки: " + ", ".join(missing_core)
-      admin_lines.append("[StructHeadings] " + msg)
-  
-      # ставим аннотацию на левый верхний угол второй страницы (или на первую, если всего 1 стр.)
-      target_page_index = 1 if len(pdf_document) > 1 else 0
-      target_page = pdf_document[target_page_index]
-      point = (LEFT_MARGIN_PT, TOP_MARGIN_PT)
-      _add_annot(target_page, point, msg)
+        issues_count += len(missing_core)
+        msg = "Отсутствуют обязательные заголовки: " + ", ".join(missing_core)
+        admin_lines.append("[StructHeadings] " + msg)
+        # Аннотируем в левый верхний угол ВТОРОЙ страницы (или первой, если страница одна)
+        target_page_index = 1 if len(pdf_document) > 1 else 0
+        target_page = pdf_document[target_page_index]
+        _add_annot(target_page, (LEFT_MARGIN_PT, TOP_MARGIN_PT), msg)
+
     # --- Порядок: core строго по заданной последовательности ---
     found_core = [(nm, p, ln) for (nm, p, ln, k) in found if k == "core"]
     if found_core:
@@ -224,16 +209,15 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
     if found_appendices:
         if "список использованных источников" not in found_names_in_order:
             issues_count += 1
-            admin_lines.append("[StructHeadings] «Приложение» обнаружено, но в документе отсутствует «Список использованных источников».")
+            admin_lines.append("[StructHeadings] «Приложение» обнаружено, но отсутствует «Список использованных источников».")
         else:
-            # позиция последнего обязательного заголовка в общей последовательности
             last_core_pos_in_full = max(i for i, nm in enumerate(found_names_in_order) if nm in REQUIRED_ORDER_CORE)
             first_app_pos = min(i for i, nm in enumerate(found_names_in_order) if nm == "приложение")
             if first_app_pos <= last_core_pos_in_full:
                 issues_count += 1
                 admin_lines.append("[StructHeadings] Все «Приложение» должны идти после «Список использованных источников».")
 
-    # --- Детальные проверки по каждому найденному заголовку (по ОРИГИНАЛУ) ---
+    # --- Детальные проверки ПО КАЖДОМУ найденному заголовку (по ОРИГИНАЛУ) ---
     for (nm, page_num, ln, kind) in found:
         page = pdf_document[page_num - 1]
 
@@ -268,6 +252,34 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
                 "Вероятно, у абзаца задан левый/правый отступ или табуляция."
             )
             _add_annot(page, (ln.bbox.x0, ln.bbox.y0), "Заголовок должен быть выровнен по центру рабочих полей")
+
+        # 4) Шрифтовые требования: Times New Roman, 12–14 pt, не жирный, не курсив
+        #    Проверяем по всем span'ам строки
+        font_issues = []
+        for sp in ln.spans:
+            f = sp.get("font", "")
+            s = float(sp.get("size", 0.0))
+            if not _is_times_family(f):
+                font_issues.append(f"Не Times New Roman: {f}")
+            if s < (FONT_MIN_PT - 0.1) or s > (FONT_MAX_PT + 0.1):
+                font_issues.append(f"Размер {s:.1f} pt вне диапазона 12–14 pt")
+            if _has_bold(f):
+                font_issues.append("Жирное начертание недопустимо")
+            if _has_italic(f):
+                font_issues.append("Курсив недопустим")
+
+        if font_issues:
+            issues_count += 1
+            # уберём дубли на всякий случай
+            uniq = []
+            seen = set()
+            for m in font_issues:
+                if m not in seen:
+                    seen.add(m); uniq.append(m)
+            admin_lines.append(f"[StructHeadings][Стр. {page_num}] «{ln.text}» — нарушения шрифтовых требований:\n  - " +
+                               "\n  - ".join(uniq))
+            _add_annot(page, (ln.bbox.x0, ln.bbox.y0),
+                       "Заголовок: проверьте шрифт (Times New Roman, 12–14 pt, без жирного и курсива)")
 
     # --- Резюме ---
     if issues_count == 0 and found and not missing_core:
