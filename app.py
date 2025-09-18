@@ -13,6 +13,7 @@ from scripts.pdf_table_checker import check_tables
 from scripts.body_text_checker import check_body_text
 from scripts.figure_caption_checker import check_figure_captions
 from scripts.structural_headings_checker import check_structural_headings
+from scripts.list_checker import check_lists
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
@@ -44,6 +45,19 @@ def reset_form():
         "",  # admin_logs
         gr.update(visible=False),  # next_btn
     )
+
+def _merge_bbox_maps(*maps):
+    """
+    Объединяет несколько dict[int, List[Tuple[x0,y0,x1,y1]]] в один.
+    Пустые/None пропускаются.
+    """
+    out = {}
+    for mp in maps:
+        if not mp:
+            continue
+        for p, lst in mp.items():
+            out.setdefault(p, []).extend(lst)
+    return out
 
 def process_pdf_file(pdf_path: str):
     cleanup_old_files(TEMP_DIR)
@@ -108,11 +122,34 @@ def process_pdf_file(pdf_path: str):
         figcap_results = check_figure_captions(pdf_doc, figures) if figures else {"figure_caption_bboxes_by_page": {}}
         figure_caption_bboxes_by_page = figcap_results.get('figure_caption_bboxes_by_page', {})
 
+        exclude_for_lists = _merge_bbox_maps(
+            table_bboxes_by_page,
+            table_caption_bboxes_by_page,
+            figure_caption_bboxes_by_page
+        )
+        list_results = check_lists(
+            pdf_doc,
+            exclude_bboxes_by_page=exclude_for_lists,
+            annotate_pdf=True,
+            start_page=1
+        )
+        list_user = list_results['user_summary']
+        list_admin = list_results['admin_details']
+        list_bboxes_by_page = list_results.get('list_bboxes_by_page', {})
+
+        exclude_for_bodytext = _merge_bbox_maps(
+            table_bboxes_by_page,
+            table_caption_bboxes_by_page,
+            figure_caption_bboxes_by_page,
+            list_bboxes_by_page
+        )
+
         body_results = check_body_text(
             pdf_doc,
             table_bboxes_by_page=table_bboxes_by_page,
-            table_caption_bboxes_by_page=table_caption_bboxes_by_page,  # ок, есть дефолт {}
-            figure_caption_bboxes_by_page=figure_caption_bboxes_by_page, # ← добавили
+            table_caption_bboxes_by_page=table_caption_bboxes_by_page,
+            figure_caption_bboxes_by_page=figure_caption_bboxes_by_page,
+            exclude_bboxes_by_page=exclude_for_bodytext,   # ← ДОБАВЛЕНО
             start_page=1
         )
         body_user = body_results['user_summary']
@@ -124,7 +161,18 @@ def process_pdf_file(pdf_path: str):
 
         pdf_doc.save(out_path)
 
-    user_notes = f"{quote_user_message}\n{margin_user}\n{page_num_user}\n{double_space_user}\n{table_user}\n{image_user}\n{body_user}\n{struct_user}"
+    user_notes = (
+        f"{quote_user_message}\n"
+        f"{margin_user}\n"
+        f"{page_num_user}\n"
+        f"{double_space_user}\n"
+        f"{table_user}\n"
+        f"{image_user}\n"
+        f"{list_user}\n"   # ← ДОБАВЛЕНО
+        f"{body_user}\n"
+        f"{struct_user}"
+    )
+
     admin_logs = (
         quote_admin_logs + "\n\n"
         "[MarginCheck]\n" + margin_admin +
@@ -132,6 +180,7 @@ def process_pdf_file(pdf_path: str):
         "\n\n[DoubleSpaceCheck]\n" + double_space_admin +
         "\n\n[TableCheck]\n" + table_admin +
         "\n\n[ImageCheck]\n" + image_admin +
+        "\n\n[ListCheck]\n" + list_admin +      # ← ДОБАВЛЕНО
         "\n\n[BodyText]\n" + body_admin +
         "\n\n[StructHeadings]\n" + struct_admin
     )
