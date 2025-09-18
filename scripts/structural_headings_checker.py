@@ -18,6 +18,11 @@ CENTER_TOL_PT = 6.0
 EDGE_TOL_PT   = 4.0
 FONT_MIN_PT   = 12.0
 FONT_MAX_PT   = 14.0
+FONT_TOL_PT   = 0.1  # <-- явный допуск для кегля
+
+def _size_for_check(x: float) -> float:
+    # округляем в ту же точность, что и в сообщениях — до десятых
+    return round(float(x), 1)
 
 # --- Наборы заголовков ---
 REQUIRED_ORDER_CORE = [
@@ -207,14 +212,11 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
             admin_lines.append("  Индексы: " + ", ".join(map(str, idx_seq)))
 
     # --- Порядок для опциональных (если присутствуют) ---
-    # позиции найденных элементов в общей последовательности
     pos = {name: i for i, name in enumerate(found_names_in_order)}
-    # REF: «реферат» ДО «содержание»
     if OPTIONAL_REFS in pos and "содержание" in pos:
         if not (pos[OPTIONAL_REFS] < pos["содержание"]):
             issues_count += 1
             admin_lines.append("[StructHeadings] «Реферат» должен располагаться ДО «Содержание».")
-    # TERMS / ABBREV: ПОСЛЕ «содержание» и ДО «введение»
     for opt_name in (OPTIONAL_TERMS, OPTIONAL_ABBREV):
         if opt_name in pos:
             ok = True
@@ -225,7 +227,6 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
             if not ok:
                 issues_count += 1
                 admin_lines.append(f"[StructHeadings] «{opt_name.capitalize()}» должен располагаться ПОСЛЕ «Содержание» и ДО «Введение».")
-    # Приложения: после «список использованных источников»
     found_appendices = [(nm, p, ln) for (nm, p, ln, k) in found if k == "appendix"]
     if found_appendices:
         if "список использованных источников" not in pos:
@@ -277,19 +278,21 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
         font_issues = []
         for sp in ln.spans:
             f = sp.get("font", "")
-            s = float(sp.get("size", 0.0))
+            s_raw = float(sp.get("size", 0.0))          # <-- было: не объявлена переменная
+            s = _size_for_check(s_raw)                  # округление до десятых
             if not _is_times_family(f):
                 font_issues.append(f"Не Times New Roman: {f}")
-            if s < (FONT_MIN_PT - 0.1) or s > (FONT_MAX_PT + 0.1):
-                font_issues.append(f"Размер {s:.1f} pt вне диапазона 12–14 pt")
+            if s < (FONT_MIN_PT - FONT_TOL_PT) or s > (FONT_MAX_PT + FONT_TOL_PT):
+                font_issues.append(
+                    f"Размер {s:.1f} pt вне диапазона {FONT_MIN_PT:.0f}–{FONT_MAX_PT:.0f} pt (допуск ±{FONT_TOL_PT:.1f})"
+                )
             if _has_bold(f):
                 font_issues.append("Жирное начертание недопустимо")
             if _has_italic(f):
                 font_issues.append("Курсив недопустим")
         if font_issues:
             issues_count += 1
-            uniq = []
-            seen = set()
+            uniq, seen = [], set()
             for m in font_issues:
                 if m not in seen:
                     seen.add(m); uniq.append(m)
