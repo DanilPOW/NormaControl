@@ -1,4 +1,5 @@
 # scripts/list_checker.py
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
@@ -19,10 +20,10 @@ def mm_to_pt(mm: float) -> float: return mm * MM_TO_PT
 def pt_to_mm(pt: float) -> float: return pt / MM_TO_PT
 
 # --- Параметры форматирования списка ---
-INDENT_STEP_CM = 0.75                      # прибавка уровня
-INDENT_STEP_PT = INDENT_STEP_CM * CM_TO_PT  # ≈ 21.26 pt
+INDENT_STEP_CM = 0.75                       # прибавка уровня
+INDENT_STEP_PT = INDENT_STEP_CM * CM_TO_PT   # ≈ 21.26 pt
 INDENT_TOL_PT  = 4.0
-FIRST_LINE_INDENT_CM = 1.25                 # «красная строка»
+FIRST_LINE_INDENT_CM = 1.25                  # «красная строка»
 FIRST_LINE_INDENT_PT = FIRST_LINE_INDENT_CM * CM_TO_PT
 FIRST_LINE_INDENT_TOL_PT = 4.0
 
@@ -159,20 +160,15 @@ def _classify_marker_and_level(line: Line, work_left: float, top_level_marker_ki
     if approx_level < 0: approx_level = 0
     # допускаем «гуляние» в пределах индент-толеранса
     if abs(dx - approx_level*INDENT_STEP_PT) > (INDENT_TOL_PT + 6.0):  # +6 pt на случай маркера
-        # линия не выглядит как аккуратный уровень списка
-        # всё равно дадим шанс, но отметим валидацию позже
         pass
 
-    # 1) 1-й уровень: разрешены только EN DASH или цифры/рус.буквы с ')'
-    # 2) >1 уровни: любые, но обязаны отличаться от top-level по виду
+    # 1-й уровень: EN DASH или digits)/rusalpha); >1 уровни — любые, но должны отличаться от top-level
     marker_text = ""
     kind = ""
     number_kind = ""
 
-    # префиксы «цифры) » и «рус.буква) »
     md = RE_NUM_DIGITS.match(t)
     mr = RE_NUM_RUS.match(t)
-    only_one_space_ok = bool(RE_ONLY_ONE_SPACE_AFTER.match(t) or RE_ONLY_ONE_SPACE_AFTER_DASH.match(t))
 
     if md:
         marker_text = md.group(0).strip()
@@ -181,19 +177,19 @@ def _classify_marker_and_level(line: Line, work_left: float, top_level_marker_ki
         marker_text = mr.group(0).strip()
         kind = "numbered"; number_kind = "rusalpha"
     else:
-        # маркёр «– » только на первом уровне
         if t.lstrip().startswith(EN_DASH + " "):
             marker_text = EN_DASH
             kind = "bulleted"; number_kind = ""
         else:
-            # уровни >1: допустимы иные маркеры/номера
             if approx_level >= 1:
-                if RE_ANY_ROMAN.match(t):
-                    marker_text = RE_ANY_ROMAN.match(t).group(0).strip()
+                m_rom = RE_ANY_ROMAN.match(t)
+                m_alp = RE_ANY_ALPHA.match(t)
+                if m_rom:
+                    marker_text = m_rom.group(0).strip()
                     kind = "numbered"; number_kind = "roman"
-                elif RE_ANY_ALPHA.match(t):
-                    marker_text = RE_ANY_ALPHA.match(t).group(0).strip()
-                    kind = "numbered"; number_kind = "latin"  # или др. буквы
+                elif m_alp:
+                    marker_text = m_alp.group(0).strip()
+                    kind = "numbered"; number_kind = "latin"
                 elif t.lstrip().startswith(("-", "—", "•", "·", "●")):
                     marker_text = t.strip().split()[0]
                     kind = "bulleted"; number_kind = ""
@@ -201,21 +197,6 @@ def _classify_marker_and_level(line: Line, work_left: float, top_level_marker_ki
                     return None
             else:
                 return None
-
-    # Проверка «не больше одного пробела» после маркера
-    if kind == "numbered":
-        if not RE_ONLY_ONE_SPACE_AFTER.match(t):
-            # будет зафиксировано как нарушение позже (логом)
-            pass
-    else:  # bulleted
-        if approx_level == 0 and not RE_ONLY_ONE_SPACE_AFTER_DASH.match(t):
-            pass
-
-    # Проверка «отличается от топ-уровня» для уровней >1
-    if approx_level >= 1 and top_level_marker_kind:
-        if (kind == top_level_marker_kind):
-            # тот же вид маркера/номера — нарушение (зафиксируем в логах)
-            pass
 
     return Item(
         page_index0=-1,
@@ -226,7 +207,7 @@ def _classify_marker_and_level(line: Line, work_left: float, top_level_marker_ki
         number_kind=number_kind
     )
 
-# ---------- Группировка подряд идущих пунктов в список ----------
+# ---------- Группировка подряд идущих пунктов в списки ----------
 def _cluster_items_to_lists(items: List[Item]) -> List[FoundList]:
     if not items: return []
     items = sorted(items, key=lambda it: (it.line.bbox.y0, it.line.bbox.x0))
@@ -275,6 +256,7 @@ def check_lists(
     list_bboxes_by_page: Dict[int, List[Tuple[float,float,float,float]]] = defaultdict(list)
     pages_with = set()
     n_lists = 0
+    error_pages = set()  # собираем страницы с нарушениями
 
     for pidx, page in enumerate(pdf_document):
         page_num = pidx + 1
@@ -283,8 +265,6 @@ def check_lists(
         rect = page.rect
         work_left   = rect.x0 + LEFT_MARGIN_PT
         work_right  = rect.x1 - RIGHT_MARGIN_PT
-        work_top    = rect.y0 + TOP_MARGIN_PT
-        work_bottom = rect.y1 - BOTTOM_MARGIN_PT
 
         lines = _collect_text_lines(page)
 
@@ -304,7 +284,7 @@ def check_lists(
 
         # сначала собираем вид верхнего уровня, чтобы уровни >1 могли «отличаться»
         top_level_marker_kind: Optional[str] = None
-        # пробегаем все строки: формируем кандидатов
+        # формируем кандидатов
         candidates: List[Item] = []
         for ln in lines:
             item = _classify_marker_and_level(ln, work_left, top_level_marker_kind)
@@ -361,26 +341,27 @@ def check_lists(
                     issues.append("Пункт списка должен начинаться со строчной буквы.")
 
             # --- проверка «до списка — строка с двоеточием» и нет пустой строки ---
-            head_y0 = fl.items[0].line.bbox.y0
-            prev_line = _nearest_line_above(lines, head_y0)
-            if prev_line:
-                fs = max(10.0, fl.items[0].line.size or 12.0)
-                gap_pt = head_y0 - prev_line.bbox.y1
-                if gap_pt > MAX_GAP_BEFORE_AFTER_FACTOR * fs:
-                    issues.append("Перед списком не должно быть пустой строки (интервал до = 0 pt).")
-                if not prev_line.text.rstrip().endswith(":"):
-                    issues.append("Перед списком должно быть предложение, оканчивающееся двоеточием.")
-            else:
-                issues.append("Не найдено предложение с двоеточием непосредственно перед списком.")
+            if fl.items:
+                head_y0 = fl.items[0].line.bbox.y0
+                prev_line = _nearest_line_above(lines, head_y0)
+                if prev_line:
+                    fs = max(10.0, fl.items[0].line.size or 12.0)
+                    gap_pt = head_y0 - prev_line.bbox.y1
+                    if gap_pt > MAX_GAP_BEFORE_AFTER_FACTOR * fs:
+                        issues.append("Перед списком не должно быть пустой строки (интервал до = 0 pt).")
+                    if not prev_line.text.rstrip().endswith(":"):
+                        issues.append("Перед списком должно быть предложение, оканчивающееся двоеточием.")
+                else:
+                    issues.append("Не найдено предложение с двоеточием непосредственно перед списком.")
 
-            # --- после списка нет пустой строки ---
-            tail_y1 = fl.items[-1].line.bbox.y1
-            next_line = _nearest_line_below(lines, tail_y1)
-            if next_line:
-                fs = max(10.0, fl.items[-1].line.size or 12.0)
-                gap_pt = next_line.bbox.y0 - tail_y1
-                if gap_pt > MAX_GAP_BEFORE_AFTER_FACTOR * fs:
-                    issues.append("После списка не должно быть пустой строки (интервал после = 0 pt).")
+                # --- после списка нет пустой строки ---
+                tail_y1 = fl.items[-1].line.bbox.y1
+                next_line = _nearest_line_below(lines, tail_y1)
+                if next_line:
+                    fs = max(10.0, fl.items[-1].line.size or 12.0)
+                    gap_pt = next_line.bbox.y0 - tail_y1
+                    if gap_pt > MAX_GAP_BEFORE_AFTER_FACTOR * fs:
+                        issues.append("После списка не должно быть пустой строки (интервал после = 0 pt).")
 
             # --- выравнивание по ширине и межстрочник 1.5 (по списку как блоку)---
             ok_align = _detect_align_justify([it.line for it in fl.items], work_left, work_right, tol_pt=ALIGN_TOL_PT)
@@ -394,20 +375,13 @@ def check_lists(
 
             # --- проверка уровней и «красной строки» (для каждого пункта) ---
             for it in fl.items:
-                # a) соответствует ли уровень кратности 0.75 см
                 dx = it.line.bbox.x0 - work_left
                 level_pt = it.level * INDENT_STEP_PT
                 if abs(dx - level_pt) > (INDENT_TOL_PT + 6.0):
                     issues.append(f"Отступ слева у пункта ур.{it.level+1} должен быть кратен 0.75 см.")
-                # b) «красная строка» внутри пункта (если пункт в несколько строк)
-                #    грубо проверим: первая строка правее последующих примерно на 1.25 см
-                #    (мы работаем построчно, поэтому эвристика: если следующая строка с тем же левым краем обнаружится)
-                # Здесь у нас только первая строка пункта; дадим мягкую проверку по одному абзацу:
-                # пропустим жёсткую валидацию для переносов (иначе риск ложнопозитивов)
-                pass
+                # (проверку внутренней «красной строки» внутри многострочного пункта оставляем мягкой)
 
             # --- пунктуация между пунктами ---
-            # короткий пункт = 1–2 слова (без чисел/символов)
             def is_short(text: str) -> bool:
                 t = re.sub(r"[^\w\sА-Яа-яЁё-]", "", text, flags=re.UNICODE)
                 words = [w for w in t.split() if re.search(r"[A-Za-zА-Яа-яЁё]", w)]
@@ -416,7 +390,6 @@ def check_lists(
             pure_texts = []
             for it in fl.items:
                 s = it.line.text.strip()
-                # убираем маркер/номер
                 s = re.sub(r"^\s*(?:{}\s|\d+\)\s|[{}]\)\s)".format(EN_DASH, "".join(ALLOWED_LETTERS)), "", s)
                 pure_texts.append(s.strip())
 
@@ -432,8 +405,6 @@ def check_lists(
                 else:
                     if not txt.endswith("."):
                         issues.append("Последний пункт списка должен оканчиваться точкой.")
-
-                # «внутри списка не допускаются новые предложения»
                 if not is_last and re.search(r"\.\s+[А-ЯЁA-Z]", txt):
                     issues.append("Внутри пункта не допускаются новые предложения.")
 
@@ -449,6 +420,7 @@ def check_lists(
             )
 
             if issues:
+                error_pages.add(page_num)  # фиксируем страницу с нарушениями
                 admin.extend("  - " + msg for msg in issues)
                 if annotate_pdf:
                     try:
@@ -468,10 +440,12 @@ def check_lists(
                     except Exception:
                         pass
 
-    if n_lists == 0:
-        user_summary = "ℹ️Списки не обнаружены"
+    # --- Пользовательская сводка ---
+    if error_pages:
+        user_summary = "⚠️Проверка списков: обнаружены нарушения на стр. " + ", ".join(map(str, sorted(error_pages)))
     else:
-        user_summary = f"✅Проверка списков: найдено {n_lists} (стр.: {', '.join(map(str, sorted(pages_with)))})"
+        # Даже если списков не найдено — пользователь видит «успешно»
+        user_summary = "✅Проверка списков"
 
     admin_details = (f"[Lists] Найдено списков: {n_lists}" +
                      ("\n" + "\n".join(admin) if admin else ""))
@@ -481,4 +455,3 @@ def check_lists(
         "admin_details": admin_details,
         "list_bboxes_by_page": dict(list_bboxes_by_page),
     }
-
