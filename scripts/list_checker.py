@@ -27,6 +27,7 @@ INDENT_TOL_PT  = 4.0
 LINE_SPACING_TARGET = 1.50
 LINE_SPACING_TOL    = 0.06
 ALIGN_TOL_PT        = 4.0
+ALIGN_FRACTION_OK   = 0.70  # доля строк (кроме последней), которые должны «держать» правый край
 
 # --- «До/после = 0 pt» (эвристика) ---
 MAX_GAP_BEFORE_AFTER_FACTOR = 1.2  # * fontsize
@@ -36,17 +37,23 @@ EN_DASH = "–"  # короткое тире
 RUS_LETTERS = "абвгдеёжзийклмнопрстуфхцчшщьыъэюя"
 EXCLUDED = set("ёзйочьъы")
 ALLOWED_LETTERS = tuple(ch for ch in RUS_LETTERS if ch not in EXCLUDED)
+ALLOWED_STR = "".join(ALLOWED_LETTERS)
 
+NBSP = "\u00A0"
+SPACE_CLS = rf"[ \t{NBSP}]"
+
+# Начало пункта: «–» + пробел; «1.»/«1)» + пробел; «а)» + пробел; «IV)» + пробел
 RE_START_SIMPLE = re.compile(
-    r"^\s*(?:{}\s|\d+\)\s|[{}]\)\s)".format(
-        re.escape(EN_DASH),
-        "".join(ALLOWED_LETTERS)
-    )
+    rf"^\s*(?:{re.escape(EN_DASH)}{SPACE_CLS}+|\d+[.)]{SPACE_CLS}+|"
+    rf"[{ALLOWED_STR}][.)]{SPACE_CLS}+|[IVXLC]+[.)]{SPACE_CLS}+)"
 )
+
 RE_ONLY_ONE_SPACE_AFTER = re.compile(
-    r"^\s*(?:\d+\)|[{}]\))\s(?!\s)".format("".join(ALLOWED_LETTERS))
+    rf"^\s*(?:\d+[.)]|[{ALLOWED_STR}][.)]|[IVXLC]+[.)]){SPACE_CLS}(?!{SPACE_CLS})"
 )
-RE_ONLY_ONE_SPACE_AFTER_DASH = re.compile(r"^\s*{}\s(?!\s)".format(EN_DASH))
+RE_ONLY_ONE_SPACE_AFTER_DASH = re.compile(
+    rf"^\s*{re.escape(EN_DASH)}{SPACE_CLS}(?!{SPACE_CLS})"
+)
 
 # --- Векторные маркеры ---
 MARKER_MAX_W_MM = 8.0
@@ -70,7 +77,7 @@ class Item:
     level: int             # округление до шага 0.75 см от левого поля
     kind: str              # "bulleted" | "numbered"
     marker_text: str       # "–", "1)", "а)" или "[vector]"
-    number_kind: str       # "digits" | "rusalpha" | "" (bulleted)
+    number_kind: str       # "digits" | "rusalpha" | "roman" | "" (bulleted)
 
 @dataclass
 class FoundList:
@@ -109,12 +116,15 @@ def _collect_text_lines(page: fitz.Page) -> List[Line]:
             size = sum(sizes)/len(sizes) if sizes else 0.0
             font = fonts[0] if fonts else ""
             out.append(Line(text=text, bbox=rect, size=size, font=font, spans=spans))
+    # Подснепать y, чтобы стабилизировать сортировку
     y_snap = mm_to_pt(0.3)
     out.sort(key=lambda L: (round(L.bbox.y0 / y_snap)*y_snap, L.bbox.x0))
     return out
 
 def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
+    """Возвращает маленькие потенциальные маркеры: из drawings и из rawdict.chars (символы-буллеты)."""
     markers: List[fitz.Rect] = []
+    # 1) drawings
     try:
         drawings = page.get_drawings(extended=True)
     except TypeError:
@@ -123,10 +133,43 @@ def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
         drawings = []
     for d in drawings:
         rect = d.get("rect") or d.get("bbox")
-        if not rect: continue
-        r = fitz.Rect(float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+        if not rect: 
+            continue
+        r = fitz.Rect(*map(float, rect))
         if r.width <= MARKER_MAX_W_PT and r.height <= MARKER_MAX_H_PT:
-            markers.append(r)
+            ar = r.width / max(1e-3, r.height)
+            if 0.6 <= ar <= 1.6:  # почти квадрат/кружок
+                markers.append(r)
+
+    # 2) крошечные глифы-буллеты в тексте
+    try:
+        raw = page.get_text("rawdict")
+        for b in raw.get("blocks", []):
+            if b.get("type") != 0:
+                continue
+            for ln in b.get("lines", []):
+                # середина строки (по Y) для контроля «на одной базовой»
+                span_bboxes = [s.get("bbox", [0,0,0,0]) for s in ln.get("spans", [])]
+                if span_bboxes:
+                    l_y0 = min(bb[1] for bb in span_bboxes)
+                    l_y1 = max(bb[3] for bb in span_bboxes)
+                    l_mid = (l_y0 + l_y1) / 2.0
+                else:
+                    l_mid = None
+                for sp in ln.get("spans", []):
+                    sp_size = float(sp.get("size", 12.0))
+                    for ch in sp.get("chars", []):
+                        c = ch.get("c")
+                        # набор типичных буллет-символов
+                        if c not in "•·●∙◦▪▫■□◆●":
+                            continue
+                        x0, y0, x1, y1 = ch.get("bbox", (0,0,0,0))
+                        r = fitz.Rect(x0, y0, x1, y1)
+                        if r.width <= MARKER_MAX_W_PT and r.height <= MARKER_MAX_H_PT:
+                            if (l_mid is None) or abs((r.y0 + r.y1) / 2.0 - l_mid) <= 0.6 * sp_size:
+                                markers.append(r)
+    except Exception:
+        pass
     return markers
 
 # очень простая склейка: отдельная «точка/тире» строкой + следующая строка текста
@@ -143,8 +186,8 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
             nxt = lines[i + 1]
             # достаточно, чтобы следующий началcя правее и был близко по Y
             dy = nxt.bbox.y0 - cur.bbox.y1
-            fs = _median([cur.size, nxt.size] + [sp.get("size",0.0) for sp in (cur.spans+nxt.spans)]) or 12.0
-            if -2.0 <= dy <= 1.6 * fs and nxt.bbox.x0 >= cur.bbox.x1 - 2.0:
+            fs = _median([cur.size, nxt.size] + [float(sp.get("size",0.0)) for sp in (cur.spans+nxt.spans)]) or 12.0
+            if -1.0 <= dy <= 1.6 * fs and nxt.bbox.x0 >= cur.bbox.x1 - 2.0:
                 merged_text = (t + " " + nxt.text.lstrip()).strip()
                 mx0 = min(cur.bbox.x0, nxt.bbox.x0); my0 = min(cur.bbox.y0, nxt.bbox.y0)
                 mx1 = max(cur.bbox.x1, nxt.bbox.x1); my1 = max(cur.bbox.y1, nxt.bbox.y1)
@@ -158,47 +201,61 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
     return out
 
 def _detect_align_justify(lines: List[Line], work_left: float, work_right: float) -> bool:
-    if len(lines) < 2: return True
-    x1s = [ln.bbox.x1 for ln in lines[:-1]]
-    spread = max(x1s) - min(x1s) if x1s else 0.0
+    if len(lines) < 2: 
+        return True
+    x1s = [ln.bbox.x1 for ln in lines[:-1]]  # последнюю строку не учитываем
+    if not x1s:
+        return True
+    spread = max(x1s) - min(x1s)
     right_air = [max(0.0, work_right - x1) for x1 in x1s]
-    return spread <= ALIGN_TOL_PT and (sum(ra <= 8.0 for ra in right_air) >= max(1, int(0.7*len(x1s))))
+    ok_count = sum(ra <= 8.0 for ra in right_air)
+    return (spread <= ALIGN_TOL_PT) and (ok_count >= max(1, int(ALIGN_FRACTION_OK * len(x1s))))
 
 def _line_spacing_check(lines: List[Line]):
-    if len(lines) < 2: return True, None
+    if len(lines) < 2: 
+        return True, None
     y0s = [ln.bbox.y0 for ln in lines]
     dys = [y0s[i]-y0s[i-1] for i in range(1,len(y0s))]
-    hs  = [max(0.1, ln.bbox.y1 - ln.bbox.y0) for ln in lines]
+    hs  = []
+    for ln in lines:
+        sizes = [float(sp.get("size", 0.0)) for sp in ln.spans]
+        h = _median(sizes) if sizes else (ln.size or 12.0)
+        hs.append(h)
     r = _median(dys)/_median(hs)
     lo, hi = LINE_SPACING_TARGET - LINE_SPACING_TOL, LINE_SPACING_TARGET + LINE_SPACING_TOL
     return (lo-1e-3 <= r <= hi+1e-3), r
 
-# ---------- Простая классификация ----------
+# ---------- Классификация ----------
 def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rect]) -> Optional[Item]:
+    """Определяет, является ли строка началом пункта, и если да — какой это вид/уровень."""
     t = line.text
     x0 = line.bbox.x0
     level = max(0, int(round((x0 - work_left) / INDENT_STEP_PT)))
 
-    # 1) текстовый маркер/номер (просто по префиксу)
+    # 1) текстовый маркер/номер (по префиксу строки)
     m = RE_START_SIMPLE.match(t)
     if m:
-        head = m.group(0)
-        if head.lstrip().startswith(EN_DASH):
+        head = m.group(0).lstrip()
+        if head.startswith(EN_DASH):
             return Item(-1, line, level, "bulleted", EN_DASH, "")
-        elif head.lstrip()[0].isdigit():
+        elif head[0].isdigit():
             return Item(-1, line, level, "numbered", head.strip(), "digits")
-        else:
+        elif head[0] in ALLOWED_LETTERS:
             return Item(-1, line, level, "numbered", head.strip(), "rusalpha")
+        else:
+            # Римская нумерация (учтена в RE_START_SIMPLE)
+            return Item(-1, line, level, "numbered", head.strip(), "roman")
 
-    # 2) векторный маркер слева на той же строке
-    #    критерий: заметное перекрытие по Y и он левее начала текста
+    # 2) векторный/глиф-маркер слева на той же строке: заметное перекрытие по Y, левее начала текста
     best = None; best_dx = None
     for r in vector_markers:
+        # перекрытие по Y должно быть достаточно заметным
         if _y_overlap(r, line.bbox) / max(1.0, min(r.height, line.bbox.height)) < 0.4:
             continue
-        if r.x1 > x0 + 0.6*INDENT_STEP_PT:  # слишком далеко вправо — уже не маркер
+        # слишком далеко вправо — уже не маркер этой строки
+        if r.x1 > x0 + 0.6*INDENT_STEP_PT:
             continue
-        if r.x1 <= x0:  # левее начала текста — самое то
+        if r.x1 <= x0:  # левее начала текста — то, что нужно
             dx = x0 - r.x1
             if (best is None) or (dx < best_dx):
                 best, best_dx = r, dx
@@ -208,7 +265,56 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     # 3) нет признаков пункта
     return None
 
+def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers: List[fitz.Rect]) -> List[Item]:
+    """Собирает многострочные пункты в один Item (голова + продолжения)."""
+    items: List[Item] = []
+    i = 0
+    while i < len(lines):
+        head_line = lines[i]
+        head = _classify_simple(head_line, work_left, vector_markers)
+        if not head:
+            i += 1
+            continue
+        tails = []
+        j = i + 1
+        while j < len(lines):
+            ln = lines[j]
+            # новая голова списка?
+            if _classify_simple(ln, work_left, vector_markers):
+                break
+            # продолжение: тот же «столбец» и разумный шаг по Y
+            same_col = abs(ln.bbox.x0 - head.line.bbox.x0) <= (INDENT_TOL_PT + 2.0)
+            fs = head.line.size or 12.0
+            step_ok = (ln.bbox.y0 - (tails[-1].bbox.y0 if tails else head.line.bbox.y0)) <= 2.2 * fs
+            if same_col and step_ok:
+                tails.append(ln)
+                j += 1
+            else:
+                break
+        if tails:
+            # склейка текста и bbox
+            full_text = " ".join([head.line.text] + [t.text.strip() for t in tails])
+            hb = head.line.bbox
+            tb = [t.bbox for t in tails]
+            bbox = fitz.Rect(
+                min([hb.x0] + [b.x0 for b in tb]),
+                min([hb.y0] + [b.y0 for b in tb]),
+                max([hb.x1] + [b.x1 for b in tb]),
+                max([hb.y1] + [b.y1 for b in tb]),
+            )
+            head = Item(
+                head.page_index0,
+                Line(full_text, bbox, head.line.size, head.line.font, head.line.spans),
+                head.level, head.kind, head.marker_text, head.number_kind
+            )
+            i = j
+        else:
+            i += 1
+        items.append(head)
+    return items
+
 def _cluster_items(items: List[Item]) -> List[FoundList]:
+    """Объединяет пункты в списки по близости по Y и согласованности левого края/вида маркера."""
     if not items: return []
     items = sorted(items, key=lambda it: (it.line.bbox.y0, it.line.bbox.x0))
     out: List[FoundList] = []
@@ -220,21 +326,26 @@ def _cluster_items(items: List[Item]) -> List[FoundList]:
             ys0 = [it.line.bbox.y0 for it in cur]
             xs1 = [it.line.bbox.x1 for it in cur]
             ys1 = [it.line.bbox.y1 for it in cur]
-            out.append(FoundList(cur[0].page_index0, cur.copy(), fitz.Rect(min(xs0),min(ys0),max(xs1),max(ys1))))
+            out.append(FoundList(cur[0].page_index0, cur.copy(), fitz.Rect(min(xs0), min(ys0), max(xs1), max(ys1))))
         cur.clear()
 
-    MAX_DY_FACTOR = 2.2
-    LEFT_TOL = INDENT_TOL_PT + INDENT_STEP_PT + 6.0
+    MAX_DY_FACTOR = 2.0
+    LEFT_TOL = INDENT_TOL_PT + 0.6 * INDENT_STEP_PT  # ужатый допуск
 
     for it in items:
         if not cur:
             cur = [it]; continue
         prev = cur[-1]
         dy = it.line.bbox.y0 - prev.line.bbox.y0
-        fs = _median([it.line.size, prev.line.size] + [sp.get("size",0.0) for sp in (it.line.spans + prev.line.spans)]) or 12.0
+        fs = _median([it.line.size, prev.line.size] + [float(sp.get("size",0.0)) for sp in (it.line.spans + prev.line.spans)]) or 12.0
         step_ok = 0.1 <= dy <= (MAX_DY_FACTOR * fs)
-        left_ok = abs(it.line.bbox.x0 - prev.line.bbox.x0) <= LEFT_TOL
-        if step_ok and left_ok:
+
+        left_diff = abs(it.line.bbox.x0 - prev.line.bbox.x0)
+        level_change = abs(it.level - prev.level)
+        same_kind = (it.kind == prev.kind) and (it.number_kind == prev.number_kind)
+        left_ok = (left_diff <= LEFT_TOL) or (level_change in (0, 1))
+
+        if step_ok and left_ok and same_kind:
             cur.append(it)
         else:
             flush()
@@ -250,8 +361,17 @@ def check_lists(
     annotate_pdf: bool = True,
     start_page: int = 1,
 ) -> Dict[str, object]:
+    """
+    Проверка списков в PDF:
+    - детекция пунктов (текстовые/векторные/глиф-маркеры);
+    - сбор многострочных пунктов;
+    - группировка в списки;
+    - валидации ГОСТ-подобных правил оформления.
+    Возвращает: user_summary, admin_details, list_bboxes_by_page, items_diagnostics.
+    """
     admin: List[str] = []
     list_bboxes_by_page: Dict[int, List[Tuple[float,float,float,float]]] = defaultdict(list)
+    items_diag: List[Dict[str, object]] = []
     error_pages = set()
     n_lists = 0
 
@@ -259,7 +379,9 @@ def check_lists(
         page_num = pidx + 1
         if page_num < start_page:
             continue
-        rect = page.rect
+
+        # bound() учитывает crop и rotation, если есть
+        rect = page.bound()
         work_left  = rect.x0 + LEFT_MARGIN_PT
         work_right = rect.x1 - RIGHT_MARGIN_PT
 
@@ -272,26 +394,34 @@ def check_lists(
             exb = [fitz.Rect(*b) for b in exclude_bboxes_by_page.get(page_num, [])]
             keep = []
             for ln in lines:
-                inter_areas = []
+                # быстрый предфильтр по Y
+                intersects = False
                 for bb in exb:
+                    if bb.y1 < ln.bbox.y0 or bb.y0 > ln.bbox.y1:
+                        continue
                     ix0 = max(ln.bbox.x0, bb.x0); iy0 = max(ln.bbox.y0, bb.y0)
                     ix1 = min(ln.bbox.x1, bb.x1); iy1 = min(ln.bbox.y1, bb.y1)
                     if ix1 > ix0 and iy1 > iy0:
-                        inter_areas.append((ix1-ix0)*(iy1-iy0))
-                drop = (sum(inter_areas)/max(1.0, ln.bbox.get_area())) >= 0.30
-                if not drop: keep.append(ln)
+                        area = (ix1-ix0)*(iy1-iy0)
+                        if area / max(1.0, ln.bbox.get_area()) >= 0.30:
+                            intersects = True
+                            break
+                if not intersects:
+                    keep.append(ln)
             lines = keep
         else:
             exb = []
 
-        # 2) векторные маркеры (маленькие объекты)
+        # 2) маркеры (векторные и глифовые)
         vector_markers = _collect_vector_markers(page)
         # уберём те, что попали в exclude
-        if exb:
+        if exb and vector_markers:
             vm_keep = []
             for r in vector_markers:
                 skip = False
                 for bb in exb:
+                    if bb.y1 < r.y0 or bb.y0 > r.y1:
+                        continue
                     ix0 = max(r.x0, bb.x0); iy0 = max(r.y0, bb.y0)
                     ix1 = min(r.x1, bb.x1); iy1 = min(r.y1, bb.y1)
                     if ix1 > ix0 and iy1 > iy0:
@@ -301,13 +431,10 @@ def check_lists(
                 if not skip: vm_keep.append(r)
             vector_markers = vm_keep
 
-        # 3) классифицируем пункты максимально просто
-        candidates: List[Item] = []
-        for ln in lines:
-            it = _classify_simple(ln, work_left, vector_markers)
-            if it:
-                it.page_index0 = pidx
-                candidates.append(it)
+        # 3) классифицируем пункты с учётом многострочности
+        candidates: List[Item] = _gather_multiline_items(lines, work_left, vector_markers)
+        for it in candidates:
+            it.page_index0 = pidx
 
         # 4) группируем подряд в списки
         found = _cluster_items(candidates)
@@ -318,7 +445,7 @@ def check_lists(
             list_bboxes_by_page[page_num].append((fl.bbox.x0, fl.bbox.y0, fl.bbox.x1, fl.bbox.y1))
 
             issues = []
-            # a) верхний уровень: маркер только EN DASH, либо цифры/рус.буквы с ')'
+            # a) верхний уровень: маркер только EN DASH, либо цифры/рус/римские с ')'
             top_kind = None
             top_number_kind = None
             for it in fl.items:
@@ -328,8 +455,8 @@ def check_lists(
                 if it.level == 0:
                     if it.kind == "bulleted" and it.marker_text not in (EN_DASH, "[vector]"):
                         issues.append(f"Ур.1: маркированный список должен использовать только «{EN_DASH}».")
-                    if it.kind == "numbered" and it.number_kind not in ("digits","rusalpha"):
-                        issues.append("Ур.1: нумерованный список должен быть вида «1)» или «а)».")
+                    if it.kind == "numbered" and it.number_kind not in ("digits","rusalpha","roman"):
+                        issues.append("Ур.1: нумерованный список должен быть вида «1)», «а)» или «I)».")
                 else:
                     # уровни >1 должны отличаться по виду от уровня 1
                     if top_kind and it.kind == top_kind:
@@ -354,25 +481,35 @@ def check_lists(
             # перед списком — строка с двоеточием и нет пустой строки
             if fl.items:
                 all_lines_on_page = lines  # уже очищенные и склеенные
-                head_y0 = fl.items[0].line.bbox.y0
-                prev = max((ln for ln in all_lines_on_page if ln.bbox.y1 <= head_y0), key=lambda L: L.bbox.y1, default=None)
-                if prev:
-                    fs = max(10.0, fl.items[0].line.size or 12.0)
-                    gap = head_y0 - prev.bbox.y1
-                    if gap > MAX_GAP_BEFORE_AFTER_FACTOR * fs:
-                        issues.append("Перед списком не должно быть пустой строки (интервал до = 0 pt).")
-                    if not prev.text.rstrip().endswith(":"):
-                        issues.append("Перед списком должно быть предложение, оканчивающееся двоеточием.")
-                else:
-                    issues.append("Не найдено предложение с двоеточием непосредственно перед списком.")
+                head = fl.items[0].line
+                head_y0 = head.bbox.y0
+                # кандидаты вверх: те же колонка (±4pt) и ближние по Y
+                prevs = [ln for ln in all_lines_on_page if ln.bbox.y1 <= head_y0 and abs(ln.bbox.x0 - head.bbox.x0) <= 4.0]
+                prevs.sort(key=lambda L: L.bbox.y1, reverse=True)
+
+                fs = max(10.0, head.size or 12.0)
+                ok_colon = False
+                gap_accum = 0.0
+
+                for k, cand in enumerate(prevs[:3]):  # проверяем до трёх строк вверх
+                    gap = (head_y0 if k == 0 else prevs[k-1].bbox.y0) - cand.bbox.y1
+                    gap_accum += max(0.0, gap)
+                    if cand.text.rstrip().endswith(":"):
+                        ok_colon = True
+                        break
+
+                if gap_accum > MAX_GAP_BEFORE_AFTER_FACTOR * fs:
+                    issues.append("Перед списком не должно быть пустой строки (интервал до = 0 pt).")
+                if not ok_colon:
+                    issues.append("Перед списком должно быть предложение, оканчивающееся двоеточием.")
 
                 # после списка — нет пустой строки
                 tail_y1 = fl.items[-1].line.bbox.y1
                 nxt = min((ln for ln in all_lines_on_page if ln.bbox.y0 >= tail_y1), key=lambda L: L.bbox.y0, default=None)
                 if nxt:
-                    fs = max(10.0, fl.items[-1].line.size or 12.0)
-                    gap = nxt.bbox.y0 - tail_y1
-                    if gap > MAX_GAP_BEFORE_AFTER_FACTOR * fs:
+                    fs2 = max(10.0, fl.items[-1].line.size or 12.0)
+                    gap2 = nxt.bbox.y0 - tail_y1
+                    if gap2 > MAX_GAP_BEFORE_AFTER_FACTOR * fs2:
                         issues.append("После списка не должно быть пустой строки (интервал после = 0 pt).")
 
             # выравнивание и межстрочник по блоку
@@ -392,11 +529,10 @@ def check_lists(
                 if abs(dx - want) > (INDENT_TOL_PT + 6.0):
                     issues.append(f"Отступ слева у пункта ур.{it.level+1} должен быть кратен 0.75 см.")
 
-            # пунктуация
-            def is_short(text: str) -> bool:
-                txt = re.sub(r"[^\w\sА-Яа-яЁё-]", "", text, flags=re.UNICODE)
-                words = [w for w in txt.split() if re.search(r"[A-Za-zА-Яа-яЁё]", w)]
-                return 1 <= len(words) <= 2
+            # пунктуация (с допущением аббревиатур и закрывающих знаков)
+            ABBR = r"(?:т\.е\.|т\.к\.|и т\.д\.|и т\.п\.|см\.)"
+            def ends_with(txt: str, punct: str) -> bool:
+                return bool(re.search(rf"{re.escape(punct)}[\)\]»\"]?$", txt))
 
             pure_texts = []
             for it in fl.items:
@@ -405,18 +541,36 @@ def check_lists(
 
             for i, txt in enumerate(pure_texts):
                 last = (i == len(pure_texts)-1)
+                # внутренняя «точка-пробел-Заглавная», но не аббревиатура/закрывающий
+                if not last and re.search(rf"\.(?!\s*(?:{ABBR}|\)|»|\"))\s+[А-ЯЁA-Z]", txt):
+                    issues.append("Внутри пункта не допускаются новые предложения.")
                 if not last:
-                    if is_short(txt):
-                        if not txt.endswith(","):
+                    # короткие пункты — запятая, длинные — «;»
+                    txt_is_short = (lambda s: (lambda ww: 1 <= len(ww) <= 2)(
+                        [w for w in re.sub(r"[^\w\sА-Яа-яЁё-]", "", s, flags=re.UNICODE).split()
+                         if re.search(r"[A-Za-zА-Яа-яЁё]", w)]
+                    ))(txt)
+                    if txt_is_short:
+                        if not ends_with(txt, ","):
                             issues.append("Короткий пункт (1–2 слова) должен оканчиваться запятой, кроме последнего (точка).")
                     else:
-                        if not txt.endswith(";"):
+                        if not ends_with(txt, ";"):
                             issues.append("Пункт должен оканчиваться точкой с запятой, кроме последнего (точка).")
                 else:
-                    if not txt.endswith("."):
+                    if not ends_with(txt, "."):
                         issues.append("Последний пункт списка должен оканчиваться точкой.")
-                if not last and re.search(r"\.\s+[А-ЯЁA-Z]", txt):
-                    issues.append("Внутри пункта не допускаются новые предложения.")
+
+            # лог/диагностика по пунктам
+            for it in fl.items:
+                items_diag.append({
+                    "page": page_num,
+                    "y0": it.line.bbox.y0,
+                    "level": it.level + 1,
+                    "kind": it.kind,
+                    "number_kind": it.number_kind,
+                    "marker_text": it.marker_text,
+                    "text_head": RE_START_SIMPLE.sub("", it.line.text).strip()[:120],
+                })
 
             # лог и аннотации
             admin.append(f"[List][Стр. {page_num}] пунктов={len(fl.items)} | уровни~{sorted(set(i.level for i in fl.items))}")
@@ -452,4 +606,5 @@ def check_lists(
         "user_summary": user_summary,
         "admin_details": admin_details,
         "list_bboxes_by_page": dict(list_bboxes_by_page),
+        "items_diagnostics": items_diag,
     }
