@@ -7,6 +7,12 @@ import re
 import fitz  # PyMuPDF
 from collections import defaultdict
 
+# ===== DEBUG =====
+DEBUG_LISTS = True        # включить подробные логи по спискам
+DEBUG_PAGES = None        # например: {3} чтобы логировать только 3-ю страницу (1-based)
+MAX_SPANS_TO_SHOW = 3     # сколько первых спанов показывать в логах строки
+# =================
+
 # --- Единицы и поля ---
 MM_TO_PT = 2.834646
 CM_TO_PT = 28.35
@@ -49,7 +55,6 @@ RE_START_SIMPLE = re.compile(
     rf"^\s*(?:{re.escape(EN_DASH)}{SPACE_CLS}+|\d+[.)]{SPACE_CLS}+|"
     rf"[{ALLOWED_STR}][.)]{SPACE_CLS}+|[IVXLC]+[.)]{SPACE_CLS}+)"
 )
-
 RE_ONLY_ONE_SPACE_AFTER = re.compile(
     rf"^\s*(?:\d+[.)]|[{ALLOWED_STR}][.)]|[IVXLC]+[.)]){SPACE_CLS}(?!{SPACE_CLS})"
 )
@@ -96,6 +101,35 @@ def _median(vals: List[float]) -> float:
 
 def _y_overlap(a: fitz.Rect, b: fitz.Rect) -> float:
     return max(0.0, min(a.y1, b.y1) - max(a.y0, b.y0))
+
+def _fmt_rect(r: fitz.Rect) -> str:
+    return f"{r.x0:.2f},{r.y0:.2f}–{r.x1:.2f},{r.y1:.2f}"
+
+def _span_head(line: "Line", k: int = MAX_SPANS_TO_SHOW) -> str:
+    parts = []
+    for i, sp in enumerate(line.spans[:k]):
+        t = (sp.get("text") or "").replace("\n"," ")
+        if len(t) > 16:
+            t = t[:16] + "…"
+        bb = sp.get("bbox", [0,0,0,0])
+        parts.append(f"[{i}] «{t}» {sp.get('font','?')} {float(sp.get('size',0)):.2f}pt x0={bb[0]:.2f}")
+    if len(line.spans) > k:
+        parts.append(f"(+{len(line.spans)-k} spans)")
+    return " | ".join(parts)
+
+def _marker_kind_from_head(head_text: str) -> str:
+    if not head_text:
+        return ""
+    s = head_text.lstrip()
+    if s.startswith(EN_DASH):
+        return "bulleted:dash"
+    if s and s[0].isdigit():
+        return "numbered:digits"
+    if s and re.match(r"[IVXLC]", s[0]):
+        return "numbered:roman"
+    if s and s[0] in ALLOWED_LETTERS:
+        return "numbered:rusalpha"
+    return "unknown"
 
 def _collect_text_lines(page: fitz.Page) -> List[Line]:
     out: List[Line] = []
@@ -191,7 +225,6 @@ def _text_start_x_after_marker(line: Line) -> Optional[float]:
     for sp in line.spans[1:]:
         txt = sp.get("text", "")
         if txt and not txt.isspace():
-            # bbox = [x0, y0, x1, y1]
             bb = sp.get("bbox", None)
             if bb:
                 return float(bb[0])
@@ -237,7 +270,6 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     for r in vector_markers:
         if _y_overlap(r, line.bbox) / max(1.0, min(r.height, line.bbox.height)) < 0.4:
             continue
-        # слишком далеко вправо от начала текста — уже не маркер
         if r.x1 > (line.bbox.x0 + 0.6*INDENT_STEP_PT):
             continue
         if r.x1 <= line.bbox.x0:
@@ -371,10 +403,11 @@ def check_lists(
 ) -> Dict[str, object]:
     """
     Детекция списков + проверки ГОСТ + аннотации.
-    Возвращает: user_summary, admin_details, list_bboxes_by_page.
+    Возвращает: user_summary, admin_details, list_bboxes_by_page, items_diagnostics.
     """
     admin: List[str] = []
     list_bboxes_by_page: Dict[int, List[Tuple[float,float,float,float]]] = defaultdict(list)
+    items_diag: List[Dict[str, object]] = []
     error_pages = set()
     n_lists = 0
 
@@ -391,13 +424,64 @@ def check_lists(
         lines = _collect_text_lines(page)
         lines = _merge_bullet_lines(lines)
 
+        if DEBUG_LISTS and (DEBUG_PAGES is None or page_num in DEBUG_PAGES):
+            admin.append(f"[Dbg][p{page_num}] Lines after collect+merge: {len(lines)}")
+            for idx, ln in enumerate(lines):
+                head_match = RE_START_SIMPLE.match(ln.text)
+                head = head_match.group(0) if head_match else ""
+                x0_text = _text_start_x_after_marker(ln) or ln.bbox.x0
+                admin.append(
+                    "  [L{idx}] y0={y:.2f} x0_line={x0:.2f} x0_text={x1:.2f}  head=«{h}» ({hk})  text=«{t}»".format(
+                        idx=idx, y=ln.bbox.y0, x0=ln.bbox.x0, x1=x0_text,
+                        h=head.strip(), hk=_marker_kind_from_head(head or ""),
+                        t=(ln.text[:80] + ("…" if len(ln.text) > 80 else ""))
+                    )
+                )
+                admin.append("        spans: " + _span_head(ln))
+
         # 2) векторные маркеры
         vector_markers = _collect_vector_markers(page)
+        if DEBUG_LISTS and (DEBUG_PAGES is None or page_num in DEBUG_PAGES):
+            if vector_markers:
+                admin.append(f"[Dbg][p{page_num}] Vector markers: {len(vector_markers)}")
+                for i, r in enumerate(vector_markers[:30]):
+                    admin.append(f"    [vm#{i}] rect={_fmt_rect(r)} wh=({r.width:.2f}×{r.height:.2f})")
+            else:
+                admin.append(f"[Dbg][p{page_num}] Vector markers: 0")
 
         # 3) кандидаты-пункты с учётом многострочности
         candidates: List[Item] = _gather_multiline_items(lines, work_left, vector_markers)
-        for it in candidates: 
+        for it in candidates:
             it.page_index0 = pidx
+
+        if DEBUG_LISTS and (DEBUG_PAGES is None or page_num in DEBUG_PAGES):
+            admin.append(f"[Dbg][p{page_num}] Items after classify+multiline: {len(candidates)}")
+            for it in candidates:
+                admin.append(
+                    "    [it] y0={y:.2f} level={lvl} kind={k}/{nk} marker={m}  text=«{t}»".format(
+                        y=it.line.bbox.y0, lvl=it.level, k=it.kind, nk=it.number_kind,
+                        m=it.marker_text, t=(RE_START_SIMPLE.sub('', it.line.text).strip()[:80])
+                    )
+                )
+            # Предтрассировка кластеризации (по парам)
+            admin.append(f"[Dbg][p{page_num}] Clustering pre-check over {len(candidates)} items:")
+            for a, b in zip(candidates, candidates[1:]):
+                dy = b.line.bbox.y0 - a.line.bbox.y0
+                fs = _median([a.line.size, b.line.size]) or 12.0
+                step_ok = 0.1 <= dy <= (2.0 * fs)
+                left_a = (_text_start_x_after_marker(a.line) or a.line.bbox.x0)
+                left_b = (_text_start_x_after_marker(b.line) or b.line.bbox.x0)
+                left_diff = abs(left_b - left_a)
+                level_change = abs(b.level - a.level)
+                same_kind = (a.kind == b.kind) and (a.number_kind == b.number_kind)
+                left_ok = (left_diff <= (INDENT_TOL_PT + 0.6*INDENT_STEP_PT)) or (level_change in (0,1))
+                admin.append(
+                    "    pair y={ya:.2f}->{yb:.2f}  dy={dy:.2f} step_ok={so} | x0={xa:.2f}->{xb:.2f} diff={ld:.2f} left_ok={lo} | kind={ka}/{kb} same={sk}".format(
+                        ya=a.line.bbox.y0, yb=b.line.bbox.y0, dy=dy, so=bool(step_ok),
+                        xa=left_a, xb=left_b, ld=left_diff, lo=bool(left_ok),
+                        ka=f'{a.kind}:{a.number_kind}', kb=f'{b.kind}:{b.number_kind}', sk=bool(same_kind)
+                    )
+                )
 
         # 4) группировка подряд в списки
         found = _cluster_items(candidates)
@@ -512,6 +596,21 @@ def check_lists(
                 if not last and re.search(r"\.\s+[А-ЯЁA-Z]", txt):
                     issues.append("Внутри пункта не допускаются новые предложения.")
 
+            # Диагностика по пунктам (программно-парсибельная)
+            for it in fl.items:
+                items_diag.append({
+                    "page": page_num,
+                    "y0": float(it.line.bbox.y0),
+                    "x0_line": float(it.line.bbox.x0),
+                    "x0_text": float(_text_start_x_after_marker(it.line) or it.line.bbox.x0),
+                    "level": int(it.level),
+                    "kind": it.kind,
+                    "number_kind": it.number_kind,
+                    "marker_text": it.marker_text,
+                    "head": (RE_START_SIMPLE.match(it.line.text).group(0) if RE_START_SIMPLE.match(it.line.text) else ""),
+                    "text_head": RE_START_SIMPLE.sub("", it.line.text).strip()[:200],
+                })
+
             # Лог и аннотации
             admin.append(f"[List][Стр. {page_num}] пунктов={len(fl.items)} | уровни~{sorted(set(i.level for i in fl.items))}")
             if issues:
@@ -545,4 +644,5 @@ def check_lists(
         "user_summary": user_summary,
         "admin_details": admin_details,
         "list_bboxes_by_page": dict(list_bboxes_by_page),
+        "items_diagnostics": items_diag,
     }
