@@ -50,11 +50,16 @@ ALLOWED_STR = "".join(ALLOWED_LETTERS)
 NBSP = "\u00A0"
 SPACE_CLS = rf"[ \t{NBSP}]"
 
-# Голова пункта: «– » | «1) » | «1. » | «а) » | «IV) »
+# Голова пункта: «– » | «1) » | «1. » | «а) » | «IV) » (с пробелом)
 RE_START_SIMPLE = re.compile(
     rf"^\s*(?:{re.escape(EN_DASH)}{SPACE_CLS}+|\d+[.)]{SPACE_CLS}+|"
     rf"[{ALLOWED_STR}][.)]{SPACE_CLS}+|[IVXLC]+[.)]{SPACE_CLS}+)"
 )
+# «Плотная» голова без обязательного пробела (tight), чтобы ловить кейс "1)Текст"
+RE_START_TIGHT = re.compile(
+    rf"^\s*(?:{re.escape(EN_DASH)}|\d+[.)]|[{ALLOWED_STR}][.)]|[IVXLC]+[.)])"
+)
+
 RE_ONLY_ONE_SPACE_AFTER = re.compile(
     rf"^\s*(?:\d+[.)]|[{ALLOWED_STR}][.)]|[IVXLC]+[.)]){SPACE_CLS}(?!{SPACE_CLS})"
 )
@@ -210,73 +215,122 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
         i += 1
     return out
 
-def _text_start_x_after_marker(line: Line) -> Optional[float]:
+def _first_span_is_marker(span_text: str) -> Tuple[bool, str]:
     """
-    Если первый спан — маркер ('1)', 'а)', '–'), возвращает X начала первого
-    НЕ пробельного спана после маркера (учитывая, что пробел может быть отдельным спаном).
-    Иначе None.
+    Быстрый разбор первого спана: является ли он маркером (–, 1), 1., а), IV) ...).
+    Возвращает (is_marker, number_kind)
+    """
+    if not span_text:
+        return False, ""
+    s = span_text.strip()
+    if s.startswith(EN_DASH):
+        return True, ""
+    if re.match(r"^\d+[.)]$", s):
+        return True, "digits"
+    if re.match(r"^[IVXLC]+[.)]$", s):
+        return True, "roman"
+    if len(s) >= 2 and s[0] in ALLOWED_LETTERS and s[1] in ").":
+        return True, "rusalpha"
+    return False, ""
+
+def _text_start_x_after_marker(line: Line) -> Tuple[Optional[float], bool]:
+    """
+    Если первый спан — маркер ('1)', 'а)', '–' и т.п.), возвращает:
+      (x0_начала_текста_после_маркера, tight_sep_ok)
+    tight_sep_ok=True, если между маркером и текстом нет пробела в тексте,
+    но есть визуальный зазор между спанами (учтём как «один пробел»).
     """
     if not line.spans:
-        return None
-    head_txt = line.spans[0].get("text", "")
-    if not RE_START_SIMPLE.match(head_txt):
-        return None
-    # идём по спанам после первого и ищем реальный текст
-    for sp in line.spans[1:]:
-        txt = sp.get("text", "")
-        if txt and not txt.isspace():
-            bb = sp.get("bbox", None)
-            if bb:
-                return float(bb[0])
-    # если не нашли, вернём x1 первого спана как приближение
-    bb0 = line.spans[0].get("bbox", None)
-    if bb0:
-        return float(bb0[2])
-    return None
+        return None, False
+
+    head_txt = line.spans[0].get("text", "") or ""
+    # 1) маркер как отдельный спан (tight или обычный) — без проверки пробела
+    is_marker, _ = _first_span_is_marker(head_txt)
+    if is_marker:
+        # найдём первый непустой следующий спан
+        bb0 = line.spans[0].get("bbox", None)
+        x1_head = float(bb0[2]) if bb0 else line.bbox.x0
+        size_head = float(line.spans[0].get("size", line.size or 12.0))
+        for sp in line.spans[1:]:
+            txt = sp.get("text", "") or ""
+            if txt and not txt.isspace():
+                bb = sp.get("bbox", None)
+                if bb:
+                    x0_text = float(bb[0])
+                    # визуальный зазор вместо пробела?
+                    tight_sep_ok = (x0_text - x1_head) >= 0.4 * size_head
+                    return x0_text, tight_sep_ok
+        return x1_head, False
+
+    # 2) если первый спан не маркер — попробуем match всей строки (tight)
+    if RE_START_TIGHT.match(line.text):
+        # найдём спан, где заканчивается head, и возьмём следующий
+        # (практически как выше, но через tight по строке)
+        # fallback: x0_line
+        return line.bbox.x0, False
+
+    return None, False
 
 # ---------- Классификация ----------
 def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rect]) -> Optional[Item]:
     """
     Определяет, является ли строка началом пункта, и какой это вид/уровень.
-    Учитывает кейс «маркер отдельным спаном» (стр. 3) для корректного уровня/отступа.
+    Учитывает кейс «маркер отдельным спаном» (tight head) для корректного уровня/отступа.
     """
     t = line.text
-    # Базовый x0: если маркер отдельным спаном — берём X реального текста после маркера
-    x0 = _text_start_x_after_marker(line)
-    if x0 is None:
-        x0 = line.bbox.x0
 
-    level = max(0, int(round((x0 - work_left) / INDENT_STEP_PT)))
-
-    # 1) текстовый маркер/номер по префиксу всей строки
-    m = RE_START_SIMPLE.match(t)
-    if m:
-        head = m.group(0).lstrip()
-        if head.startswith(EN_DASH):
-            return Item(-1, line, level, "bulleted", EN_DASH, "")
-        elif head and head[0].isdigit():
-            return Item(-1, line, level, "numbered", head.strip(), "digits")
-        elif head and head[0] in ALLOWED_LETTERS:
-            return Item(-1, line, level, "numbered", head.strip(), "rusalpha")
-        elif head and re.match(r"[IVXLC]", head[0]):
-            return Item(-1, line, level, "numbered", head.strip(), "roman")
+    # Предпочтение: текстовый маркер (tight или обычный).
+    # Вычислим x0 по началу текста после маркера.
+    x0_text, _ = _text_start_x_after_marker(line)
+    if x0_text is not None:
+        level = max(0, int(round((x0_text - work_left) / INDENT_STEP_PT)))
+        # определить вид маркера
+        head_span = (line.spans[0].get("text", "") if line.spans else "")
+        is_marker, numk = _first_span_is_marker(head_span)
+        if is_marker:
+            if head_span.startswith(EN_DASH):
+                return Item(-1, line, level, "bulleted", EN_DASH, "")
+            if numk == "digits":
+                return Item(-1, line, level, "numbered", head_span, "digits")
+            if numk == "rusalpha":
+                return Item(-1, line, level, "numbered", head_span, "rusalpha")
+            if numk == "roman":
+                return Item(-1, line, level, "numbered", head_span, "roman")
+        # если первый спан не маркер, но вся строка начинается с tight head (редко)
+        m_tight = RE_START_TIGHT.match(t)
+        if m_tight:
+            head = m_tight.group(0).lstrip()
+            if head.startswith(EN_DASH):
+                return Item(-1, line, level, "bulleted", EN_DASH, "")
+            elif head and head[0].isdigit():
+                return Item(-1, line, level, "numbered", head.strip(), "digits")
+            elif head and head[0] in ALLOWED_LETTERS:
+                return Item(-1, line, level, "numbered", head.strip(), "rusalpha")
+            elif head and re.match(r"[IVXLC]", head[0]):
+                return Item(-1, line, level, "numbered", head.strip(), "roman")
 
     # 2) буллет-символ в начале строки (включая \uf0b7)
     if t and t[0] in BULLET_CHARS:
+        x0 = line.bbox.x0
+        level = max(0, int(round((x0 - work_left) / INDENT_STEP_PT)))
         return Item(-1, line, level, "bulleted", t[0], "")
 
-    # 3) векторный маркер слева на той же строке
+    # 3) векторный маркер слева на той же строке — с дополнительными ограничениями
+    #    (только близко к началу текста, не дальше ~1 шага)
+    base_x0 = x0_text if x0_text is not None else line.bbox.x0
     best = None; best_dx = None
     for r in vector_markers:
         if _y_overlap(r, line.bbox) / max(1.0, min(r.height, line.bbox.height)) < 0.4:
             continue
-        if r.x1 > (line.bbox.x0 + 0.6*INDENT_STEP_PT):
+        if r.x1 > base_x0:  # должен быть левее текста
             continue
-        if r.x1 <= line.bbox.x0:
-            dx = line.bbox.x0 - r.x1
-            if (best is None) or (dx < best_dx):
-                best, best_dx = r, dx
+        dx = base_x0 - r.x1
+        if dx > 1.1 * INDENT_STEP_PT:  # слишком далеко — не маркер этой строки
+            continue
+        if (best is None) or (dx < best_dx):
+            best, best_dx = r, dx
     if best is not None:
+        level = max(0, int(round((base_x0 - work_left) / INDENT_STEP_PT)))
         return Item(-1, line, level, "bulleted", "[vector]", "")
 
     return None
@@ -298,7 +352,11 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
             if _classify_simple(ln, work_left, vector_markers):
                 break
             # продолжение: тот же «столбец» и разумный шаг по Y
-            same_col = abs((_text_start_x_after_marker(ln) or ln.bbox.x0) - (_text_start_x_after_marker(head.line) or head.line.bbox.x0)) <= (INDENT_TOL_PT + 2.0)
+            x0_head, _ = _text_start_x_after_marker(head.line)
+            x0_head = x0_head if x0_head is not None else head.line.bbox.x0
+            x0_ln, _ = _text_start_x_after_marker(ln)
+            x0_ln = x0_ln if x0_ln is not None else ln.bbox.x0
+            same_col = abs(x0_ln - x0_head) <= (INDENT_TOL_PT + 2.0)
             fs = head.line.size or 12.0
             step_ok = (ln.bbox.y0 - (tails[-1].bbox.y0 if tails else head.line.bbox.y0)) <= 2.2 * fs
             if same_col and step_ok:
@@ -356,9 +414,12 @@ def _cluster_items(items: List[Item]) -> List[FoundList]:
         fs = _median([it.line.size, prev.line.size]) or 12.0
         step_ok = 0.1 <= dy <= (MAX_DY_FACTOR * fs)
 
-        # согласованность левого края/уровня
-        left_diff = abs((_text_start_x_after_marker(it.line) or it.line.bbox.x0) -
-                        (_text_start_x_after_marker(prev.line) or prev.line.bbox.x0))
+        # согласованность левого края/уровня — считаем по началу текста после маркера
+        a_x0, _ = _text_start_x_after_marker(prev.line)
+        b_x0, _ = _text_start_x_after_marker(it.line)
+        a_x0 = a_x0 if a_x0 is not None else prev.line.bbox.x0
+        b_x0 = b_x0 if b_x0 is not None else it.line.bbox.x0
+        left_diff = abs(b_x0 - a_x0)
         level_change = abs(it.level - prev.level)
         same_kind = (it.kind == prev.kind) and (it.number_kind == prev.number_kind)
         left_ok = (left_diff <= LEFT_TOL) or (level_change in (0, 1))
@@ -397,7 +458,7 @@ def _line_spacing_check(lines: List[Line]):
 def check_lists(
     pdf_document: fitz.Document,
     *,
-    exclude_bboxes_by_page: Optional[Dict[int, List[Tuple[float,float,float,float]]]] = None,  # совместимость
+    exclude_bboxes_by_page: Optional[Dict[int, List[Tuple[float,float,float,float]]]] = None,  # совместимость (не используется)
     annotate_pdf: bool = True,
     start_page: int = 1,
 ) -> Dict[str, object]:
@@ -427,13 +488,14 @@ def check_lists(
         if DEBUG_LISTS and (DEBUG_PAGES is None or page_num in DEBUG_PAGES):
             admin.append(f"[Dbg][p{page_num}] Lines after collect+merge: {len(lines)}")
             for idx, ln in enumerate(lines):
-                head_match = RE_START_SIMPLE.match(ln.text)
+                head_match = RE_START_TIGHT.match(ln.text)
                 head = head_match.group(0) if head_match else ""
-                x0_text = _text_start_x_after_marker(ln) or ln.bbox.x0
+                x0_text, tight_ok = _text_start_x_after_marker(ln)
+                x0_text = x0_text if x0_text is not None else ln.bbox.x0
                 admin.append(
-                    "  [L{idx}] y0={y:.2f} x0_line={x0:.2f} x0_text={x1:.2f}  head=«{h}» ({hk})  text=«{t}»".format(
+                    "  [L{idx}] y0={y:.2f} x0_line={x0:.2f} x0_text={x1:.2f}  head=«{h}» ({hk}) tight_sep_ok={to}  text=«{t}»".format(
                         idx=idx, y=ln.bbox.y0, x0=ln.bbox.x0, x1=x0_text,
-                        h=head.strip(), hk=_marker_kind_from_head(head or ""),
+                        h=head.strip(), hk=_marker_kind_from_head(head or ""), to=bool(tight_ok),
                         t=(ln.text[:80] + ("…" if len(ln.text) > 80 else ""))
                     )
                 )
@@ -460,7 +522,7 @@ def check_lists(
                 admin.append(
                     "    [it] y0={y:.2f} level={lvl} kind={k}/{nk} marker={m}  text=«{t}»".format(
                         y=it.line.bbox.y0, lvl=it.level, k=it.kind, nk=it.number_kind,
-                        m=it.marker_text, t=(RE_START_SIMPLE.sub('', it.line.text).strip()[:80])
+                        m=it.marker_text, t=(RE_START_TIGHT.sub('', it.line.text).strip()[:80])
                     )
                 )
             # Предтрассировка кластеризации (по парам)
@@ -469,16 +531,16 @@ def check_lists(
                 dy = b.line.bbox.y0 - a.line.bbox.y0
                 fs = _median([a.line.size, b.line.size]) or 12.0
                 step_ok = 0.1 <= dy <= (2.0 * fs)
-                left_a = (_text_start_x_after_marker(a.line) or a.line.bbox.x0)
-                left_b = (_text_start_x_after_marker(b.line) or b.line.bbox.x0)
-                left_diff = abs(left_b - left_a)
+                a_x0, _ = _text_start_x_after_marker(a.line); a_x0 = a_x0 if a_x0 is not None else a.line.bbox.x0
+                b_x0, _ = _text_start_x_after_marker(b.line); b_x0 = b_x0 if b_x0 is not None else b.line.bbox.x0
+                left_diff = abs(b_x0 - a_x0)
                 level_change = abs(b.level - a.level)
                 same_kind = (a.kind == b.kind) and (a.number_kind == b.number_kind)
                 left_ok = (left_diff <= (INDENT_TOL_PT + 0.6*INDENT_STEP_PT)) or (level_change in (0,1))
                 admin.append(
                     "    pair y={ya:.2f}->{yb:.2f}  dy={dy:.2f} step_ok={so} | x0={xa:.2f}->{xb:.2f} diff={ld:.2f} left_ok={lo} | kind={ka}/{kb} same={sk}".format(
                         ya=a.line.bbox.y0, yb=b.line.bbox.y0, dy=dy, so=bool(step_ok),
-                        xa=left_a, xb=left_b, ld=left_diff, lo=bool(left_ok),
+                        xa=a_x0, xb=b_x0, ld=left_diff, lo=bool(left_ok),
                         ka=f'{a.kind}:{a.number_kind}', kb=f'{b.kind}:{b.number_kind}', sk=bool(same_kind)
                     )
                 )
@@ -512,22 +574,27 @@ def check_lists(
                     if top_number_kind and it.number_kind and it.number_kind == top_number_kind:
                         issues.append(f"Ур.{it.level+1}: тип нумерации должен отличаться от уровня 1.")
 
-                # Один пробел после маркера
+                # Один пробел после маркера (допускаем «визуальный пробел» tight_sep_ok)
                 s = it.line.text
-                if it.kind == "bulleted" and it.marker_text == EN_DASH:
-                    if not RE_ONLY_ONE_SPACE_AFTER_DASH.match(s):
+                head_is_dash = it.kind == "bulleted" and it.marker_text == EN_DASH
+                if head_is_dash and not RE_ONLY_ONE_SPACE_AFTER_DASH.match(s):
+                    # попробуем считать визуальный зазор как пробел
+                    _, tight_ok = _text_start_x_after_marker(it.line)
+                    if not tight_ok:
                         issues.append("После «–» должен быть ровно один пробел.")
-                if it.kind == "numbered":
-                    if not RE_ONLY_ONE_SPACE_AFTER.match(s):
+                if it.kind == "numbered" and not RE_ONLY_ONE_SPACE_AFTER.match(s):
+                    _, tight_ok = _text_start_x_after_marker(it.line)
+                    if not tight_ok:
                         issues.append("После номера должен быть ровно один пробел.")
 
                 # Строчная буква после маркера
-                tail = RE_START_SIMPLE.sub("", s).lstrip()
+                tail = RE_START_TIGHT.sub("", s).lstrip()
                 if tail[:1].isalpha() and tail[:1].isupper():
                     issues.append("Пункт списка должен начинаться со строчной буквы.")
 
                 # Красная строка 1.25 см (берём X начала текста после маркера)
-                text_x0 = _text_start_x_after_marker(it.line) or it.line.bbox.x0
+                text_x0, _ = _text_start_x_after_marker(it.line)
+                text_x0 = text_x0 if text_x0 is not None else it.line.bbox.x0
                 fl_indent = text_x0 - work_left
                 if abs(fl_indent - FIRST_LINE_INDENT_PT) > FIRST_LINE_TOL_PT:
                     issues.append("Каждый пункт списка должен иметь абзацный отступ 1.25 см.")
@@ -570,13 +637,14 @@ def check_lists(
 
             # Кратность 0.75 см по уровню
             for it in fl.items:
-                dx = (_text_start_x_after_marker(it.line) or it.line.bbox.x0) - work_left
+                dx, _ = _text_start_x_after_marker(it.line)
+                dx = (dx if dx is not None else it.line.bbox.x0) - work_left
                 want = it.level * INDENT_STEP_PT
                 if abs(dx - want) > (INDENT_TOL_PT + 6.0):
                     issues.append(f"Отступ слева у пункта ур.{it.level+1} должен быть кратен 0.75 см.")
 
             # Пунктуация
-            pure_texts = [RE_START_SIMPLE.sub("", it.line.text).strip() for it in fl.items]
+            pure_texts = [RE_START_TIGHT.sub("", it.line.text).strip() for it in fl.items]
             for i, txt in enumerate(pure_texts):
                 last = (i == len(pure_texts)-1)
                 words = [w for w in re.sub(r"[^\w\sА-Яа-яЁё-]", "", txt, flags=re.UNICODE).split()
@@ -598,17 +666,19 @@ def check_lists(
 
             # Диагностика по пунктам (программно-парсибельная)
             for it in fl.items:
+                x0t, tight_ok = _text_start_x_after_marker(it.line)
                 items_diag.append({
                     "page": page_num,
                     "y0": float(it.line.bbox.y0),
                     "x0_line": float(it.line.bbox.x0),
-                    "x0_text": float(_text_start_x_after_marker(it.line) or it.line.bbox.x0),
+                    "x0_text": float(x0t if x0t is not None else it.line.bbox.x0),
+                    "tight_sep_ok": bool(tight_ok),
                     "level": int(it.level),
                     "kind": it.kind,
                     "number_kind": it.number_kind,
                     "marker_text": it.marker_text,
-                    "head": (RE_START_SIMPLE.match(it.line.text).group(0) if RE_START_SIMPLE.match(it.line.text) else ""),
-                    "text_head": RE_START_SIMPLE.sub("", it.line.text).strip()[:200],
+                    "head": (RE_START_TIGHT.match(it.line.text).group(0) if RE_START_TIGHT.match(it.line.text) else ""),
+                    "text_head": RE_START_TIGHT.sub("", it.line.text).strip()[:200],
                 })
 
             # Лог и аннотации
