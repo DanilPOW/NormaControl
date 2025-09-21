@@ -9,7 +9,7 @@ from collections import defaultdict
 
 # ===== DEBUG =====
 DEBUG_LISTS = True        # включить подробные логи по спискам
-DEBUG_PAGES = None        # например: {3} чтобы логировать только 3-ю страницу (1-based)
+DEBUG_PAGES = None        # например: {3,5,6} чтобы логировать только эти страницы (1-based)
 MAX_SPANS_TO_SHOW = 3     # сколько первых спанов показывать в логах строки
 # =================
 
@@ -67,8 +67,10 @@ RE_ONLY_ONE_SPACE_AFTER_DASH = re.compile(
     rf"^\s*{re.escape(EN_DASH)}{SPACE_CLS}(?!{SPACE_CLS})"
 )
 
-# Буллеты (включая \uf0b7 — Word/Symbol)
-BULLET_CHARS = "•·●∙◦▪▫■□◆\uf0b7"
+# Базовые буллеты (включая \uf0b7 — Word/Symbol)
+BULLET_CHARS_BASE = "•·●∙◦▪▫■□◆\uf0b7"
+# Расширенные символы-маркеры (Wingdings/стрелки и т.п.), добавим то, что встретилось: '', '►', '▸'
+BULLET_CHARS_EXT = set(BULLET_CHARS_BASE) | set("►▸▪▫■□◆")
 
 # Векторные маркеры (маленькие квадраты/кружки)
 MARKER_MAX_W_PT = mm_to_pt(8.0)
@@ -117,7 +119,7 @@ def _span_head(line: "Line", k: int = MAX_SPANS_TO_SHOW) -> str:
         if len(t) > 16:
             t = t[:16] + "…"
         bb = sp.get("bbox", [0,0,0,0])
-        parts.append(f"[{i}] «{t}» {sp.get('font','?')} {float(sp.get('size',0)):.2f}pt x0={bb[0]:.2f}")
+        parts.append(f"[{i] if False else i}] «{t}» {sp.get('font','?')} {float(sp.get('size',0)):.2f}pt x0={bb[0]:.2f}")
     if len(line.spans) > k:
         parts.append(f"(+{len(line.spans)-k} spans)")
     return " | ".join(parts)
@@ -183,14 +185,14 @@ def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
 
 # «строка = один буллет» (в т.ч. \uf0b7)
 _SIMPLE_BULLET_ONLY = re.compile(
-    r"^\s*(?:[" + BULLET_CHARS + r"]|{}|-|—)\s*$".format(re.escape(EN_DASH))
+    r"^\s*(?:[" + BULLET_CHARS_BASE + r"]|{}|-|—)\s*$".format(re.escape(EN_DASH))
 )
 
 def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
     """
     Склейка пары:
       [строка с буллитом/тире] + [следующая строка с текстом]
-    как один пункт. Поддерживает Word/Symbol (\uf0b7).
+    как один пункт. Поддерживает Word/Symbol (\uf0b7) и учитывает перекрытие по Y.
     """
     if not lines: return lines
     out: List[Line] = []
@@ -200,10 +202,11 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
         t = cur.text.strip()
         if _SIMPLE_BULLET_ONLY.match(t) and (i + 1 < len(lines)):
             nxt = lines[i + 1]
-            dy = nxt.bbox.y0 - cur.bbox.y1
             fs = _median([cur.size, nxt.size]) or 12.0
-            # мягкая привязка по Y и X: текст начинается правее «примерно там же»
-            if -2.0 <= dy <= 1.6 * fs and nxt.bbox.x0 >= cur.bbox.x0:
+            # перекрытие по Y между bbox текущего буллита и следующей строкой
+            overlap = min(nxt.bbox.y1, cur.bbox.y1) - max(nxt.bbox.y0, cur.bbox.y0)
+            # условие: есть заметное перекрытие по Y (буллит "высокий") и текст начинается не левее буллита
+            if (overlap >= 0.25 * fs) and (nxt.bbox.x0 >= cur.bbox.x0 - 2.0):
                 merged_text = (t + " " + nxt.text.lstrip()).strip()
                 mx0 = min(cur.bbox.x0, nxt.bbox.x0); my0 = min(cur.bbox.y0, nxt.bbox.y0)
                 mx1 = max(cur.bbox.x1, nxt.bbox.x1); my1 = max(cur.bbox.y1, nxt.bbox.y1)
@@ -264,8 +267,6 @@ def _text_start_x_after_marker(line: Line) -> Tuple[Optional[float], bool]:
 
     # 2) если первый спан не маркер — попробуем match всей строки (tight)
     if RE_START_TIGHT.match(line.text):
-        # найдём спан, где заканчивается head, и возьмём следующий
-        # (практически как выше, но через tight по строке)
         # fallback: x0_line
         return line.bbox.x0, False
 
@@ -275,16 +276,14 @@ def _text_start_x_after_marker(line: Line) -> Tuple[Optional[float], bool]:
 def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rect]) -> Optional[Item]:
     """
     Определяет, является ли строка началом пункта, и какой это вид/уровень.
-    Учитывает кейс «маркер отдельным спаном» (tight head) для корректного уровня/отступа.
+    Учитывает кейс «маркер отдельным спаном» (tight head) и символьные буллиты (Wingdings/стрелки/буква 'o').
     """
     t = line.text
 
     # Предпочтение: текстовый маркер (tight или обычный).
-    # Вычислим x0 по началу текста после маркера.
     x0_text, _ = _text_start_x_after_marker(line)
     if x0_text is not None:
         level = max(0, int(round((x0_text - work_left) / INDENT_STEP_PT)))
-        # определить вид маркера
         head_span = (line.spans[0].get("text", "") if line.spans else "")
         is_marker, numk = _first_span_is_marker(head_span)
         if is_marker:
@@ -296,7 +295,6 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
                 return Item(-1, line, level, "numbered", head_span, "rusalpha")
             if numk == "roman":
                 return Item(-1, line, level, "numbered", head_span, "roman")
-        # если первый спан не маркер, но вся строка начинается с tight head (редко)
         m_tight = RE_START_TIGHT.match(t)
         if m_tight:
             head = m_tight.group(0).lstrip()
@@ -309,14 +307,35 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
             elif head and re.match(r"[IVXLC]", head[0]):
                 return Item(-1, line, level, "numbered", head.strip(), "roman")
 
-    # 2) буллет-символ в начале строки (включая \uf0b7)
-    if t and t[0] in BULLET_CHARS:
+    # 1) Символьный первый спан: Wingdings/стрелки/и пр.
+    if line.spans:
+        head_txt = (line.spans[0].get("text") or "")
+        head_bb  = line.spans[0].get("bbox", [line.bbox.x0, 0, line.bbox.x0, 0])
+        head_x1  = float(head_bb[2])
+        head_sz  = float(line.spans[0].get("size", line.size or 12.0))
+        if len(head_txt) == 1 and head_txt in BULLET_CHARS_EXT and len(line.spans) >= 2:
+            next_bb = line.spans[1].get("bbox", [line.bbox.x0, 0, line.bbox.x0, 0])
+            gap = float(next_bb[0]) - head_x1
+            if gap >= 0.4 * head_sz:  # визуальный «пробел»
+                x0_text2 = float(next_bb[0])
+                level = max(0, int(round((x0_text2 - work_left)/INDENT_STEP_PT)))
+                return Item(-1, line, level, "bulleted", head_txt, "")
+        # 2) «o/O» как псевдо-буллит — только при большом визуальном зазоре
+        if head_txt in ("o","O") and len(line.spans) >= 2:
+            next_bb = line.spans[1].get("bbox", [line.bbox.x0, 0, line.bbox.x0, 0])
+            gap = float(next_bb[0]) - head_x1
+            if gap >= 0.8 * head_sz:  # построже, чтобы не ловить обычные слова
+                x0_text2 = float(next_bb[0])
+                level = max(0, int(round((x0_text2 - work_left)/INDENT_STEP_PT)))
+                return Item(-1, line, level, "bulleted", head_txt, "")
+
+    # 3) буллет-символ в начале строки (включая \uf0b7)
+    if t and t[0] in BULLET_CHARS_BASE:
         x0 = line.bbox.x0
         level = max(0, int(round((x0 - work_left) / INDENT_STEP_PT)))
         return Item(-1, line, level, "bulleted", t[0], "")
 
-    # 3) векторный маркер слева на той же строке — с дополнительными ограничениями
-    #    (только близко к началу текста, не дальше ~1 шага)
+    # 4) векторный маркер слева на той же строке — с ограничениями
     base_x0 = x0_text if x0_text is not None else line.bbox.x0
     best = None; best_dx = None
     for r in vector_markers:
@@ -404,7 +423,7 @@ def _cluster_items(items: List[Item]) -> List[FoundList]:
         cur.clear()
 
     MAX_DY_FACTOR = 2.0
-    LEFT_TOL = INDENT_TOL_PT + 0.6 * INDENT_STEP_PT  # чуть мягче
+    LEFT_TOL = INDENT_TOL_PT + 0.6 * INDENT_STEP_PT  # мягче
 
     for it in items:
         if not cur:
@@ -578,7 +597,6 @@ def check_lists(
                 s = it.line.text
                 head_is_dash = it.kind == "bulleted" and it.marker_text == EN_DASH
                 if head_is_dash and not RE_ONLY_ONE_SPACE_AFTER_DASH.match(s):
-                    # попробуем считать визуальный зазор как пробел
                     _, tight_ok = _text_start_x_after_marker(it.line)
                     if not tight_ok:
                         issues.append("После «–» должен быть ровно один пробел.")
