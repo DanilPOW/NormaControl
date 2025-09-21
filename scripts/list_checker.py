@@ -39,13 +39,23 @@ EXCLUDED = set("ёзйочьъы")
 ALLOWED_LETTERS = tuple(ch for ch in RUS_LETTERS if ch not in EXCLUDED)
 ALLOWED_STR = "".join(ALLOWED_LETTERS)
 
+# Набор глиф-буллетов (включая вордовский '')
+BULLETS = "•·●∙◦▪▫■□◆○◘◙❖⚫◦◾◼◻◽◧◉◍" + ""
+
 NBSP = "\u00A0"
 SPACE_CLS = rf"[ \t{NBSP}]"
 
-# Начало пункта: «–» + пробел; «1.»/«1)» + пробел; «а)» + пробел; «IV)» + пробел
+# Начало пункта:
+#  - глиф-буллет из BULLETS + 0/1 пробел (PDF часто без пробела)
+#  - «–» + ≥1 пробел
+#  - «1.)»/«1)» + ≥1 пробел
+#  - «а)» + ≥1 пробел
+#  - «IV)» + ≥1 пробел
 RE_START_SIMPLE = re.compile(
-    rf"^\s*(?:{re.escape(EN_DASH)}{SPACE_CLS}+|\d+[.)]{SPACE_CLS}+|"
-    rf"[{ALLOWED_STR}][.)]{SPACE_CLS}+|[IVXLC]+[.)]{SPACE_CLS}+)"
+    rf"^\s*(?:[{re.escape(BULLETS)}]{SPACE_CLS}{{0,1}}|"
+    rf"{re.escape(EN_DASH)}{SPACE_CLS}+|"
+    rf"\d+[.)]{SPACE_CLS}+|[{ALLOWED_STR}][.)]{SPACE_CLS}+|"
+    rf"[IVXLC]+[.)]{SPACE_CLS}+)"
 )
 
 RE_ONLY_ONE_SPACE_AFTER = re.compile(
@@ -76,7 +86,7 @@ class Item:
     line: Line
     level: int             # округление до шага 0.75 см от левого поля
     kind: str              # "bulleted" | "numbered"
-    marker_text: str       # "–", "1)", "а)" или "[vector]"
+    marker_text: str       # "–", "1)", "а)" или "[vector]" / глиф
     number_kind: str       # "digits" | "rusalpha" | "roman" | "" (bulleted)
 
 @dataclass
@@ -116,7 +126,7 @@ def _collect_text_lines(page: fitz.Page) -> List[Line]:
             size = sum(sizes)/len(sizes) if sizes else 0.0
             font = fonts[0] if fonts else ""
             out.append(Line(text=text, bbox=rect, size=size, font=font, spans=spans))
-    # Подснепать y, чтобы стабилизировать сортировку
+    # стабильная сортировка по подснеппленному Y
     y_snap = mm_to_pt(0.3)
     out.sort(key=lambda L: (round(L.bbox.y0 / y_snap)*y_snap, L.bbox.x0))
     return out
@@ -133,7 +143,7 @@ def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
         drawings = []
     for d in drawings:
         rect = d.get("rect") or d.get("bbox")
-        if not rect: 
+        if not rect:
             continue
         r = fitz.Rect(*map(float, rect))
         if r.width <= MARKER_MAX_W_PT and r.height <= MARKER_MAX_H_PT:
@@ -150,18 +160,17 @@ def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
             for ln in b.get("lines", []):
                 # середина строки (по Y) для контроля «на одной базовой»
                 span_bboxes = [s.get("bbox", [0,0,0,0]) for s in ln.get("spans", [])]
+                l_mid = None
                 if span_bboxes:
                     l_y0 = min(bb[1] for bb in span_bboxes)
                     l_y1 = max(bb[3] for bb in span_bboxes)
                     l_mid = (l_y0 + l_y1) / 2.0
-                else:
-                    l_mid = None
                 for sp in ln.get("spans", []):
                     sp_size = float(sp.get("size", 12.0))
                     for ch in sp.get("chars", []):
                         c = ch.get("c")
-                        # набор типичных буллет-символов
-                        if c not in "•·●∙◦▪▫■□◆●":
+                        # расширенный набор буллетов + вордовский ''
+                        if (c not in "•·●∙◦▪▫■□◆●○◘◙❖⚫") and (c != ""):
                             continue
                         x0, y0, x1, y1 = ch.get("bbox", (0,0,0,0))
                         r = fitz.Rect(x0, y0, x1, y1)
@@ -201,7 +210,7 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
     return out
 
 def _detect_align_justify(lines: List[Line], work_left: float, work_right: float) -> bool:
-    if len(lines) < 2: 
+    if len(lines) < 2:
         return True
     x1s = [ln.bbox.x1 for ln in lines[:-1]]  # последнюю строку не учитываем
     if not x1s:
@@ -212,7 +221,7 @@ def _detect_align_justify(lines: List[Line], work_left: float, work_right: float
     return (spread <= ALIGN_TOL_PT) and (ok_count >= max(1, int(ALIGN_FRACTION_OK * len(x1s))))
 
 def _line_spacing_check(lines: List[Line]):
-    if len(lines) < 2: 
+    if len(lines) < 2:
         return True, None
     y0s = [ln.bbox.y0 for ln in lines]
     dys = [y0s[i]-y0s[i-1] for i in range(1,len(y0s))]
@@ -232,6 +241,29 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     x0 = line.bbox.x0
     level = max(0, int(round((x0 - work_left) / INDENT_STEP_PT)))
 
+    # 0) быстрый кейс: глиф-буллет как первый символ, даже без пробела
+    t_ls = t.lstrip()
+    if t_ls and t_ls[0] in BULLETS:
+        return Item(-1, line, level, "bulleted", t_ls[0], "")
+
+    # 0.1) отдельный текстовый спан маркера слева (Word-табуляция)
+    if line.spans and len(line.spans) >= 2:
+        # самый левый короткий спан как потенциальный маркер
+        first_span = min(line.spans, key=lambda sp: sp.get("bbox", [0,0,0,0])[0])
+        fx0, fy0, fx1, fy1 = first_span.get("bbox", (0,0,0,0))
+        ftxt = (first_span.get("text") or "").strip()
+        # близость по X к началу текста всей строки
+        near = (x0 - fx1) >= 0 and (x0 - fx1) <= 0.6 * INDENT_STEP_PT
+        if near and 1 <= len(ftxt) <= 4:
+            if re.fullmatch(rf"\d+[.)]{SPACE_CLS}*", ftxt):
+                return Item(-1, line, level, "numbered", ftxt.strip(), "digits")
+            if re.fullmatch(rf"[{ALLOWED_STR}][.)]{SPACE_CLS}*", ftxt):
+                return Item(-1, line, level, "numbered", ftxt.strip(), "rusalpha")
+            if re.fullmatch(rf"[IVXLC]+[.)]{SPACE_CLS}*", ftxt):
+                return Item(-1, line, level, "numbered", ftxt.strip(), "roman")
+            if len(ftxt) == 1 and ftxt in BULLETS:
+                return Item(-1, line, level, "bulleted", ftxt, "")
+
     # 1) текстовый маркер/номер (по префиксу строки)
     m = RE_START_SIMPLE.match(t)
     if m:
@@ -249,13 +281,11 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     # 2) векторный/глиф-маркер слева на той же строке: заметное перекрытие по Y, левее начала текста
     best = None; best_dx = None
     for r in vector_markers:
-        # перекрытие по Y должно быть достаточно заметным
         if _y_overlap(r, line.bbox) / max(1.0, min(r.height, line.bbox.height)) < 0.4:
             continue
-        # слишком далеко вправо — уже не маркер этой строки
         if r.x1 > x0 + 0.6*INDENT_STEP_PT:
             continue
-        if r.x1 <= x0:  # левее начала текста — то, что нужно
+        if r.x1 <= x0:
             dx = x0 - r.x1
             if (best is None) or (dx < best_dx):
                 best, best_dx = r, dx
@@ -329,8 +359,8 @@ def _cluster_items(items: List[Item]) -> List[FoundList]:
             out.append(FoundList(cur[0].page_index0, cur.copy(), fitz.Rect(min(xs0), min(ys0), max(xs1), max(ys1))))
         cur.clear()
 
-    MAX_DY_FACTOR = 2.0
-    LEFT_TOL = INDENT_TOL_PT + 0.6 * INDENT_STEP_PT  # ужатый допуск
+    MAX_DY_FACTOR = 2.4
+    LEFT_TOL = INDENT_TOL_PT + 8.0  # мягче, чтобы не «резать» вордовские списки
 
     for it in items:
         if not cur:
@@ -380,21 +410,19 @@ def check_lists(
         if page_num < start_page:
             continue
 
-        # bound() учитывает crop и rotation, если есть
-        rect = page.bound()
+        rect = page.bound()  # учитывает crop/rotation
         work_left  = rect.x0 + LEFT_MARGIN_PT
         work_right = rect.x1 - RIGHT_MARGIN_PT
 
         # 1) строки
         lines = _collect_text_lines(page)
-        lines = _merge_bullet_lines(lines)  # простая склейка «маркер отдельно»
+        lines = _merge_bullet_lines(lines)
 
         # исключаем зоны (таблицы/подписи/фигуры и т.п.)
         if exclude_bboxes_by_page and page_num in exclude_bboxes_by_page:
             exb = [fitz.Rect(*b) for b in exclude_bboxes_by_page.get(page_num, [])]
             keep = []
             for ln in lines:
-                # быстрый предфильтр по Y
                 intersects = False
                 for bb in exb:
                     if bb.y1 < ln.bbox.y0 or bb.y0 > ln.bbox.y1:
