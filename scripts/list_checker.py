@@ -9,7 +9,7 @@ from collections import defaultdict
 
 # ===== DEBUG =====
 DEBUG_LISTS = True        # включить подробные логи по спискам
-DEBUG_PAGES = None        # например: {3,5,6} чтобы логировать только эти страницы (1-based)
+DEBUG_PAGES: Optional[set[int]] = None  # например: {3,5,6} — логировать только эти страницы (1-based)
 MAX_SPANS_TO_SHOW = 3     # сколько первых спанов показывать в логах строки
 # =================
 
@@ -69,7 +69,7 @@ RE_ONLY_ONE_SPACE_AFTER_DASH = re.compile(
 
 # Базовые буллеты (включая \uf0b7 — Word/Symbol)
 BULLET_CHARS_BASE = "•·●∙◦▪▫■□◆\uf0b7"
-# Расширенные символы-маркеры (Wingdings/стрелки и т.п.), добавим то, что встретилось: '', '►', '▸'
+# Расширенные символы-маркеры (Wingdings/стрелки и т.п.), добавим встретившееся: '', '►', '▸'
 BULLET_CHARS_EXT = set(BULLET_CHARS_BASE) | set("►▸▪▫■□◆")
 
 # Векторные маркеры (маленькие квадраты/кружки)
@@ -115,11 +115,13 @@ def _fmt_rect(r: fitz.Rect) -> str:
 def _span_head(line: "Line", k: int = MAX_SPANS_TO_SHOW) -> str:
     parts = []
     for i, sp in enumerate(line.spans[:k]):
-        t = (sp.get("text") or "").replace("\n"," ")
+        t = (sp.get("text") or "").replace("\n", " ")
         if len(t) > 16:
             t = t[:16] + "…"
-        bb = sp.get("bbox", [0,0,0,0])
-        parts.append(f"[{i] if False else i}] «{t}» {sp.get('font','?')} {float(sp.get('size',0)):.2f}pt x0={bb[0]:.2f}")
+        bb = sp.get("bbox", [0, 0, 0, 0])
+        parts.append(
+            f"[{i}] «{t}» {sp.get('font','?')} {float(sp.get('size',0)):.2f}pt x0={bb[0]:.2f}"
+        )
     if len(line.spans) > k:
         parts.append(f"(+{len(line.spans)-k} spans)")
     return " | ".join(parts)
@@ -700,6 +702,7 @@ def check_lists(
                 })
 
             # Лог и аннотации
+            n_lists += 0  # (счётчик уже увеличен выше)
             admin.append(f"[List][Стр. {page_num}] пунктов={len(fl.items)} | уровни~{sorted(set(i.level for i in fl.items))}")
             if issues:
                 error_pages.add(page_num)
