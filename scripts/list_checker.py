@@ -239,7 +239,9 @@ def _cluster_items(items: List[Item]) -> List[FoundList]:
     flush(); return out
 
 # ---------- Проверка списков ----------
-def check_lists(pdf_document: fitz.Document, *, annotate_pdf: bool = True, start_page: int = 1) -> Dict[str, object]:
+def check_lists(pdf_document: fitz.Document, *,
+                exclude_bboxes_by_page: Optional[Dict[int, List[Tuple[float,float,float,float]]]] = None,
+                annotate_pdf: bool = True, start_page: int = 1) -> Dict[str, object]:
     admin: List[str] = []; list_bboxes_by_page: Dict[int, List[Tuple[float,float,float,float]]] = defaultdict(list)
     error_pages = set(); n_lists = 0
     for pidx, page in enumerate(pdf_document):
