@@ -21,12 +21,12 @@ BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
 def mm_to_pt(mm: float) -> float: return mm * MM_TO_PT
 def pt_to_mm(pt: float) -> float: return pt / MM_TO_PT
 
-# Шаг уровня и допуски (ГОСТ-подобные)
+# Уровни и допуски
 INDENT_STEP_CM = 0.75
 INDENT_STEP_PT = INDENT_STEP_CM * CM_TO_PT
 INDENT_TOL_PT  = 4.0
 
-# Абзацный отступ для пунктов (требование: 1.25см)
+# Абзацный отступ для пунктов (ГОСТ: 1.25 см)
 PARAGRAPH_INDENT_CM = 1.25
 PARAGRAPH_INDENT_PT = PARAGRAPH_INDENT_CM * CM_TO_PT
 
@@ -43,24 +43,21 @@ EN_DASH = "–"
 RUS_LETTERS = "абвгдеёжзийклмнопрстуфхцчшщьыъэюя"
 EXCLUDED = set("ёзйочьъы")
 ALLOWED_LETTERS = tuple(ch for ch in RUS_LETTERS if ch not in EXCLUDED)
-ALLOWED_STR = "".join(ALLOWED_LETTERS)
+ALLOWED_STR = "".join(ALLOWED_LEТTERS)
 NBSP = "\u00A0"
 SPACE_CLS = rf"[ \t{NBSP}]"
 
-# Голова пункта (вариант со «слитным» написанием в одном спане)
+# Головы пункта
 RE_START_TIGHT = re.compile(
     rf"^\s*(?:{re.escape(EN_DASH)}|"
     rf"\d+[.)]|"
     rf"[{ALLOWED_STR}][.)]|"
     rf"[IVXLC]+[.)])"
 )
-
-# Голова пункта (с пробелом/nbsp после маркера)
 RE_START_SIMPLE = re.compile(
     rf"^\s*(?:{re.escape(EN_DASH)}{SPACE_CLS}+|\d+[.)]{SPACE_CLS}+|"
     rf"[{ALLOWED_STR}][.)]{SPACE_CLS}+|[IVXLC]+[.)]{SPACE_CLS}+)"
 )
-
 RE_ONLY_ONE_SPACE_AFTER = re.compile(
     rf"^\s*(?:\d+[.)]|[{ALLOWED_STR}][.)]|[IVXLC]+[.)]){SPACE_CLS}(?!{SPACE_CLS})"
 )
@@ -68,15 +65,15 @@ RE_ONLY_ONE_SPACE_AFTER_DASH = re.compile(
     rf"^\s*{re.escape(EN_DASH)}{SPACE_CLS}(?!{SPACE_CLS})"
 )
 
-# Символьные буллиты (в т.ч. Symbol/Wingdings)
-BULLET_CHARS = "•·●∙◦▪▫■□◆►▶▸▹➤➣➢➧➤➜➔➙➛➟➤"
+# Символьные буллиты
+BULLET_CHARS = "•·●∙◦▪▫■□◆►▶▸▹➤➣➢➧➜➔➙➛➟"
 PSEUDO_BULLET_CHARS = "oO"  # допускаем как буллит только при большом зазоре
 
 # Векторные маркеры (fallback)
 MARKER_MAX_W_PT = mm_to_pt(8.0)
 MARKER_MAX_H_PT = mm_to_pt(8.0)
 
-# Диагностика (подробные логи)
+# Диагностика
 DEBUG_DIAGNOSTICS = True
 
 # ==========================
@@ -89,13 +86,12 @@ class Line:
     size: float
     font: str
     spans: List[Dict]
-    # расширенные диагностические поля:
-    x0_text: float           # левый край контента ПОСЛЕ маркера (если есть)
-    x0_text_src: str         # "after_marker_char" | "next_span" | "line_bbox" | "tight_regex_fallback" | ""
-    head_text: str           # распознанная «голова» (строка-маркер)
+    x0_text: float           # левый край контента после маркера
+    x0_text_src: str         # источник x0_text
+    head_text: str           # распознанная «голова»
     head_kind: str           # "bulleted" | "numbered" | ""
     number_kind: str         # "digits" | "rusalpha" | "roman" | ""
-    tight_sep_ok: bool       # визуальный зазор между маркером и текстом «засчитан»
+    tight_sep_ok: bool       # визуальная щель «засчитана»
 
 @dataclass
 class Item:
@@ -113,7 +109,7 @@ class FoundList:
     bbox: fitz.Rect
 
 # ==========================
-# Вспомогательные функции
+# Вспомогательные
 # ==========================
 def _median(vals: List[float]) -> float:
     if not vals: return 0.0
@@ -131,14 +127,9 @@ def _rect_area_overlap(a: fitz.Rect, b: fitz.Rect) -> float:
     return 0.0
 
 # ==========================
-# Сбор текста + RAW для char-level
+# Сбор текста + RAW (char-level)
 # ==========================
 def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
-    """
-    Собирает линии текста (get_text('dict')) и сопоставляет им RAW-линии (get_text('rawdict')),
-    чтобы уметь вычислять x0 первого «контентного» символа ПОСЛЕ маркера внутри одного спана.
-    """
-    # 1) Собираем «визуальные» линии
     vis_lines: List[Line] = []
     d = page.get_text("dict")
     for b in d.get("blocks", []):
@@ -161,44 +152,31 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
             rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
             size = sum(sizes)/len(sizes) if sizes else 0.0
             font = fonts[0] if fonts else ""
-            # заполняем заглушками расширенные поля; позже дополнительно уточним
             vis_lines.append(Line(
-                text=text,
-                bbox=rect,
-                size=size,
-                font=font,
-                spans=spans,
-                x0_text=rect.x0,
-                x0_text_src="",
-                head_text="",
-                head_kind="",
-                number_kind="",
-                tight_sep_ok=False,
+                text=text, bbox=rect, size=size, font=font, spans=spans,
+                x0_text=rect.x0, x0_text_src="", head_text="", head_kind="",
+                number_kind="", tight_sep_ok=False
             ))
 
     if not vis_lines:
         return vis_lines
 
-    # 2) Собираем RAW линии (есть chars)
     raw = page.get_text("rawdict")
     raw_lines = []
     for b in raw.get("blocks", []):
         if b.get("type") != 0:
             continue
         for ln in b.get("lines", []):
-            # bbox для линии — по всем спанам
             xs, ys = [], []
             for sp in ln.get("spans", []):
                 bb = sp.get("bbox", [0,0,0,0])
                 xs += [bb[0], bb[2]]
                 ys += [bb[1], bb[3]]
             if xs:
-                raw_lines.append({
-                    "bbox": [min(xs), min(ys), max(xs), max(ys)],
-                    "spans": ln.get("spans", []),
-                })
+                raw_lines.append({"bbox": [min(xs), min(ys), max(xs), max(ys)],
+                                  "spans": ln.get("spans", [])})
 
-    # 3) Сопоставим «визуальную» линию ближайшей RAW-линии по максимальному перекрытию
+    # матчим vis_line с raw_line по максимуму перекрытия
     for L in vis_lines:
         best = None
         best_overlap = 0.0
@@ -206,24 +184,14 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
             rb = fitz.Rect(*map(float, rl["bbox"]))
             ov = _rect_area_overlap(L.bbox, rb)
             if ov > best_overlap:
-                best = rl
-                best_overlap = ov
+                best = rl; best_overlap = ov
 
-        # Теперь определим head и x0_text с учётом char-уровня
         head_text, head_kind, number_kind, tight_sep_ok = "", "", "", False
-        x0_text = L.bbox.x0
-        x0_text_src = "line_bbox"
+        x0_text = L.bbox.x0; x0_text_src = "line_bbox"
 
-        # 3.1 Попытка распознать «голову» по простому паттерну (с пробелом)
-        m = RE_START_SIMPLE.match(L.text)
-        if not m:
-            # 3.2 Попытка «плотной» головы (без пробела) — используется как запасной вариант
-            m = RE_START_TIGHT.match(L.text)
-
+        m = RE_START_SIMPLE.match(L.text) or RE_START_TIGHT.match(L.text)
         if m:
             head_text = m.group(0).lstrip()
-
-            # Классификация голова -> вид маркера
             if head_text.startswith(EN_DASH):
                 head_kind = "bulleted"; number_kind = ""
             elif head_text and head_text[0].isdigit():
@@ -232,97 +200,62 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                 head_kind = "numbered"; number_kind = "rusalpha"
             elif re.match(r"[IVXLC]", head_text[:1] or ""):
                 head_kind = "numbered"; number_kind = "roman"
-            else:
-                head_kind = ""; number_kind = ""
 
-            # 3.3 Пытаемся вычислить x0_text по char-уровню
             if best and best.get("spans"):
-                # считаем, что head находится в первом спане строки
                 sp0 = best["spans"][0]
                 chars = sp0.get("chars", [])
-                # нам нужно пройти символы head_text и добраться до первого НЕ-пробельного после него
                 i = 0
-                # пропускаем точный head_text (как последовательность символов)
                 for c in head_text:
                     if i < len(chars) and chars[i].get("c") == c:
                         i += 1
                     else:
                         break
-                # пропускаем пробелы/nbsp/таб
                 while i < len(chars) and chars[i].get("c") in (" ", NBSP, "\t"):
                     i += 1
                 if i < len(chars):
-                    # x0 первого содержательного символа после головы
                     bb = chars[i].get("bbox", [L.bbox.x0, L.bbox.y0, L.bbox.x1, L.bbox.y1])
-                    x0_text = float(bb[0])
-                    x0_text_src = "after_marker_char"
-
-                    # tight_sep_ok: есть ли визуальная щель между концом головы и контентом
-                    # сравниваем x0 текущего символа с правым краем предыдущего символа (если есть)
+                    x0_text = float(bb[0]); x0_text_src = "after_marker_char"
                     if i-1 >= 0:
                         prev_bb = chars[i-1].get("bbox", bb)
                         tight_sep_ok = (x0_text - float(prev_bb[2])) >= 0.2 * (L.size or 10.0)
                 else:
-                    # fallback — следующий спан, если он есть
                     if len(L.spans) >= 2:
-                        x0_text = float(L.spans[1].get("bbox", [L.bbox.x0])[0])
-                        x0_text_src = "next_span"
+                        x0_text = float(L.spans[1].get("bbox", [L.bbox.x0])[0]); x0_text_src = "next_span"
                     else:
-                        # остаётся bbox строки (хуже)
-                        x0_text = L.bbox.x0
-                        x0_text_src = "tight_regex_fallback"
+                        x0_text = L.bbox.x0; x0_text_src = "tight_regex_fallback"
             else:
-                # нет raw — fallback на следующий спан или bbox
                 if len(L.spans) >= 2:
-                    x0_text = float(L.spans[1].get("bbox", [L.bbox.x0])[0])
-                    x0_text_src = "next_span"
+                    x0_text = float(L.spans[1].get("bbox", [L.bbox.x0])[0]); x0_text_src = "next_span"
                 else:
-                    x0_text = L.bbox.x0
-                    x0_text_src = "tight_regex_fallback"
-
+                    x0_text = L.bbox.x0; x0_text_src = "tight_regex_fallback"
         else:
-            # Нет головы в тексте — возможно буллит в первом символе спана
+            # буллит первым символом
             if L.spans:
                 s0 = L.spans[0].get("text", "")
                 if s0:
                     ch0 = s0[0]
                     if ch0 in BULLET_CHARS:
-                        head_text = ch0
-                        head_kind = "bulleted"; number_kind = ""
-                        # зазор по буквам между буллитом и контентом в том же спане
+                        head_text = ch0; head_kind = "bulleted"; number_kind = ""
                         if best and best.get("spans"):
-                            sp0 = best["spans"][0]
-                            chars = sp0.get("chars", [])
-                            if chars:
-                                # найти первый символ после буллита
-                                if len(chars) >= 2:
-                                    # chars[0] — буллит, chars[1] — вероятно пробел/контент
-                                    j = 1
-                                    while j < len(chars) and chars[j].get("c") in (" ", NBSP, "\t"):
-                                        j += 1
-                                    if j < len(chars):
-                                        bb = chars[j].get("bbox", [L.bbox.x0, L.bbox.y0, L.bbox.x1, L.bbox.y1])
-                                        x0_text = float(bb[0]); x0_text_src = "after_marker_char"
-                                        prev_bb = chars[j-1].get("bbox", bb)
-                                        tight_sep_ok = (x0_text - float(prev_bb[2])) >= 0.4 * (L.size or 10.0)  # требуем побольше для буллита
-                                    else:
-                                        # нет контента после — fallback
-                                        x0_text = L.bbox.x0; x0_text_src = "line_bbox"
+                            sp0 = best["spans"][0]; chars = sp0.get("chars", [])
+                            if len(chars) >= 2:
+                                j = 1
+                                while j < len(chars) and chars[j].get("c") in (" ", NBSP, "\t"):
+                                    j += 1
+                                if j < len(chars):
+                                    bb = chars[j].get("bbox", [L.bbox.x0, L.bbox.y0, L.bbox.x1, L.bbox.y1])
+                                    x0_text = float(bb[0]); x0_text_src = "after_marker_char"
+                                    prev_bb = chars[j-1].get("bbox", bb)
+                                    tight_sep_ok = (x0_text - float(prev_bb[2])) >= 0.4 * (L.size or 10.0)
                                 else:
                                     x0_text = L.bbox.x0; x0_text_src = "line_bbox"
                         else:
                             if len(L.spans) >= 2:
-                                x0_text = float(L.spans[1].get("bbox", [L.bbox.x0])[0])
-                                x0_text_src = "next_span"
-                            else:
-                                x0_text = L.bbox.x0; x0_text_src = "line_bbox"
+                                x0_text = float(L.spans[1].get("bbox", [L.bbox.x0])[0]); x0_text_src = "next_span"
                     elif ch0 in PSEUDO_BULLET_CHARS:
-                        # псевдо-буллит — допускаем только при большом зазоре
-                        head_text = ch0
-                        head_kind = "bulleted"; number_kind = ""
+                        head_text = ch0; head_kind = "bulleted"; number_kind = ""
                         if best and best.get("spans"):
-                            sp0 = best["spans"][0]
-                            chars = sp0.get("chars", [])
+                            sp0 = best["spans"][0]; chars = sp0.get("chars", [])
                             if len(chars) >= 2:
                                 j = 1
                                 while j < len(chars) and chars[j].get("c") in (" ", NBSP, "\t"):
@@ -332,12 +265,7 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                                     x0_text = float(bb[0]); x0_text_src = "after_marker_char"
                                     prev_bb = chars[j-1].get("bbox", bb)
                                     tight_sep_ok = (x0_text - float(prev_bb[2])) >= 0.8 * (L.size or 10.0)
-                                else:
-                                    x0_text = L.bbox.x0; x0_text_src = "line_bbox"
-                        else:
-                            x0_text = L.bbox.x0; x0_text_src = "line_bbox"
 
-        # Записываем уточнённые поля обратно в Line
         L.x0_text = x0_text
         L.x0_text_src = x0_text_src
         L.head_text = head_text
@@ -345,7 +273,6 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
         L.number_kind = number_kind
         L.tight_sep_ok = tight_sep_ok
 
-    # Сортировка
     y_snap = mm_to_pt(0.3)
     vis_lines.sort(key=lambda L: (round(L.bbox.y0 / y_snap)*y_snap, L.bbox.x0))
     return vis_lines
@@ -389,11 +316,8 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
         t = cur.text.strip()
         if _SIMPLE_BULLET_ONLY.match(t) and (i + 1 < len(lines)):
             nxt = lines[i + 1]
-            # пересекаются по Y? (хотя бы частично)
             if _y_overlap(cur.bbox, nxt.bbox) >= 0.25 * max(1.0, min(cur.bbox.height, nxt.bbox.height)):
-                # текст не левее буллита
                 if nxt.bbox.x0 >= cur.bbox.x0 - 2.0:
-                    # склейка
                     merged_text = (t + " " + nxt.text.lstrip()).strip()
                     mx0 = min(cur.bbox.x0, nxt.bbox.x0)
                     my0 = min(cur.bbox.y0, nxt.bbox.y0)
@@ -426,14 +350,12 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     x0 = line.x0_text if line.x0_text_src else line.bbox.x0
     level = max(0, int(round((x0 - work_left) / INDENT_STEP_PT)))
 
-    # 1) Если в линии уже распознана «голова» (на уровне _collect_text_lines_with_raw)
     if line.head_kind:
         if line.head_kind == "bulleted":
             return Item(-1, line, level, "bulleted", line.head_text or EN_DASH, "")
         elif line.head_kind == "numbered":
             return Item(-1, line, level, "numbered", line.head_text.strip(), line.number_kind or "")
 
-    # 2) Попытка по regex (на случай если голова не была распознана выше)
     m = RE_START_SIMPLE.match(t) or RE_START_TIGHT.match(t)
     if m:
         head = m.group(0).lstrip()
@@ -446,16 +368,14 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
         elif re.match(r"[IVXLC]", head[:1] or ""):
             return Item(-1, line, level, "numbered", head.strip(), "roman")
 
-    # 3) Символьный буллит в начале спана
     if t and t[:1] in BULLET_CHARS:
         return Item(-1, line, level, "bulleted", t[:1], "")
 
-    # 4) Fallback: векторный маркер слева на той же строке
     best = None; best_dx = None
     for r in vector_markers:
         if _y_overlap(r, line.bbox) / max(1.0, min(r.height, line.bbox.height)) < 0.4:
             continue
-        if r.x1 > x0 + 1.1*INDENT_STEP_PT:  # чуть либеральнее
+        if r.x1 > x0 + 1.1*INDENT_STEP_PT:
             continue
         if r.x1 <= x0:
             dx = x0 - r.x1
@@ -463,7 +383,6 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
                 best, best_dx = r, dx
     if best is not None:
         return Item(-1, line, level, "bulleted", "[vector]", "")
-
     return None
 
 # ==========================
@@ -482,23 +401,18 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
         j = i + 1
         while j < len(lines):
             ln = lines[j]
-            # новая голова списка?
             if _classify_simple(ln, work_left, vector_markers):
                 break
-            # продолжение: тот же «столбец» и разумный шаг по Y
             same_col = abs((ln.x0_text if ln.x0_text_src else ln.bbox.x0) - (head.line.x0_text if head.line.x0_text_src else head.line.bbox.x0)) <= (INDENT_TOL_PT + 2.0)
             fs = head.line.size or 12.0
             step_ok = (ln.bbox.y0 - (tails[-1].bbox.y0 if tails else head.line.bbox.y0)) <= 2.2 * fs
             if same_col and step_ok:
-                tails.append(ln)
-                j += 1
+                tails.append(ln); j += 1
             else:
                 break
         if tails:
-            # склейка текста и bbox
             full_text = " ".join([RE_START_TIGHT.sub("", head.line.text, count=1).lstrip()] + [t.text.strip() for t in tails]).strip()
-            hb = head.line.bbox
-            tb = [t.bbox for t in tails]
+            hb = head.line.bbox; tb = [t.bbox for t in tails]
             bbox = fitz.Rect(
                 min([hb.x0] + [b.x0 for b in tb]),
                 min([hb.y0] + [b.y0 for b in tb]),
@@ -521,7 +435,7 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
     return items
 
 # ==========================
-# Кластеризация пунктов в списки
+# Кластеризация
 # ==========================
 def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
     if not items: 
@@ -545,10 +459,9 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
     if DEBUG_DIAGNOSTICS:
         admin.append(f"[Dbg] Clustering pre-check over {len(items)} items:")
 
-    for idx, it in enumerate(items):
+    for it in items:
         if not cur:
-            cur = [it]
-            continue
+            cur = [it]; continue
         prev = cur[-1]
         dy = it.line.bbox.y0 - prev.line.bbox.y0
         fs = _median([it.line.size, prev.line.size]) or 12.0
@@ -583,7 +496,7 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
 def _detect_align_justify(lines: List[Line], work_left: float, work_right: float) -> bool:
     if len(lines) < 2:
         return True
-    x1s = [ln.bbox.x1 for ln in lines[:-1]]  # последнюю строку игнорируем
+    x1s = [ln.bbox.x1 for ln in lines[:-1]]
     if not x1s:
         return True
     spread = max(x1s) - min(x1s)
@@ -602,21 +515,52 @@ def _line_spacing_check(lines: List[Line]):
     return (lo-1e-3 <= r <= hi+1e-3), r
 
 # ==========================
+# Применение exclude-зон
+# ==========================
+def _apply_excludes_to_lines(lines: List[Line], excludes: List[fitz.Rect]) -> List[Line]:
+    if not excludes:
+        return lines
+    kept = []
+    for ln in lines:
+        drop = False
+        for bb in excludes:
+            area = _rect_area_overlap(ln.bbox, bb)
+            if area / max(1.0, ln.bbox.get_area()) >= 0.30:
+                drop = True; break
+        if not drop:
+            kept.append(ln)
+    return kept
+
+def _apply_excludes_to_markers(markers: List[fitz.Rect], excludes: List[fitz.Rect]) -> List[fitz.Rect]:
+    if not excludes or not markers:
+        return markers
+    kept = []
+    for r in markers:
+        drop = False
+        for bb in excludes:
+            area = _rect_area_overlap(r, bb)
+            if area / max(1.0, r.get_area()) >= 0.30:
+                drop = True; break
+        if not drop:
+            kept.append(r)
+    return kept
+
+# ==========================
 # Основная проверка
 # ==========================
 def check_lists(
     pdf_document: fitz.Document,
     *,
+    exclude_bboxes_by_page: Optional[Dict[int, List[Tuple[float,float,float,float]]]] = None,
     annotate_pdf: bool = True,
     start_page: int = 1,
 ) -> Dict[str, object]:
     """
     Проверка списков в PDF:
-      - детекция пунктов (текстовые/символьные/векторные маркеры, в т.ч. маркер и текст в одном спане — по char-level);
+      - детекция пунктов (текстовые/символьные/векторные маркеры, включая случай «маркер и текст в одном спане» — по char-level);
       - сбор многострочных пунктов;
       - группировка в списки;
-      - валидации по требованиям (ГОСТ-подобные).
-    Возвращает: user_summary, admin_details, list_bboxes_by_page.
+      - валидации ГОСТ-подобных требований.
     """
     admin: List[str] = []
     list_bboxes_by_page: Dict[int, List[Tuple[float,float,float,float]]] = defaultdict(list)
@@ -632,12 +576,20 @@ def check_lists(
         work_left  = rect.x0 + LEFT_MARGIN_PT
         work_right = rect.x1 - RIGHT_MARGIN_PT
 
-        # 1) строки (с RAW привязкой) + склейка буллит-строка/текст-строка
+        # 1) строки (RAW-aware) + склейка
         lines = _collect_text_lines_with_raw(page)
         lines = _merge_bullet_lines(lines)
 
-        # 2) векторные маркеры (fallback)
+        # Применяем exclude зоны к строкам
+        excludes = []
+        if exclude_bboxes_by_page and page_num in exclude_bboxes_by_page:
+            excludes = [fitz.Rect(*b) for b in exclude_bboxes_by_page.get(page_num, [])]
+            lines = _apply_excludes_to_lines(lines, excludes)
+
+        # 2) векторные маркеры (fallback) + exclude
         vector_markers = _collect_vector_markers(page)
+        if excludes:
+            vector_markers = _apply_excludes_to_markers(vector_markers, excludes)
 
         # DEBUG: печать содержимого
         if DEBUG_DIAGNOSTICS:
@@ -661,7 +613,7 @@ def check_lists(
             for i, r in enumerate(vector_markers):
                 admin.append(f"    [vm#{i}] rect={r.x0:.2f},{r.y0:.2f}–{r.x1:.2f},{r.y1:.2f} wh=({r.width:.2f}×{r.height:.2f})")
 
-        # 3) классификация с учётом многострочности
+        # 3) классификация + многострочность
         candidates: List[Item] = _gather_multiline_items(lines, work_left, vector_markers)
         for it in candidates:
             it.page_index0 = pidx
@@ -674,16 +626,15 @@ def check_lists(
                     f"marker={it.marker_text}  text=«{(it.line.text[:80] + '…') if len(it.line.text)>80 else it.line.text}»"
                 )
 
-        # 4) группируем подряд в списки
+        # 4) группируем
         found = _cluster_items(candidates, admin)
 
-        # 5) проверки требований и аннотации
+        # 5) проверки и аннотации
         for fl in found:
             n_lists += 1
             list_bboxes_by_page[page_num].append((fl.bbox.x0, fl.bbox.y0, fl.bbox.x1, fl.bbox.y1))
 
             issues = []
-            # верхний уровень: буллет только EN DASH; нумерация: цифры/рус/рим
             top_kind = None
             top_number_kind = None
             for it in fl.items:
@@ -701,7 +652,6 @@ def check_lists(
                     if top_number_kind and it.number_kind and it.number_kind == top_number_kind:
                         issues.append(f"Ур.{it.level+1}: тип нумерации должен отличаться от уровня 1.")
 
-                # пробел после маркера (для EN DASH/номерных)
                 s = it.line.text
                 if it.kind == "bulleted" and it.marker_text == EN_DASH:
                     if not RE_ONLY_ONE_SPACE_AFTER_DASH.match(s) and not it.line.tight_sep_ok:
@@ -710,17 +660,15 @@ def check_lists(
                     if not RE_ONLY_ONE_SPACE_AFTER.match(s) and not it.line.tight_sep_ok:
                         issues.append("После номера должен быть ровно один пробел.")
 
-                # пункты с маленькой буквы
                 tail = RE_START_TIGHT.sub("", s, count=1).lstrip()
                 if tail[:1].isalpha() and tail[:1].isupper():
                     issues.append("Пункт списка должен начинаться со строчной буквы.")
 
-            # перед списком — строка с двоеточием и нет пустой строки
+            # до/после списка
             if fl.items:
                 all_lines_on_page = lines
                 head = fl.items[0].line
                 head_y0 = head.bbox.y0
-
                 prev = max((ln for ln in all_lines_on_page if ln.bbox.y1 <= head_y0), key=lambda L: L.bbox.y1, default=None)
                 if prev:
                     fs = max(10.0, head.size or 12.0)
@@ -732,7 +680,6 @@ def check_lists(
                 else:
                     issues.append("Не найдено предложение с двоеточием непосредственно перед списком.")
 
-                # после списка — нет пустой строки
                 tail_y1 = fl.items[-1].line.bbox.y1
                 nxt = min((ln for ln in all_lines_on_page if ln.bbox.y0 >= tail_y1), key=lambda L: L.bbox.y0, default=None)
                 if nxt:
@@ -751,7 +698,7 @@ def check_lists(
                 hi = LINE_SPACING_TARGET + LINE_SPACING_TOL
                 issues.append(f"Межстрочный интервал в списке должен быть 1.5 (получено {ratio:.2f}; допуск {lo:.2f}–{hi:.2f}).")
 
-            # абзацный отступ 1.25 см
+            # абзацный отступ 1.25 см (по x0_text)
             for it in fl.items:
                 x0_text = it.line.x0_text if it.line.x0_text_src else it.line.bbox.x0
                 dx = x0_text - work_left
@@ -798,10 +745,8 @@ def check_lists(
                     except Exception:
                         pass
 
-    # --- Пользовательская сводка ---
     user_summary = ("⚠️Проверка списков: обнаружены нарушения на стр. " + ", ".join(map(str, sorted(error_pages)))
                     ) if error_pages else "✅Проверка списков"
-
     admin_details = (f"[Lists] Найдено списков: {n_lists}"
                      + ("\n" + "\n".join(admin) if admin else ""))
 
