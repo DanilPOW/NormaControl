@@ -1,4 +1,4 @@
-# scripts/list_checker.py
+#scripts/list_checker.py
 
 from __future__ import annotations
 from dataclasses import dataclass
