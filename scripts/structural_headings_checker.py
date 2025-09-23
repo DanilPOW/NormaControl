@@ -172,7 +172,7 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
                         f"[StructHeadings][Стр. {page_num}] «{ln.text}» — заголовки должны располагаться на новой странице (первая строка)."
                     )
                     _add_annot(page, (ln.bbox.x0, ln.bbox.y0),
-                               "Заголовок должен быть первой строкой страницы")
+                               "Заголовок структурного элемента должен быть первой строкой страницы")
                 continue
 
             if _is_appendix_norm(norm):
@@ -259,7 +259,7 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
         if not centered_ok:
             issues_count += 1
             admin_lines.append(
-                (f"[StructHeadings][Стр. {page_num}] «{ln.text}» — заголовок не по центру рабочих полей. "
+                (f"[StructHeadings][Стр. {page_num}] «{ln.text}» — заголовок структурного элемента не по центру рабочих полей. "
                  f"left_air={metr['left_air']:.1f} pt, right_air={metr['right_air']:.1f} pt, |Δ|={metr['diff_air']:.1f} pt "
                  f"(допуск ±{CENTER_TOL_PT:.1f} pt).")
             )
@@ -269,7 +269,7 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
                 f"[StructHeadings][Стр. {page_num}] Подсказка: центр смещён на {shift_pt:+.1f} pt (~{shift_mm:+.1f} мм). "
                 "Проверьте отступы/табуляцию/контейнер."
             )
-            _add_annot(page, (ln.bbox.x0, ln.bbox.y0), "Заголовок должен быть выровнен по центру рабочих полей")
+            _add_annot(page, (ln.bbox.x0, ln.bbox.y0), "Заголовок структурного элемента должен быть выровнен по центру рабочих полей")
 
         # 4) шрифтовые требования
         font_issues = []
@@ -298,11 +298,11 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
                 "\n  - ".join(uniq)
             )
             _add_annot(page, (ln.bbox.x0, ln.bbox.y0),
-                       "Заголовок: проверьте шрифт (Times New Roman, 12–14 pt, без жирного и курсива)")
+                       "Заголовок структурного элемента: проверьте шрифт (Times New Roman, 12–14 pt, без жирного и курсива)")
 
     # --- Резюме ---
     if issues_count == 0 and ([nm for (nm,_,_,k) in found if k=="core"]) and not missing_core:
-        user_summary = "✅Проверка заголовков структурных элементов: нарушений не обнаружено"
+        user_summary = "✅Проверка заголовков структурных элементов"
     else:
         if not found:
             admin_lines.append("[StructHeadings] Не найдено ни одного заголовка из перечня (включая опциональные).")
