@@ -1,5 +1,5 @@
 # scripts/list_checker.py
-# -*- coding: utf-8 -*-
+
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
@@ -7,9 +7,7 @@ import re
 import fitz  # PyMuPDF
 from collections import defaultdict
 
-# ==========================
-# Константы и настройки
-# ==========================
+# Константы
 MM_TO_PT = 2.834646
 CM_TO_PT = 28.35
 
@@ -26,7 +24,6 @@ INDENT_STEP_CM = 0.75
 INDENT_STEP_PT = INDENT_STEP_CM * CM_TO_PT
 INDENT_TOL_PT  = 4.0
 
-# Абзацный отступ для пунктов (ГОСТ: 1.25 см)
 PARAGRAPH_INDENT_CM = 1.25
 PARAGRAPH_INDENT_PT = PARAGRAPH_INDENT_CM * CM_TO_PT
 
@@ -43,7 +40,7 @@ EN_DASH = "–"
 RUS_LETTERS = "абвгдеёжзийклмнопрстуфхцчшщьыъэюя"
 EXCLUDED = set("ёзйочьъы")
 ALLOWED_LETTERS = tuple(ch for ch in RUS_LETTERS if ch not in EXCLUDED)
-ALLOWED_STR = "".join(ALLOWED_LETTERS)
+ALLOWED_STR = "".join(ALLOWED_LEТТERS)
 NBSP = "\u00A0"
 SPACE_CLS = rf"[ \t{NBSP}]"
 
@@ -86,21 +83,21 @@ class Line:
     size: float
     font: str
     spans: List[Dict]
-    x0_text: float           # левый край контента после маркера
-    x0_text_src: str         # источник x0_text
-    head_text: str           # распознанная «голова»
-    head_kind: str           # "bulleted" | "numbered" | ""
-    number_kind: str         # "digits" | "rusalpha" | "roman" | ""
-    tight_sep_ok: bool       # визуальная щель «засчитана»
+    x0_text: float
+    x0_text_src: str
+    head_text: str
+    head_kind: str
+    number_kind: str
+    tight_sep_ok: bool
 
 @dataclass
 class Item:
     page_index0: int
     line: Line
     level: int
-    kind: str              # "bulleted" | "numbered"
+    kind: str
     marker_text: str
-    number_kind: str       # "digits" | "rusalpha" | "roman" | "" (bulleted)
+    number_kind: str
 
 @dataclass
 class FoundList:
@@ -176,7 +173,6 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                 raw_lines.append({"bbox": [min(xs), min(ys), max(xs), max(ys)],
                                   "spans": ln.get("spans", [])})
 
-    # матчим vis_line с raw_line по максимуму перекрытия
     for L in vis_lines:
         best = None
         best_overlap = 0.0
@@ -229,7 +225,6 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                 else:
                     x0_text = L.bbox.x0; x0_text_src = "tight_regex_fallback"
         else:
-            # буллит первым символом
             if L.spans:
                 s0 = L.spans[0].get("text", "")
                 if s0:
@@ -349,13 +344,11 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     t = line.text
     x0 = line.x0_text if line.x0_text_src else line.bbox.x0
     base = work_left + PARAGRAPH_INDENT_PT
-    # Уровень: «floor с допуском»
     delta = x0 - base
     level = max(0, int((delta + INDENT_TOL_PT) // INDENT_STEP_PT))
 
     if line.head_kind:
         if line.head_kind == "bulleted":
-            # нормализация маркера
             mt = (line.head_text or "").strip()
             if mt.startswith(EN_DASH):
                 mt = EN_DASH
@@ -400,23 +393,16 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
 # Сбор многострочных пунктов (простой режим)
 # ==========================
 def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers: List[fitz.Rect]) -> List[Item]:
-    """
-    Простой режим:
-      - Маркерная строка -> новый пункт (голова).
-      - Все подряд строки без маркера между двумя головами -> хвост текущего пункта.
-      - Следующая маркерная строка -> новый пункт того же списка.
-    """
     items: List[Item] = []
     current: Optional[Item] = None
     last_y1: Optional[float] = None
 
-    TAIL_DY_FACTOR = 3.0  # допуск для хвостов
+    TAIL_DY_FACTOR = 3.0
 
     for ln in lines:
         head = _classify_simple(ln, work_left, vector_markers)
 
         if head:
-            # вычищаем маркер из текста головы
             clean = RE_START_TIGHT.sub("", head.line.text, count=1).lstrip()
             head.line = Line(
                 text=clean,
@@ -432,7 +418,6 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
             last_y1 = current.line.bbox.y1
             continue
 
-        # не голова — возможно хвост последнего пункта
         if current is not None:
             fs = current.line.size or 12.0
             if last_y1 is None or (ln.bbox.y0 - last_y1) <= TAIL_DY_FACTOR * fs:
@@ -444,8 +429,6 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
                 )
                 current.line.spans += ln.spans
                 last_y1 = current.line.bbox.y1
-            else:
-                pass
 
     return items
 
@@ -478,7 +461,7 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
         if not cur:
             cur = [it]; continue
         prev = cur[-1]
-        dy = it.line.bbox.y0 - prev.line.bbox.y1   # от «низа» предыдущего пункта
+        dy = it.line.bbox.y0 - prev.line.bbox.y1
         fs = _median([it.line.size, prev.line.size]) or 12.0
         step_ok = (-0.2 * fs) <= dy <= (MAX_DY_FACTOR * fs)
 
@@ -487,17 +470,18 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
         left_diff = abs(x0_it - x0_prv)
         level_change = abs(it.level - prev.level)
         same_kind = (it.kind == prev.kind) and (it.number_kind == prev.number_kind)
-        left_ok = (left_diff <= LEFT_TOL) or (level_change in (0,1))
+        left_ok = (left_diff <= LEFT_TOL) or (level_change in (0, 1))  # <— ВОТ ЭТО ДОБАВЛЕНО
+        compatible = same_kind or (level_change in (0, 1))
 
         if DEBUG_DIAGNOSTICS:
             admin.append(
                 f"    pair y={prev.line.bbox.y1:.2f}->y0={it.line.bbox.y0:.2f}  "
                 f"dy={dy:.2f} step_ok={step_ok} | "
                 f"x0={x0_prv:.2f}->{x0_it:.2f} diff={left_diff:.2f} left_ok={left_ok} | "
-                f"kind={prev.kind}:{prev.number_kind}/{it.kind}:{it.number_kind} same={same_kind}"
+                f"kind={prev.kind}:{prev.number_kind}/{it.kind}:{it.number_kind} same={same_kind} compat={compatible}"
             )
 
-        if step_ok and left_ok and same_kind:
+        if step_ok and left_ok and compatible:
             cur.append(it)
         else:
             flush()
@@ -511,20 +495,43 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
 def _normalize_levels_in_list(fl: FoundList) -> None:
     if not fl.items:
         return
-    xs = []
-    for it in fl.items:
-        x0 = it.line.x0_text if it.line.x0_text_src else it.line.bbox.x0
-        xs.append(x0)
-    base = min(xs)
-    for it, x0 in zip(fl.items, xs):
-        delta = x0 - base
-        it.level = max(0, int((delta + INDENT_TOL_PT) // INDENT_STEP_PT))
+
+    def _x0(it: Item) -> float:
+        return it.line.x0_text if it.line.x0_text_src else it.line.bbox.x0
+
+    fl.items[0].level = 0
+
+    for i in range(1, len(fl.items)):
+        prev, cur = fl.items[i - 1], fl.items[i]
+        x_prev, x_cur = _x0(prev), _x0(cur)
+        dx = x_cur - x_prev
+
+        same_kind = (cur.kind == prev.kind) and (cur.number_kind == prev.number_kind)
+
+        if not same_kind:
+            if dx >= -INDENT_TOL_PT:
+                lvl = prev.level + 1
+            else:
+                lvl = max(0, prev.level - 1)
+        else:
+            if dx > (INDENT_STEP_PT * 0.5):
+                lvl = prev.level + 1
+            elif dx < -(INDENT_STEP_PT * 0.5):
+                lvl = max(0, prev.level - 1)
+            else:
+                lvl = prev.level
+
+        if lvl > prev.level + 1:
+            lvl = prev.level + 1
+        elif lvl < max(0, prev.level - 1):
+            lvl = max(0, prev.level - 1)
+
+        cur.level = lvl
 
 # ==========================
 # Выравнивание и межстрочник
 # ==========================
 def _detect_align_justify(lines: List[Line], work_left: float, work_right: float) -> bool:
-    # оставлено на будущее — в текущей версии не используется
     if len(lines) < 2:
         return True
     x1s = [ln.bbox.x1 for ln in lines[:-1]]
@@ -549,7 +556,6 @@ def _first_text_span_size(ln: Line) -> float:
     return ln.size or 12.0
 
 def _line_spacing_check(lines: List[Line]):
-    """Базовый расчёт (RAW): бейслайны span.origin[1] или верх bbox, нормировка на размер 1-го текстового спана."""
     if len(lines) < 2:
         return True, None
     y_refs = []
@@ -564,9 +570,6 @@ def _line_spacing_check(lines: List[Line]):
     lo, hi = LINE_SPACING_TARGET - LINE_SPACING_TOL, LINE_SPACING_TARGET + LINE_SPACING_TOL
     return (lo-1e-3 <= r <= hi+1e-3), r
 
-# ==========================
-# Применение exclude-зон
-# ==========================
 def _apply_excludes_to_lines(lines: List[Line], excludes: List[fitz.Rect]) -> List[Line]:
     if not excludes:
         return lines
@@ -595,9 +598,7 @@ def _apply_excludes_to_markers(markers: List[fitz.Rect], excludes: List[fitz.Rec
             kept.append(r)
     return kept
 
-# ==========================
 # Основная проверка
-# ==========================
 def check_lists(
     pdf_document: fitz.Document,
     *,
@@ -605,13 +606,6 @@ def check_lists(
     annotate_pdf: bool = True,
     start_page: int = 1,
 ) -> Dict[str, object]:
-    """
-    Проверка списков в PDF:
-      - детекция пунктов;
-      - сбор многострочных пунктов;
-      - группировка в списки;
-      - валидации ГОСТ-подобных требований.
-    """
     admin: List[str] = []
     list_bboxes_by_page: Dict[int, List[Tuple[float,float,float,float]]] = defaultdict(list)
     error_pages = set()
@@ -626,22 +620,18 @@ def check_lists(
         work_left  = rect.x0 + LEFT_MARGIN_PT
         work_right = rect.x1 - RIGHT_MARGIN_PT
 
-        # 1) строки (RAW-aware) + склейка
         lines = _collect_text_lines_with_raw(page)
         lines = _merge_bullet_lines(lines)
 
-        # Применяем exclude зоны к строкам
         excludes = []
         if exclude_bboxes_by_page and page_num in exclude_bboxes_by_page:
             excludes = [fitz.Rect(*b) for b in exclude_bboxes_by_page.get(page_num, [])]
             lines = _apply_excludes_to_lines(lines, excludes)
 
-        # 2) векторные маркеры (fallback) + exclude
         vector_markers = _collect_vector_markers(page)
         if excludes:
             vector_markers = _apply_excludes_to_markers(vector_markers, excludes)
 
-        # DEBUG: печать содержимого
         if DEBUG_DIAGNOSTICS:
             admin.append(f"[Dbg][p{page_num}] Lines after collect+merge: {len(lines)}")
             for idx, L in enumerate(lines):
@@ -663,7 +653,6 @@ def check_lists(
             for i, r in enumerate(vector_markers):
                 admin.append(f"    [vm#{i}] rect={r.x0:.2f},{r.y0:.2f}–{r.x1:.2f},{r.y1:.2f} wh=({r.width:.2f}×{r.height:.2f})")
 
-        # 3) классификация + многострочность
         candidates: List[Item] = _gather_multiline_items(lines, work_left, vector_markers)
         for it in candidates:
             it.page_index0 = pidx
@@ -676,10 +665,8 @@ def check_lists(
                     f"marker={it.marker_text}  text=«{(it.line.text[:80] + '…') if len(it.line.text)>80 else it.line.text}»"
                 )
 
-        # 4) группируем
         found = _cluster_items(candidates, admin)
 
-        # 5) нормализуем уровни + проверки и аннотации
         for fl in found:
             _normalize_levels_in_list(fl)
             n_lists += 1
@@ -703,18 +690,15 @@ def check_lists(
                     if top_number_kind and it.number_kind and it.number_kind == top_number_kind:
                         issues.append(f"Ур.{it.level+1}: тип нумерации должен отличаться от уровня 1.")
 
-                # проверка «один пробел после –» по head_text
                 if it.kind == "bulleted" and it.marker_text == EN_DASH:
                     head = it.line.head_text or ""
                     if not re.match(rf"^{re.escape(EN_DASH)}{SPACE_CLS}(?!{SPACE_CLS})", head) and not it.line.tight_sep_ok:
                         issues.append("После «–» должен быть ровно один пробел.")
 
-                # строчная буква
                 tail = RE_START_TIGHT.sub("", (it.line.head_text or "") + it.line.text, count=1).lstrip()
                 if tail[:1].isalpha() and tail[:1].isupper():
                     issues.append("Пункт списка должен начинаться со строчной буквы.")
 
-            # до/после списка
             if fl.items:
                 all_lines_on_page = lines
                 head = fl.items[0].line
@@ -738,13 +722,8 @@ def check_lists(
                     if gap2 > MAX_GAP_BEFORE_AFTER_FACTOR * fs2:
                         issues.append("После списка не должно быть пустой строки (интервал после = 0 pt).")
 
-            # выравнивание — отключено по требованию
-            # if not _detect_align_justify(...): issues.append("Список должен быть выровнен по ширине.")
-
-            # межстрочник: считаем raw, затем корректируем на -0.25
             block_lines = [it.line for it in fl.items]
 
-            # расширенная диагностика межстрочника + пробелов после тире
             if DEBUG_DIAGNOSTICS:
                 admin.append("[Dbg][spacing] pairs (prev->cur):")
                 y_refs = []
@@ -780,7 +759,7 @@ def check_lists(
 
             ok_raw, ratio_raw = _line_spacing_check(block_lines)
             if ratio_raw is not None:
-                ratio_adj = max(0.0, ratio_raw - 0.25)  # искусственная коррекция -0.25
+                ratio_adj = max(0.0, ratio_raw - 0.25)
                 if DEBUG_DIAGNOSTICS:
                     admin.append(f"[Dbg][spacing] raw={ratio_raw:.2f}  adjusted={ratio_adj:.2f} (raw-0.25) target=1.50±{LINE_SPACING_TOL:.2f}")
                 lo = LINE_SPACING_TARGET - LINE_SPACING_TOL
@@ -789,14 +768,12 @@ def check_lists(
                 if not ok_ls:
                     issues.append(f"Межстрочный интервал в списке должен быть 1.5 (получено {ratio_adj:.2f}; допуск {lo:.2f}–{hi:.2f}).")
 
-            # абзацный отступ 1.25 см (по x0_text)
             for it in fl.items:
                 x0_text = it.line.x0_text if it.line.x0_text_src else it.line.bbox.x0
                 dx = x0_text - work_left
                 if abs(dx - PARAGRAPH_INDENT_PT) > (INDENT_TOL_PT + 3.0):
                     issues.append("Каждый пункт списка должен иметь абзацный отступ 1.25 см.")
 
-            # пунктуация
             pure_texts = [RE_START_TIGHT.sub("", it.line.text, count=1).strip() for it in fl.items]
             for i, txt in enumerate(pure_texts):
                 last = (i == len(pure_texts)-1)
@@ -813,7 +790,6 @@ def check_lists(
                 if not last and re.search(r"\.\s+[А-ЯЁA-Z]", txt):
                     issues.append("Внутри пункта не допускаются новые предложения.")
 
-            # лог и аннотации
             admin.append(f"[List][Стр. {page_num}] пунктов={len(fl.items)} | уровни~{sorted(set(i.level for i in fl.items))}")
             if issues:
                 error_pages.add(page_num)
