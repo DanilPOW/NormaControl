@@ -15,7 +15,7 @@ CENTER_TOL_PT = 6.0
 EDGE_TOL_PT   = 4.0
 FONT_MIN_PT   = 12.0
 FONT_MAX_PT   = 14.0
-FONT_TOL_PT   = 0.1 
+FONT_TOL_PT   = 0.1
 
 def _size_for_check(x: float) -> float:
     # округляем в ту же точность, что и в сообщениях — до десятых
@@ -39,7 +39,7 @@ ALL_ALLOWED_OPTIONALS = {OPTIONAL_REFS, OPTIONAL_TERMS, OPTIONAL_ABBREV}
 # Обработка приложений
 APP_REGEX = re.compile(r"^приложение(?:\s+[0-9a-zа-я])?$", re.IGNORECASE)
 
-#Обьект для удобного харенения параметров строк
+# Объект для удобного хранения параметров строк
 @dataclass
 class TextLine:
     page_index0: int
@@ -47,7 +47,7 @@ class TextLine:
     bbox: fitz.Rect
     spans: List[dict]
 
-#Бежим по всему документу, текстовые блоки -> строки -> спаны
+# Бежим по всему документу, текстовые блоки -> строки -> спаны
 def _collect_text_lines(page: fitz.Page) -> List[TextLine]:
     lines: List[TextLine] = []
     td = page.get_text("dict")
@@ -71,6 +71,7 @@ def _collect_text_lines(page: fitz.Page) -> List[TextLine]:
     lines.sort(key=lambda L: (L.bbox.y0, L.bbox.x0))
     return lines
 
+#убрать точки, запятые в конце
 _norm_trailing_re = re.compile(r"[.;]+\s*$")
 
 def _normalize_for_match(s: str) -> str:
@@ -79,6 +80,7 @@ def _normalize_for_match(s: str) -> str:
     s = _norm_trailing_re.sub("", s)
     return s.lower()
 
+#проверка на приложение
 def _is_appendix_norm(norm: str) -> bool:
     return bool(APP_REGEX.match(norm))
 
@@ -90,6 +92,8 @@ def _is_all_caps_letters(original: str) -> bool:
             if not ch.isupper():
                 return False
     return has_letter
+
+
 
 def _font_base_name(font_name: str) -> str:
     if not font_name:
@@ -107,6 +111,8 @@ def _has_bold(font_name: str) -> bool:
 def _has_italic(font_name: str) -> bool:
     f = _font_base_name(font_name).lower()
     return ("italic" in f) or ("oblique" in f)
+
+
 
 def _is_centered_in_workarea(bbox: fitz.Rect, page: fitz.Page) -> Tuple[bool, Dict[str, float]]:
     work_left  = page.rect.x0 + LEFT_MARGIN_PT
@@ -187,7 +193,7 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
                                "Заголовки структурных элементов должны располагаться на новой странице")
                 continue
 
-    # --- Полнота core (обязательные) ---
+    # Каких обязательных заголовков нет 
     found_names_in_order = [nm for (nm, _, _, _) in found]
     missing_core = [nm for nm in REQUIRED_ORDER_CORE if nm not in found_names_in_order]
     if missing_core:
@@ -197,7 +203,7 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
         target_page_index = 1 if len(pdf_document) > 1 else 0
         _add_annot(pdf_document[target_page_index], (LEFT_MARGIN_PT, TOP_MARGIN_PT), msg)
 
-    # --- Порядок core ---
+    # Порядок  
     found_core = [(nm, p, ln) for (nm, p, ln, k) in found if k == "core"]
     if found_core:
         expected = REQUIRED_ORDER_CORE
@@ -208,7 +214,7 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
             admin_lines.append("[StructHeadings] Нарушен порядок обязательных заголовков (ожидается «Содержание → Введение → Заключение → Список использованных источников»).")
             admin_lines.append("  Индексы: " + ", ".join(map(str, idx_seq)))
 
-    # --- Порядок для опциональных (если присутствуют) ---
+    # Порядок для опциональных
     pos = {name: i for i, name in enumerate(found_names_in_order)}
     if OPTIONAL_REFS in pos and "содержание" in pos:
         if not (pos[OPTIONAL_REFS] < pos["содержание"]):
@@ -236,25 +242,25 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
                 issues_count += 1
                 admin_lines.append("[StructHeadings] Все «Приложение» должны идти ПОСЛЕ «Список использованных источников».")
 
-    # --- Детальные проверки каждого найденного заголовка (оригинал) ---
+    # Детальные проверки каждого найденного заголовка
     for (nm, page_num, ln, kind) in found:
         page = pdf_document[page_num - 1]
 
-        # 1) нет точки/";" в конце
+        #нет точки/";" в конце
         trailing_ok = not bool(_norm_trailing_re.search(ln.text))
         if not trailing_ok:
             issues_count += 1
             admin_lines.append(f"[StructHeadings][Стр. {page_num}] «{ln.text}» — недопустим символ в конце ('.' или ';').")
             _add_annot(page, (ln.bbox.x0, ln.bbox.y0), "Уберите точку/точку с запятой в конце заголовка")
 
-        # 2) все буквы заглавные
+        #все буквы заглавные
         all_caps_ok = _is_all_caps_letters(ln.text)
         if not all_caps_ok:
             issues_count += 1
             admin_lines.append(f"[StructHeadings][Стр. {page_num}] «{ln.text}» — все буквы в названии должны быть заглавными.")
             _add_annot(page, (ln.bbox.x0, ln.bbox.y0), "Все буквы в названии должны быть заглавными")
 
-        # 3) центрирование по рабочей области
+        #центрирование по рабочей области
         centered_ok, metr = _is_centered_in_workarea(ln.bbox, page)
         if not centered_ok:
             issues_count += 1
@@ -271,22 +277,23 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
             )
             _add_annot(page, (ln.bbox.x0, ln.bbox.y0), "Заголовок структурного элемента должен быть выровнен по центру рабочих полей")
 
-        # 4) шрифтовые требования
+        #шрифтовые требования 
         font_issues = []
         for sp in ln.spans:
             f = sp.get("font", "")
-            s_raw = float(sp.get("size", 0.0))          # <-- было: не объявлена переменная
-            s = _size_for_check(s_raw)                  # округление до десятых
+            s_raw = float(sp.get("size", 0.0))
+            s = _size_for_check(s_raw)  # округление до десятых
             if not _is_times_family(f):
                 font_issues.append(f"Не Times New Roman: {f}")
             if s < (FONT_MIN_PT - FONT_TOL_PT) or s > (FONT_MAX_PT + FONT_TOL_PT):
                 font_issues.append(
                     f"Размер {s:.1f} pt вне диапазона {FONT_MIN_PT:.0f}–{FONT_MAX_PT:.0f} pt (допуск ±{FONT_TOL_PT:.1f})"
                 )
-            if _has_bold(f):
-                font_issues.append("Жирное начертание недопустимо")
+            if not _has_bold(f):
+                font_issues.append("Заголовок должен быть жирным")
             if _has_italic(f):
                 font_issues.append("Курсив недопустим")
+
         if font_issues:
             issues_count += 1
             uniq, seen = [], set()
@@ -297,10 +304,11 @@ def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
                 f"[StructHeadings][Стр. {page_num}] «{ln.text}» — нарушения шрифтовых требований:\n  - " +
                 "\n  - ".join(uniq)
             )
-            _add_annot(page, (ln.bbox.x0, ln.bbox.y0),
-                       "Заголовок структурного элемента: проверьте шрифт (Times New Roman, 12–14 pt, без жирного и курсива)")
+            _add_annot(
+                page, (ln.bbox.x0, ln.bbox.y0),
+                "Заголовок структурного элемента: проверьте шрифт (Times New Roman, 12–14 pt, жирный, без курсива)"
+            )
 
-    # --- Резюме ---
     if issues_count == 0 and ([nm for (nm,_,_,k) in found if k=="core"]) and not missing_core:
         user_summary = "✅Проверка заголовков структурных элементов"
     else:
