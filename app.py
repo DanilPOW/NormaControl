@@ -203,7 +203,7 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
             pdf_input = gr.File(label="Выберите PDF", file_types=[".pdf"], type="filepath")
             check_btn = gr.Button("🔍 Проверить документ", variant="secondary", size="lg")
         with gr.Column():
-            pdf_output = gr.File(label="Стандартное скачивание", interactive=True)
+            pdf_output = gr.File(label="Стандартное скачивание", interactive=False)
             with gr.Row():
                 download_btn = gr.DownloadButton(
                     label="📥 Скачать проверенный документ",
