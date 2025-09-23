@@ -1,30 +1,27 @@
-# -*- coding: utf-8 -*-
 from dataclasses import dataclass
 from typing import List, Dict, Tuple
 import re
 import fitz  # PyMuPDF
 
-# --- Геометрия / поля ---
 MM_TO_PT = 2.8346456693
 CM_TO_PT = 28.35
-
 LEFT_MARGIN_PT   = 3.0 * CM_TO_PT
 RIGHT_MARGIN_PT  = 1.5 * CM_TO_PT
 TOP_MARGIN_PT    = 2.0 * CM_TO_PT
 BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
 
-# --- Толерансы ---
+# Допуски
 CENTER_TOL_PT = 6.0
 EDGE_TOL_PT   = 4.0
 FONT_MIN_PT   = 12.0
 FONT_MAX_PT   = 14.0
-FONT_TOL_PT   = 0.1  # <-- явный допуск для кегля
+FONT_TOL_PT   = 0.1 
 
 def _size_for_check(x: float) -> float:
     # округляем в ту же точность, что и в сообщениях — до десятых
     return round(float(x), 1)
 
-# --- Наборы заголовков ---
+# Набор обязательных заголовков
 REQUIRED_ORDER_CORE = [
     "содержание",
     "введение",
@@ -39,11 +36,10 @@ OPTIONAL_ABBREV = "перечень сокращений и обозначени
 ALL_ALLOWED_CORE = set(REQUIRED_ORDER_CORE)
 ALL_ALLOWED_OPTIONALS = {OPTIONAL_REFS, OPTIONAL_TERMS, OPTIONAL_ABBREV}
 
-# «приложение» (0..N) с однобуквенной/однозначной меткой
+# Обработка приложений
 APP_REGEX = re.compile(r"^приложение(?:\s+[0-9a-zа-я])?$", re.IGNORECASE)
 
-# --- Структуры/утилиты -------------------------------------------------------
-
+#Обьект для удобного харенения параметров строк
 @dataclass
 class TextLine:
     page_index0: int
@@ -51,6 +47,7 @@ class TextLine:
     bbox: fitz.Rect
     spans: List[dict]
 
+#Бежим по всему документу, текстовые блоки -> строки -> спаны
 def _collect_text_lines(page: fitz.Page) -> List[TextLine]:
     lines: List[TextLine] = []
     td = page.get_text("dict")
