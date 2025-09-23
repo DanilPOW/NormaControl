@@ -169,7 +169,6 @@ def process_pdf_file(pdf_path: str):
         f"{table_user}\n"
         f"{image_user}\n"
         f"{list_user}\n"   # ← ДОБАВЛЕНО
-        f"{body_user}\n"
         f"{struct_user}"
     )
 
@@ -181,7 +180,6 @@ def process_pdf_file(pdf_path: str):
         "\n\n[TableCheck]\n" + table_admin +
         "\n\n[ImageCheck]\n" + image_admin +
         "\n\n[ListCheck]\n" + list_admin +      # ← ДОБАВЛЕНО
-        "\n\n[BodyText]\n" + body_admin +
         "\n\n[StructHeadings]\n" + struct_admin
     )
     return (
