@@ -144,10 +144,10 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                     xs += [x0,x1]; ys += [y0,y1]
                     sizes.append(float(sp.get("size",0))); fonts.append(sp.get("font",""))
                     spans.append(sp); texts.append(t)
-            if not xs: 
+            if not xs:
                 continue
             text = "".join(texts).strip()
-            if not text: 
+            if not text:
                 continue
             rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
             size = sum(sizes)/len(sizes) if sizes else 0.0
@@ -290,7 +290,7 @@ def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
         drawings = []
     for d in drawings:
         rect = d.get("rect") or d.get("bbox")
-        if not rect: 
+        if not rect:
             continue
         r = fitz.Rect(*map(float, rect))
         if r.width <= MARKER_MAX_W_PT and r.height <= MARKER_MAX_H_PT:
@@ -387,81 +387,67 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     return None
 
 # ==========================
-# Сбор многострочных пунктов
+# Сбор многострочных пунктов (простой режим)
 # ==========================
 def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers: List[fitz.Rect]) -> List[Item]:
+    """
+    Простой режим:
+      - Маркерная строка -> новый пункт (голова).
+      - Все подряд строки без маркера между двумя головами -> хвост текущего пункта.
+      - Следующая маркерная строка -> новый пункт того же списка.
+    """
     items: List[Item] = []
-    i = 0
-    while i < len(lines):
-        head_line = lines[i]
-        head = _classify_simple(head_line, work_left, vector_markers)
-        if not head:
-            i += 1
+    current: Optional[Item] = None
+    last_y1: Optional[float] = None
+
+    # максимально допустимый вертикальный разрыв для хвоста относительно
+    # предыдущей строки пункта
+    TAIL_DY_FACTOR = 3.0
+
+    for ln in lines:
+        head = _classify_simple(ln, work_left, vector_markers)
+
+        if head:
+            # вычищаем маркер из текста головы
+            clean = RE_START_TIGHT.sub("", head.line.text, count=1).lstrip()
+            head.line = Line(
+                text=clean,
+                bbox=head.line.bbox,
+                size=head.line.size, font=head.line.font, spans=head.line.spans,
+                x0_text=(head.line.x0_text if head.line.x0_text_src else head.line.bbox.x0),
+                x0_text_src=head.line.x0_text_src or "line_bbox",
+                head_text=head.line.head_text, head_kind=head.line.head_kind,
+                number_kind=head.line.number_kind, tight_sep_ok=head.line.tight_sep_ok
+            )
+            items.append(head)
+            current = items[-1]
+            last_y1 = current.line.bbox.y1
             continue
-        tails = []
-        j = i + 1
-        while j < len(lines):
-            ln = lines[j]
-            if _classify_simple(ln, work_left, vector_markers):
-                break
-            x0_ln   = (ln.x0_text  if ln.x0_text_src  else ln.bbox.x0)
-            x0_head = (head.line.x0_text if head.line.x0_text_src else head.line.bbox.x0)
-            
-            fs = head.line.size or 12.0
-            dy = ln.bbox.y0 - (tails[-1].bbox.y0 if tails else head.line.bbox.y0)
-            step_ok = dy <= 2.3 * fs  # чуть мягче
-            
-            # 1) «обычное» продолжение — в той же колонке, что текст первой строки пункта
-            same_col = abs(x0_ln - x0_head) <= (INDENT_TOL_PT + 2.0)
-            
-            # 2) висячий отступ: продолжение может быть у абзацного отступа (work_left + 1.25 см)
-            # или вообще у самого левого поля (иногда так рвут PDF)
-            base_para = work_left + PARAGRAPH_INDENT_PT
-            near_para = abs(x0_ln - base_para) <= (INDENT_TOL_PT + 3.0)
-            near_left = abs(x0_ln - work_left) <= (INDENT_TOL_PT + 3.0)
-            
-            # 3) выглядит как продолжение фразы (а не новый пункт)
-            prev_text = RE_START_TIGHT.sub("", (tails[-1].text if tails else head.line.text), count=1).rstrip()
-            no_sentence_end = not re.search(r"[.;:]\s*$", prev_text)
-            starts_like_cont = re.match(r"^(?:[а-яёa-z]|и\b|а\b|но\b|или\b)", ln.text.strip(), re.IGNORECASE)
-            
-            looks_like_continuation = no_sentence_end and bool(starts_like_cont)
-            
-            tail_ok = step_ok and looks_like_continuation and (same_col or near_para or near_left)
-            
-            if tail_ok:
-                tails.append(ln); j += 1
+
+        # не голова — возможно хвост последнего пункта
+        if current is not None:
+            fs = current.line.size or 12.0
+            if last_y1 is None or (ln.bbox.y0 - last_y1) <= TAIL_DY_FACTOR * fs:
+                # присоединяем
+                current.line.text = (current.line.text.rstrip() + " " + ln.text.lstrip()).strip()
+                cb = current.line.bbox
+                current.line.bbox = fitz.Rect(
+                    min(cb.x0, ln.bbox.x0), min(cb.y0, ln.bbox.y0),
+                    max(cb.x1, ln.bbox.x1), max(cb.y1, ln.bbox.y1)
+                )
+                current.line.spans += ln.spans
+                last_y1 = current.line.bbox.y1
             else:
-                break
-        if tails:
-            full_text = " ".join([RE_START_TIGHT.sub("", head.line.text, count=1).lstrip()] + [t.text.strip() for t in tails]).strip()
-            hb = head.line.bbox; tb = [t.bbox for t in tails]
-            bbox = fitz.Rect(
-                min([hb.x0] + [b.x0 for b in tb]),
-                min([hb.y0] + [b.y0 for b in tb]),
-                max([hb.x1] + [b.x1 for b in tb]),
-                max([hb.y1] + [b.y1 for b in tb]),
-            )
-            head = Item(
-                head.page_index0,
-                Line(full_text, bbox, head.line.size, head.line.font, head.line.spans,
-                     x0_text=(head.line.x0_text if head.line.x0_text_src else head.line.bbox.x0),
-                     x0_text_src=head.line.x0_text_src or "line_bbox",
-                     head_text=head.line.head_text, head_kind=head.line.head_kind,
-                     number_kind=head.line.number_kind, tight_sep_ok=head.line.tight_sep_ok),
-                head.level, head.kind, head.marker_text, head.number_kind
-            )
-            i = j
-        else:
-            i += 1
-        items.append(head)
+                # слишком далеко — игнорируем как хвост в рамках простого режима
+                pass
+
     return items
 
 # ==========================
 # Кластеризация
 # ==========================
 def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
-    if not items: 
+    if not items:
         return []
     items = sorted(items, key=lambda it: (it.line.bbox.y0, it.line.bbox.x0))
     out: List[FoundList] = []
@@ -486,9 +472,11 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
         if not cur:
             cur = [it]; continue
         prev = cur[-1]
-        dy = it.line.bbox.y0 - prev.line.bbox.y0
+        # считаем от НИЗА предыдущего пункта — учитывает многострочные хвосты
+        dy = it.line.bbox.y0 - prev.line.bbox.y1
         fs = _median([it.line.size, prev.line.size]) or 12.0
-        step_ok = 0.1 <= dy <= (MAX_DY_FACTOR * fs)
+        # допускаем малое перекрытие и разумный зазор
+        step_ok = (-0.2 * fs) <= dy <= (MAX_DY_FACTOR * fs)
 
         x0_it  = it.line.x0_text if it.line.x0_text_src else it.line.bbox.x0
         x0_prv = prev.line.x0_text if prev.line.x0_text_src else prev.line.bbox.x0
@@ -499,7 +487,7 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
 
         if DEBUG_DIAGNOSTICS:
             admin.append(
-                f"    pair y={prev.line.bbox.y0:.2f}->{it.line.bbox.y0:.2f}  "
+                f"    pair y={prev.line.bbox.y1:.2f}->y0={it.line.bbox.y0:.2f}  "
                 f"dy={dy:.2f} step_ok={step_ok} | "
                 f"x0={x0_prv:.2f}->{x0_it:.2f} diff={left_diff:.2f} left_ok={left_ok} | "
                 f"kind={prev.kind}:{prev.number_kind}/{it.kind}:{it.number_kind} same={same_kind}"
