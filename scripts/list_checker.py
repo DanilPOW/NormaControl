@@ -822,16 +822,28 @@ def check_lists(
 
             # ===== КЛЮЧЕВЫЕ НОВЫЕ ПРОВЕРКИ =====
             for it in fl.items:
-                # 1) Абзацный отступ — до ЛЕВОГО края маркера
+                # берем левую границу маркера (если есть), иначе fallback на текст
                 marker_x0 = it.line.marker_x0
                 if marker_x0 is None:
-                    # мягкий фоллбек (если не удалось добыть bbox маркера)
                     marker_x0 = it.line.x0_text if it.line.x0_text_src else it.line.bbox.x0
+            
                 dx_marker = float(marker_x0) - work_left
+            
+                # норма для текущего уровня
+                required_indent_pt = PARAGRAPH_INDENT_PT + it.level * INDENT_STEP_PT
+            
                 if DEBUG_DIAGNOSTICS:
-                    admin.append(f"    [indent→marker] y0={it.line.bbox.y0:.2f} dx_marker={dx_marker:.2f}pt ({dx_marker/CM_TO_PT:.2f} см)")
-                if abs(dx_marker - PARAGRAPH_INDENT_PT) > (INDENT_TOL_PT + 3.0):
-                    issues.append("Каждый пункт списка должен иметь абзацный отступ 1.25 см (меряем до маркера).")
+                    admin.append(
+                        f"    [indent→marker] y0={it.line.bbox.y0:.2f} "
+                        f"dx_marker={dx_marker:.2f}pt ({dx_marker/CM_TO_PT:.2f} см), "
+                        f"required≈{required_indent_pt/CM_TO_PT:.2f} см"
+                    )
+            
+                if abs(dx_marker - required_indent_pt) > (INDENT_TOL_PT + 3.0):
+                    issues.append(
+                        f"Каждый пункт списка уровня {it.level+1} "
+                        f"должен иметь отступ {required_indent_pt/CM_TO_PT:.2f} см (меряем до маркера)."
+                    )
 
                 # 2) «Зазор после маркера» — не больше ширины одного пробела (±15%)
                 gap = _gap_after_marker(it.line)
