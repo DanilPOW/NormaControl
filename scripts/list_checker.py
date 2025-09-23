@@ -349,7 +349,7 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     t = line.text
     x0 = line.x0_text if line.x0_text_src else line.bbox.x0
     base = work_left + PARAGRAPH_INDENT_PT
-    # Уровень: «floor с допуском», чтобы мелкие сдвиги не давали уровень 1
+    # Уровень: «floor с допуском»
     delta = x0 - base
     level = max(0, int((delta + INDENT_TOL_PT) // INDENT_STEP_PT))
 
@@ -481,7 +481,7 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
         if not cur:
             cur = [it]; continue
         prev = cur[-1]
-        # считаем от НИЗА предыдущего пункта — учитывает многострочные хвосты
+        # считаем от низа предыдущего пункта — учитывает многострочные хвосты
         dy = it.line.bbox.y0 - prev.line.bbox.y1
         fs = _median([it.line.size, prev.line.size]) or 12.0
         # допускаем малое перекрытие и разумный зазор
@@ -541,8 +541,23 @@ def _detect_align_justify(lines: List[Line], work_left: float, work_right: float
     ok_count = sum(ra <= 8.0 for ra in right_air)
     return (spread <= ALIGN_TOL_PT) and (ok_count >= max(1, int(ALIGN_FRACTION_OK * len(x1s))))
 
+def _first_text_span_size(ln: Line) -> float:
+    """Размер первого «текстового» спана (без спана с тире), фолбэк — ln.size."""
+    if ln.spans:
+        for sp in ln.spans:
+            t = sp.get("text", "")
+            if t and t[0] not in (EN_DASH,):
+                try:
+                    v = float(sp.get("size", 0.0))
+                    if v > 0:
+                        return v
+                except Exception:
+                    pass
+    return ln.size or 12.0
+
 def _line_spacing_check(lines: List[Line]):
-    """Пытаемся использовать бейслайны (span.origin[1]); при их отсутствии — верх bbox."""
+    """Пытаемся использовать бейслайны (span.origin[1]); при их отсутствии — верх bbox.
+       Нормируем на размер первого текстового спана (без спана с тире)."""
     if len(lines) < 2:
         return True, None
     # собираем ссылки по высоте
@@ -554,7 +569,7 @@ def _line_spacing_check(lines: List[Line]):
         y_refs.append(float(yb) if yb is not None else float(ln.bbox.y0))
 
     dys = [y_refs[i] - y_refs[i-1] for i in range(1, len(y_refs))]
-    hs  = [ln.size or 12.0 for ln in lines]
+    hs  = [_first_text_span_size(ln) for ln in lines]
     r = _median(dys) / max(1e-3, _median(hs))
     lo, hi = LINE_SPACING_TARGET - LINE_SPACING_TOL, LINE_SPACING_TARGET + LINE_SPACING_TOL
     return (lo-1e-3 <= r <= hi+1e-3), r
@@ -698,15 +713,14 @@ def check_lists(
                     if top_number_kind and it.number_kind and it.number_kind == top_number_kind:
                         issues.append(f"Ур.{it.level+1}: тип нумерации должен отличаться от уровня 1.")
 
-                s = it.line.text
+                # === проверка «один пробел после –» по head_text ===
                 if it.kind == "bulleted" and it.marker_text == EN_DASH:
-                    if not RE_ONLY_ONE_SPACE_AFTER_DASH.match(s) and not it.line.tight_sep_ok:
+                    head = it.line.head_text or ""
+                    if not re.match(rf"^{re.escape(EN_DASH)}{SPACE_CLS}(?!{SPACE_CLS})", head) and not it.line.tight_sep_ok:
                         issues.append("После «–» должен быть ровно один пробел.")
-                if it.kind == "numbered":
-                    if not RE_ONLY_ONE_SPACE_AFTER.match(s) and not it.line.tight_sep_ok:
-                        issues.append("После номера должен быть ровно один пробел.")
 
-                tail = RE_START_TIGHT.sub("", s, count=1).lstrip()
+                # Строчная буква
+                tail = RE_START_TIGHT.sub("", (it.line.head_text or "") + it.line.text, count=1).lstrip()
                 if tail[:1].isalpha() and tail[:1].isupper():
                     issues.append("Пункт списка должен начинаться со строчной буквы.")
 
@@ -737,7 +751,7 @@ def check_lists(
             # выравнивание и межстрочник
             block_lines = [it.line for it in fl.items]
 
-            # Расширенная диагностика межстрочника
+            # Расширенная диагностика межстрочника + пробела после тире
             if DEBUG_DIAGNOSTICS:
                 admin.append("[Dbg][spacing] pairs (prev->cur):")
                 y_refs = []
@@ -750,11 +764,26 @@ def check_lists(
                     prev_ln, cur_ln = block_lines[i-1], block_lines[i]
                     dy_top = cur_ln.bbox.y0 - prev_ln.bbox.y0
                     dy_base = y_refs[i] - y_refs[i-1]
-                    sz = _median([prev_ln.size, cur_ln.size]) or 12.0
+                    sz = _median([_first_text_span_size(prev_ln), _first_text_span_size(cur_ln)]) or 12.0
                     admin.append(
                         f"    i={i-1}->{i}  dy_top={dy_top:.2f}  dy_base={dy_base:.2f}  "
                         f"size≈{sz:.2f}  r_top={dy_top/sz:.2f}  r_base={dy_base/sz:.2f}"
                     )
+                admin.append("[Dbg][dash/space] per item:")
+                for it in fl.items:
+                    if it.kind == "bulleted" and it.marker_text == EN_DASH:
+                        k = 0; kinds = []
+                        if it.line.spans:
+                            chars = it.line.spans[0].get("chars", [])
+                            i = 0
+                            while i < len(chars) and chars[i].get("c") == EN_DASH:
+                                i += 1
+                            while i < len(chars) and chars[i].get("c") in (" ", NBSP, "\t"):
+                                ch = chars[i].get("c")
+                                kinds.append("SP" if ch == " " else ("NBSP" if ch == NBSP else "TAB"))
+                                i += 1; k += 1
+                        text_span_size = _first_text_span_size(it.line)
+                        admin.append(f"    item@y0={it.line.bbox.y0:.2f}: spaces_after_dash={k} kinds={kinds} text_span_size={text_span_size}")
 
             if not _detect_align_justify(block_lines, work_left, work_right):
                 issues.append("Список должен быть выровнен по ширине.")
