@@ -41,7 +41,7 @@ EN_DASH = "–"
 RUS_LETTERS = "абвгдеёжзийклмнопрстуфхцчшщьыъэюя"
 EXCLUDED = set("ёзйочьъы")
 ALLOWED_LETTERS = tuple(ch for ch in RUS_LETTERS if ch not in EXCLUDED)
-ALLOWED_STR = "".join(ALLOWED_LEТTERS)  # noqa: E305
+ALLOWED_STR = "".join(ALLOWED_LETTERS)  # noqa: E305
 NBSP = "\u00A0"
 SPACE_CLS = rf"[ \t{NBSP}]"
 
