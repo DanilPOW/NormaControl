@@ -144,10 +144,10 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                     xs += [x0,x1]; ys += [y0,y1]
                     sizes.append(float(sp.get("size",0))); fonts.append(sp.get("font",""))
                     spans.append(sp); texts.append(t)
-            if not xs: 
+            if not xs:
                 continue
             text = "".join(texts).strip()
-            if not text: 
+            if not text:
                 continue
             rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
             size = sum(sizes)/len(sizes) if sizes else 0.0
@@ -290,7 +290,7 @@ def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
         drawings = []
     for d in drawings:
         rect = d.get("rect") or d.get("bbox")
-        if not rect: 
+        if not rect:
             continue
         r = fitz.Rect(*map(float, rect))
         if r.width <= MARKER_MAX_W_PT and r.height <= MARKER_MAX_H_PT:
@@ -355,9 +355,17 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
 
     if line.head_kind:
         if line.head_kind == "bulleted":
-            return Item(-1, line, level, "bulleted", line.head_text or EN_DASH, "")
+            # НОРМАЛИЗАЦИЯ МАРКЕРА
+            mt = (line.head_text or "").strip()
+            if mt.startswith(EN_DASH):
+                mt = EN_DASH
+            elif mt and mt[0] in BULLET_CHARS:
+                mt = mt[0]
+            else:
+                mt = EN_DASH
+            return Item(-1, line, level, "bulleted", mt, "")
         elif line.head_kind == "numbered":
-            return Item(-1, line, level, "numbered", line.head_text.strip(), line.number_kind or "")
+            return Item(-1, line, level, "numbered", (line.head_text or "").strip(), line.number_kind or "")
 
     m = RE_START_SIMPLE.match(t) or RE_START_TIGHT.match(t)
     if m:
@@ -448,7 +456,7 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
 # Кластеризация
 # ==========================
 def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
-    if not items: 
+    if not items:
         return []
     items = sorted(items, key=lambda it: (it.line.bbox.y0, it.line.bbox.x0))
     out: List[FoundList] = []
@@ -534,12 +542,20 @@ def _detect_align_justify(lines: List[Line], work_left: float, work_right: float
     return (spread <= ALIGN_TOL_PT) and (ok_count >= max(1, int(ALIGN_FRACTION_OK * len(x1s))))
 
 def _line_spacing_check(lines: List[Line]):
+    """Пытаемся использовать бейслайны (span.origin[1]); при их отсутствии — верх bbox."""
     if len(lines) < 2:
         return True, None
-    y0s = [ln.bbox.y0 for ln in lines]
-    dys = [y0s[i]-y0s[i-1] for i in range(1,len(y0s))]
+    # собираем ссылки по высоте
+    y_refs = []
+    for ln in lines:
+        yb = None
+        if ln.spans:
+            yb = ln.spans[0].get("origin", [None, None])[1]
+        y_refs.append(float(yb) if yb is not None else float(ln.bbox.y0))
+
+    dys = [y_refs[i] - y_refs[i-1] for i in range(1, len(y_refs))]
     hs  = [ln.size or 12.0 for ln in lines]
-    r = _median(dys)/_median(hs)
+    r = _median(dys) / max(1e-3, _median(hs))
     lo, hi = LINE_SPACING_TARGET - LINE_SPACING_TOL, LINE_SPACING_TARGET + LINE_SPACING_TOL
     return (lo-1e-3 <= r <= hi+1e-3), r
 
@@ -660,7 +676,7 @@ def check_lists(
 
         # 5) нормализуем уровни + проверки и аннотации
         for fl in found:
-            _normalize_levels_in_list(fl)  # <<< ключевой шаг
+            _normalize_levels_in_list(fl)
             n_lists += 1
             list_bboxes_by_page[page_num].append((fl.bbox.x0, fl.bbox.y0, fl.bbox.x1, fl.bbox.y1))
 
@@ -720,6 +736,26 @@ def check_lists(
 
             # выравнивание и межстрочник
             block_lines = [it.line for it in fl.items]
+
+            # Расширенная диагностика межстрочника
+            if DEBUG_DIAGNOSTICS:
+                admin.append("[Dbg][spacing] pairs (prev->cur):")
+                y_refs = []
+                for ln in block_lines:
+                    yb = None
+                    if ln.spans:
+                        yb = ln.spans[0].get("origin", [None, None])[1]
+                    y_refs.append(float(yb) if yb is not None else float(ln.bbox.y0))
+                for i in range(1, len(block_lines)):
+                    prev_ln, cur_ln = block_lines[i-1], block_lines[i]
+                    dy_top = cur_ln.bbox.y0 - prev_ln.bbox.y0
+                    dy_base = y_refs[i] - y_refs[i-1]
+                    sz = _median([prev_ln.size, cur_ln.size]) or 12.0
+                    admin.append(
+                        f"    i={i-1}->{i}  dy_top={dy_top:.2f}  dy_base={dy_base:.2f}  "
+                        f"size≈{sz:.2f}  r_top={dy_top/sz:.2f}  r_base={dy_base/sz:.2f}"
+                    )
+
             if not _detect_align_justify(block_lines, work_left, work_right):
                 issues.append("Список должен быть выровнен по ширине.")
             ok_ls, ratio = _line_spacing_check(block_lines)
