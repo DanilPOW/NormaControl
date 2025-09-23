@@ -348,7 +348,8 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
 def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rect]) -> Optional[Item]:
     t = line.text
     x0 = line.x0_text if line.x0_text_src else line.bbox.x0
-    level = max(0, int(round((x0 - work_left) / INDENT_STEP_PT)))
+    base = work_left + PARAGRAPH_INDENT_PT
+    level = max(0, int(round((x0 - base) / INDENT_STEP_PT)))
 
     if line.head_kind:
         if line.head_kind == "bulleted":
@@ -403,10 +404,32 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
             ln = lines[j]
             if _classify_simple(ln, work_left, vector_markers):
                 break
-            same_col = abs((ln.x0_text if ln.x0_text_src else ln.bbox.x0) - (head.line.x0_text if head.line.x0_text_src else head.line.bbox.x0)) <= (INDENT_TOL_PT + 2.0)
+            x0_ln   = (ln.x0_text  if ln.x0_text_src  else ln.bbox.x0)
+            x0_head = (head.line.x0_text if head.line.x0_text_src else head.line.bbox.x0)
+            
             fs = head.line.size or 12.0
-            step_ok = (ln.bbox.y0 - (tails[-1].bbox.y0 if tails else head.line.bbox.y0)) <= 2.2 * fs
-            if same_col and step_ok:
+            dy = ln.bbox.y0 - (tails[-1].bbox.y0 if tails else head.line.bbox.y0)
+            step_ok = dy <= 2.3 * fs  # чуть мягче
+            
+            # 1) «обычное» продолжение — в той же колонке, что текст первой строки пункта
+            same_col = abs(x0_ln - x0_head) <= (INDENT_TOL_PT + 2.0)
+            
+            # 2) висячий отступ: продолжение может быть у абзацного отступа (work_left + 1.25 см)
+            # или вообще у самого левого поля (иногда так рвут PDF)
+            base_para = work_left + PARAGRAPH_INDENT_PT
+            near_para = abs(x0_ln - base_para) <= (INDENT_TOL_PT + 3.0)
+            near_left = abs(x0_ln - work_left) <= (INDENT_TOL_PT + 3.0)
+            
+            # 3) выглядит как продолжение фразы (а не новый пункт)
+            prev_text = RE_START_TIGHT.sub("", (tails[-1].text if tails else head.line.text), count=1).rstrip()
+            no_sentence_end = not re.search(r"[.;:]\s*$", prev_text)
+            starts_like_cont = re.match(r"^(?:[а-яёa-z]|и\b|а\b|но\b|или\b)", ln.text.strip(), re.IGNORECASE)
+            
+            looks_like_continuation = no_sentence_end and bool(starts_like_cont)
+            
+            tail_ok = step_ok and looks_like_continuation and (same_col or near_para or near_left)
+            
+            if tail_ok:
                 tails.append(ln); j += 1
             else:
                 break
