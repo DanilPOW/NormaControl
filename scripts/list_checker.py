@@ -144,10 +144,10 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                     xs += [x0,x1]; ys += [y0,y1]
                     sizes.append(float(sp.get("size",0))); fonts.append(sp.get("font",""))
                     spans.append(sp); texts.append(t)
-            if not xs:
+            if not xs: 
                 continue
             text = "".join(texts).strip()
-            if not text:
+            if not text: 
                 continue
             rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
             size = sum(sizes)/len(sizes) if sizes else 0.0
@@ -290,7 +290,7 @@ def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
         drawings = []
     for d in drawings:
         rect = d.get("rect") or d.get("bbox")
-        if not rect:
+        if not rect: 
             continue
         r = fitz.Rect(*map(float, rect))
         if r.width <= MARKER_MAX_W_PT and r.height <= MARKER_MAX_H_PT:
@@ -349,7 +349,9 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     t = line.text
     x0 = line.x0_text if line.x0_text_src else line.bbox.x0
     base = work_left + PARAGRAPH_INDENT_PT
-    level = max(0, int(round((x0 - base) / INDENT_STEP_PT)))
+    # Уровень: «floor с допуском», чтобы мелкие сдвиги не давали уровень 1
+    delta = x0 - base
+    level = max(0, int((delta + INDENT_TOL_PT) // INDENT_STEP_PT))
 
     if line.head_kind:
         if line.head_kind == "bulleted":
@@ -400,8 +402,7 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
     current: Optional[Item] = None
     last_y1: Optional[float] = None
 
-    # максимально допустимый вертикальный разрыв для хвоста относительно
-    # предыдущей строки пункта
+    # максимально допустимый вертикальный разрыв для хвоста относительно предыдущей строки пункта
     TAIL_DY_FACTOR = 3.0
 
     for ln in lines:
@@ -447,7 +448,7 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
 # Кластеризация
 # ==========================
 def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
-    if not items:
+    if not items: 
         return []
     items = sorted(items, key=lambda it: (it.line.bbox.y0, it.line.bbox.x0))
     out: List[FoundList] = []
@@ -500,6 +501,23 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
             cur = [it]
     flush()
     return out
+
+# ==========================
+# Нормализация уровней внутри списка
+# ==========================
+def _normalize_levels_in_list(fl: FoundList) -> None:
+    """Сдвигаем базу уровней к минимальному x0_text в списке и
+    пересчитываем уровни по «floor с допуском»."""
+    if not fl.items:
+        return
+    xs = []
+    for it in fl.items:
+        x0 = it.line.x0_text if it.line.x0_text_src else it.line.bbox.x0
+        xs.append(x0)
+    base = min(xs)
+    for it, x0 in zip(fl.items, xs):
+        delta = x0 - base
+        it.level = max(0, int((delta + INDENT_TOL_PT) // INDENT_STEP_PT))
 
 # ==========================
 # Выравнивание и межстрочник
@@ -640,8 +658,9 @@ def check_lists(
         # 4) группируем
         found = _cluster_items(candidates, admin)
 
-        # 5) проверки и аннотации
+        # 5) нормализуем уровни + проверки и аннотации
         for fl in found:
+            _normalize_levels_in_list(fl)  # <<< ключевой шаг
             n_lists += 1
             list_bboxes_by_page[page_num].append((fl.bbox.x0, fl.bbox.y0, fl.bbox.x1, fl.bbox.y1))
 
