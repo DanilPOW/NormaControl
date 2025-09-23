@@ -1,5 +1,4 @@
-#scripts/list_checker.py
-
+# scripts/list_checker.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
@@ -7,7 +6,9 @@ import re
 import fitz  # PyMuPDF
 from collections import defaultdict
 
+# ==========================
 # Константы
+# ==========================
 MM_TO_PT = 2.834646
 CM_TO_PT = 28.35
 
@@ -25,7 +26,7 @@ INDENT_STEP_PT = INDENT_STEP_CM * CM_TO_PT
 INDENT_TOL_PT  = 4.0
 
 PARAGRAPH_INDENT_CM = 1.25
-PARAGRAPH_INDENT_PT = PARAGRAPH_INDENT_CM * CM_TO_PT
+PARAGRAPH_INDENT_PT = PARAGRAPH_INDENT_CM * CM_TO_PT  # 35.4375 pt
 
 LINE_SPACING_TARGET = 1.50
 LINE_SPACING_TOL    = 0.06
@@ -35,12 +36,12 @@ ALIGN_FRACTION_OK   = 0.70
 # «До/после = 0 pt» (эвристика)
 MAX_GAP_BEFORE_AFTER_FACTOR = 1.2  # * fontsize
 
-# Маркеры
+# Маркеры / пробелы
 EN_DASH = "–"
 RUS_LETTERS = "абвгдеёжзийклмнопрстуфхцчшщьыъэюя"
 EXCLUDED = set("ёзйочьъы")
 ALLOWED_LETTERS = tuple(ch for ch in RUS_LETTERS if ch not in EXCLUDED)
-ALLOWED_STR = "".join(ALLOWED_LETTERS)
+ALLOWED_STR = "".join(ALLOWED_LEТTERS)  # noqa: E305
 NBSP = "\u00A0"
 SPACE_CLS = rf"[ \t{NBSP}]"
 
@@ -54,12 +55,6 @@ RE_START_TIGHT = re.compile(
 RE_START_SIMPLE = re.compile(
     rf"^\s*(?:{re.escape(EN_DASH)}{SPACE_CLS}+|\d+[.)]{SPACE_CLS}+|"
     rf"[{ALLOWED_STR}][.)]{SPACE_CLS}+|[IVXLC]+[.)]{SPACE_CLS}+)"
-)
-RE_ONLY_ONE_SPACE_AFTER = re.compile(
-    rf"^\s*(?:\d+[.)]|[{ALLOWED_STR}][.)]|[IVXLC]+[.)]){SPACE_CLS}(?!{SPACE_CLS})"
-)
-RE_ONLY_ONE_SPACE_AFTER_DASH = re.compile(
-    rf"^\s*{re.escape(EN_DASH)}{SPACE_CLS}(?!{SPACE_CLS})"
 )
 
 # Символьные буллиты
@@ -89,6 +84,9 @@ class Line:
     head_kind: str
     number_kind: str
     tight_sep_ok: bool
+    # NEW: координаты маркера (левая/правая границы)
+    marker_x0: Optional[float] = None
+    marker_x1: Optional[float] = None
 
 @dataclass
 class Item:
@@ -185,6 +183,7 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
         head_text, head_kind, number_kind, tight_sep_ok = "", "", "", False
         x0_text = L.bbox.x0; x0_text_src = "line_bbox"
 
+        # --- маркер регуляркой
         m = RE_START_SIMPLE.match(L.text) or RE_START_TIGHT.match(L.text)
         if m:
             head_text = m.group(0).lstrip()
@@ -197,6 +196,8 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
             elif re.match(r"[IVXLC]", head_text[:1] or ""):
                 head_kind = "numbered"; number_kind = "roman"
 
+            marker_x0 = None
+            marker_x1 = None
             if best and best.get("spans"):
                 sp0 = best["spans"][0]
                 chars = sp0.get("chars", [])
@@ -206,6 +207,13 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                         i += 1
                     else:
                         break
+                # bbox маркера по первым i символам
+                if i > 0 and chars:
+                    first_bb = chars[0].get("bbox", [L.bbox.x0, L.bbox.y0, L.bbox.x1, L.bbox.y1])
+                    last_bb  = chars[i-1].get("bbox", first_bb)
+                    marker_x0 = float(first_bb[0])
+                    marker_x1 = float(last_bb[2])
+
                 while i < len(chars) and chars[i].get("c") in (" ", NBSP, "\t"):
                     i += 1
                 if i < len(chars):
@@ -224,7 +232,12 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                     x0_text = float(L.spans[1].get("bbox", [L.bbox.x0])[0]); x0_text_src = "next_span"
                 else:
                     x0_text = L.bbox.x0; x0_text_src = "tight_regex_fallback"
+
+            L.marker_x0 = marker_x0
+            L.marker_x1 = marker_x1
+
         else:
+            # --- маркер-символ
             if L.spans:
                 s0 = L.spans[0].get("text", "")
                 if s0:
@@ -233,6 +246,12 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                         head_text = ch0; head_kind = "bulleted"; number_kind = ""
                         if best and best.get("spans"):
                             sp0 = best["spans"][0]; chars = sp0.get("chars", [])
+                            if len(chars) >= 1:
+                                # bbox маркера-символа (первый символ)
+                                first_bb = chars[0].get("bbox", [L.bbox.x0, L.bbox.y0, L.bbox.x1, L.bbox.y1])
+                                L.marker_x0 = float(first_bb[0])
+                                L.marker_x1 = float(first_bb[2])
+                            # координата начала текста
                             if len(chars) >= 2:
                                 j = 1
                                 while j < len(chars) and chars[j].get("c") in (" ", NBSP, "\t"):
@@ -247,10 +266,15 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                         else:
                             if len(L.spans) >= 2:
                                 x0_text = float(L.spans[1].get("bbox", [L.bbox.x0])[0]); x0_text_src = "next_span"
+
                     elif ch0 in PSEUDO_BULLET_CHARS:
                         head_text = ch0; head_kind = "bulleted"; number_kind = ""
                         if best and best.get("spans"):
                             sp0 = best["spans"][0]; chars = sp0.get("chars", [])
+                            if len(chars) >= 1:
+                                first_bb = chars[0].get("bbox", [L.bbox.x0, L.bbox.y0, L.bbox.x1, L.bbox.y1])
+                                L.marker_x0 = float(first_bb[0])
+                                L.marker_x1 = float(first_bb[2])
                             if len(chars) >= 2:
                                 j = 1
                                 while j < len(chars) and chars[j].get("c") in (" ", NBSP, "\t"):
@@ -329,7 +353,9 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
                         head_text=cur.head_text or EN_DASH,
                         head_kind="bulleted",
                         number_kind="",
-                        tight_sep_ok=True
+                        tight_sep_ok=True,
+                        marker_x0=cur.marker_x0,
+                        marker_x1=cur.marker_x1
                     ))
                     i += 2
                     continue
@@ -375,6 +401,7 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     if t and t[:1] in BULLET_CHARS:
         return Item(-1, line, level, "bulleted", t[:1], "")
 
+    # fallback по векторным маркерам
     best = None; best_dx = None
     for r in vector_markers:
         if _y_overlap(r, line.bbox) / max(1.0, min(r.height, line.bbox.height)) < 0.4:
@@ -386,6 +413,9 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
             if (best is None) or (dx < best_dx):
                 best, best_dx = r, dx
     if best is not None:
+        # сохраним bbox маркера
+        line.marker_x0 = float(best.x0)
+        line.marker_x1 = float(best.x1)
         return Item(-1, line, level, "bulleted", "[vector]", "")
     return None
 
@@ -411,7 +441,8 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
                 x0_text=(head.line.x0_text if head.line.x0_text_src else head.line.bbox.x0),
                 x0_text_src=head.line.x0_text_src or "line_bbox",
                 head_text=head.line.head_text, head_kind=head.line.head_kind,
-                number_kind=head.line.number_kind, tight_sep_ok=head.line.tight_sep_ok
+                number_kind=head.line.number_kind, tight_sep_ok=head.line.tight_sep_ok,
+                marker_x0=head.line.marker_x0, marker_x1=head.line.marker_x1
             )
             items.append(head)
             current = items[-1]
@@ -470,7 +501,7 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
         left_diff = abs(x0_it - x0_prv)
         level_change = abs(it.level - prev.level)
         same_kind = (it.kind == prev.kind) and (it.number_kind == prev.number_kind)
-        left_ok = (left_diff <= LEFT_TOL) or (level_change in (0, 1))  # <— ВОТ ЭТО ДОБАВЛЕНО
+        left_ok = (left_diff <= LEFT_TOL) or (level_change in (0, 1))
         compatible = same_kind or (level_change in (0, 1))
 
         if DEBUG_DIAGNOSTICS:
@@ -598,7 +629,47 @@ def _apply_excludes_to_markers(markers: List[fitz.Rect], excludes: List[fitz.Rec
             kept.append(r)
     return kept
 
+# ==========================
+# Оценка ширины пробела и зазора после маркера
+# ==========================
+def _space_visual_width_estimate(line: Line) -> float:
+    """
+    Оцениваем визуальную ширину пробела для строки.
+    1) ищем реальный ' ' среди chars первого спана;
+    2) fallback: 0.33 * кегль (типично для TNR/Arial);
+    3) ограничиваем безопасными границами [3..10] pt.
+    """
+    fs = line.size or 12.0
+    w = None
+    if line.spans:
+        sp0 = line.spans[0]
+        chars = sp0.get("chars", [])
+        for ch in chars:
+            if ch.get("c") == " ":
+                bb = ch.get("bbox", None)
+                if bb:
+                    try:
+                        w = float(bb[2]) - float(bb[0])
+                        break
+                    except Exception:
+                        pass
+    if w is None:
+        w = 0.33 * fs
+    return max(3.0, min(10.0, w))
+
+def _gap_after_marker(line: Line) -> Optional[float]:
+    """
+    Возвращает визуальный зазор после маркера до начала текста.
+    Если marker_x1/x0_text недоступны — None.
+    """
+    if line.marker_x1 is None:
+        return None
+    x_text = line.x0_text if line.x0_text_src else line.bbox.x0
+    return float(x_text) - float(line.marker_x1)
+
+# ==========================
 # Основная проверка
+# ==========================
 def check_lists(
     pdf_document: fitz.Document,
     *,
@@ -690,15 +761,10 @@ def check_lists(
                     if top_number_kind and it.number_kind and it.number_kind == top_number_kind:
                         issues.append(f"Ур.{it.level+1}: тип нумерации должен отличаться от уровня 1.")
 
-                if it.kind == "bulleted" and it.marker_text == EN_DASH:
-                    head = it.line.head_text or ""
-                    if not re.match(rf"^{re.escape(EN_DASH)}{SPACE_CLS}(?!{SPACE_CLS})", head) and not it.line.tight_sep_ok:
-                        issues.append("После «–» должен быть ровно один пробел.")
+                # (Старую проверку "ровно один пробел после –" — убрали.)
+                # Теперь контролируем визуальный зазор после любого маркера.
 
-                tail = RE_START_TIGHT.sub("", (it.line.head_text or "") + it.line.text, count=1).lstrip()
-                if tail[:1].isalpha() and tail[:1].isupper():
-                    issues.append("Пункт списка должен начинаться со строчной буквы.")
-
+            # Контекст до/после списка
             if fl.items:
                 all_lines_on_page = lines
                 head = fl.items[0].line
@@ -742,20 +808,6 @@ def check_lists(
                         f"size≈{sz:.2f}  r_top={dy_top/sz:.2f}  r_base={dy_base/sz:.2f}"
                     )
                 admin.append("[Dbg][dash/space] per item:")
-                for it in fl.items:
-                    if it.kind == "bulleted" and it.marker_text == EN_DASH:
-                        k = 0; kinds = []
-                        if it.line.spans:
-                            chars = it.line.spans[0].get("chars", [])
-                            i = 0
-                            while i < len(chars) and chars[i].get("c") == EN_DASH:
-                                i += 1
-                            while i < len(chars) and chars[i].get("c") in (" ", NBSP, "\t"):
-                                ch = chars[i].get("c")
-                                kinds.append("SP" if ch == " " else ("NBSP" if ch == NBSP else "TAB"))
-                                i += 1; k += 1
-                        text_span_size = _first_text_span_size(it.line)
-                        admin.append(f"    item@y0={it.line.bbox.y0:.2f}: spaces_after_dash={k} kinds={kinds} text_span_size={text_span_size}")
 
             ok_raw, ratio_raw = _line_spacing_check(block_lines)
             if ratio_raw is not None:
@@ -768,12 +820,29 @@ def check_lists(
                 if not ok_ls:
                     issues.append(f"Межстрочный интервал в списке должен быть 1.5 (получено {ratio_adj:.2f}; допуск {lo:.2f}–{hi:.2f}).")
 
+            # ===== КЛЮЧЕВЫЕ НОВЫЕ ПРОВЕРКИ =====
             for it in fl.items:
-                x0_text = it.line.x0_text if it.line.x0_text_src else it.line.bbox.x0
-                dx = x0_text - work_left
-                if abs(dx - PARAGRAPH_INDENT_PT) > (INDENT_TOL_PT + 3.0):
-                    issues.append("Каждый пункт списка должен иметь абзацный отступ 1.25 см.")
+                # 1) Абзацный отступ — до ЛЕВОГО края маркера
+                marker_x0 = it.line.marker_x0
+                if marker_x0 is None:
+                    # мягкий фоллбек (если не удалось добыть bbox маркера)
+                    marker_x0 = it.line.x0_text if it.line.x0_text_src else it.line.bbox.x0
+                dx_marker = float(marker_x0) - work_left
+                if DEBUG_DIAGNOSTICS:
+                    admin.append(f"    [indent→marker] y0={it.line.bbox.y0:.2f} dx_marker={dx_marker:.2f}pt ({dx_marker/CM_TO_PT:.2f} см)")
+                if abs(dx_marker - PARAGRAPH_INDENT_PT) > (INDENT_TOL_PT + 3.0):
+                    issues.append("Каждый пункт списка должен иметь абзацный отступ 1.25 см (меряем до маркера).")
 
+                # 2) «Зазор после маркера» — не больше ширины одного пробела (±15%)
+                gap = _gap_after_marker(it.line)
+                if gap is not None:
+                    space_w = _space_visual_width_estimate(it.line)
+                    if DEBUG_DIAGNOSTICS:
+                        admin.append(f"    [after-marker-gap] y0={it.line.bbox.y0:.2f} gap={gap:.2f}pt  space≈{space_w:.2f}pt")
+                    if gap > space_w * 1.15:
+                        issues.append("После маркера слишком большой зазор: не больше одного пробела.")
+
+            # Пунктуация в концах пунктов
             pure_texts = [RE_START_TIGHT.sub("", it.line.text, count=1).strip() for it in fl.items]
             for i, txt in enumerate(pure_texts):
                 last = (i == len(pure_texts)-1)
