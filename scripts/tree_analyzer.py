@@ -3,12 +3,10 @@ import logging
 from datetime import datetime
 import os
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def plural_ru(n, forms):
-    # forms = ('нарушение', 'нарушения', 'нарушений')
     n = abs(n) % 100
     n1 = n % 10
     if 10 < n < 20:
@@ -20,7 +18,6 @@ def plural_ru(n, forms):
     return forms[2]
 
 class PDFQuoteAnalyzer:
-    """Класс для анализа кавычек в PDF документах"""
     
     def __init__(self):
         # Все неправильные кавычки — ASCII и типографские
@@ -34,7 +31,6 @@ class PDFQuoteAnalyzer:
             logger.info(f"   '{char}' (U+{ord(char):04X})")
     
     def _analyze_text_methods(self, methods, page_num):
-        """Анализ разных методов извлечения и выбор лучшего"""
         logger.info(f"🔍 СРАВНЕНИЕ МЕТОДОВ ИЗВЛЕЧЕНИЯ ТЕКСТА (стр. {page_num}):")
         
         best_method = None
@@ -167,7 +163,7 @@ class PDFQuoteAnalyzer:
                         logger.info(f"   Контекст: ...{violation['context']}...")
             
             logger.info(f"\n{'='*60}")
-            logger.info(f"📊 ИТОГОВАЯ СТАТИСТИКА")
+            logger.info(f" ИТОГОВАЯ СТАТИСТИКА")
             logger.info(f"{'='*60}")
             logger.info(f"Всего нарушений найдено: {total_violations}")
             logger.info(f"Всего аннотаций добавлено: {total_annotations}")
@@ -180,7 +176,7 @@ class PDFQuoteAnalyzer:
             }
             
         except Exception as e:
-            logger.error(f"❌ Ошибка при анализе документа: {str(e)}")
+            logger.error(f" Ошибка при анализе документа: {str(e)}")
             return {
                 'status': 'error',
                 'error_message': str(e),
@@ -240,16 +236,6 @@ class PDFQuoteAnalyzer:
         return "\n".join(logs)
     
     def process_pdf_file(self, input_path, output_dir="/tmp", basename=None):
-        """
-        Полная обработка PDF файла - открытие, анализ, сохранение
-        
-        Args:
-            input_path: Путь к входному PDF файлу
-            output_dir: Директория для сохранения результата
-            
-        Returns:
-            dict: Результаты обработки
-        """
         from .pdf_handler import PDFHandler
         
         try:
@@ -289,7 +275,7 @@ class PDFQuoteAnalyzer:
                 }
                 
         except Exception as e:
-            logger.error(f"❌ Ошибка при обработке PDF файла: {str(e)}")
+            logger.error(f"Ошибка при обработке PDF файла: {str(e)}")
             return {
                 'status': 'error',
                 'error_message': str(e),
