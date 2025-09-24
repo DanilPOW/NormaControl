@@ -90,3 +90,15 @@ PSEUDO_BULLET_CHARS = "oO"
 MARKER_MAX_W_PT = mm_to_pt(8.0)
 MARKER_MAX_H_PT = mm_to_pt(8.0)
 DEBUG_DIAGNOSTICS = True
+
+
+
+#рисунки
+CENTER_TOL_CM = 0.2
+MIN_W_MM      = 30      
+MIN_H_MM      = 15     
+MIN_AREA_PCT  = 0.30    
+THIN_LINE_MM  = 1.0     
+MARKER_MAX_W_MM = 8.0
+MARKER_MAX_H_MM = 8.0
+
