@@ -22,7 +22,7 @@ APP_REGEX = re.compile(r"^приложение(?:\s+[0-9a-zа-я])?$", re.IGNORE
 
 
 
-#Подписи таблиц
+#Таблицы
 LEFT_MARGIN_PT   = 3 * 28.35
 RIGHT_MARGIN_PT  = 1.5 * 28.35
 TOP_MARGIN_PT    = 2 * 28.35
@@ -31,3 +31,24 @@ TOLERANCE_PT     = 2
 CONT_NEAR_TOP_EXTRA_MM = 20.0 
 CONT_NEAR_TOP_EXTRA_PT = CONT_NEAR_TOP_EXTRA_MM * MM_TO_PT
 CONT_MAX_GAP_PT = 14.0
+
+
+
+#Подписи таблиц
+DASH_CHARS = "-–—"                 
+CAPTION_PREFIX = "Таблица"
+CONTINUATION_PREFIX = "Продолжение таблицы"
+CAPTION_NUMBER_RE = re.compile(
+    rf"^Таблица\s+"
+    rf"(?P<prefix>[A-Za-zА-Яа-я])?\.?\s*"           
+    rf"(?P<number>\d+(?:\.\d+)*)"                   
+    rf"\s–\s"                                       
+    rf"(?P<title>.+?)\s*$"
+)
+CONT_NUMBER_RE = re.compile(
+    r"^Продолжение\s+таблицы\s+"
+    r"(?P<prefix>[A-Za-zА-Яа-я])?\.?\s*"
+    r"(?P<number>\d+(?:\.\d+)*)\s*$",
+    re.IGNORECASE
+)
+BAD_PREFIX_RE = re.compile(r"^\s*таб(?:\.|\b)", re.IGNORECASE)
