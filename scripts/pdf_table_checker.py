@@ -7,8 +7,6 @@ import camelot
 import pdfplumber
 import fitz
 from const import *
-
-# === CAPTION: импортируем функции поиска и валидации подписи таблицы и продолжения
 from scripts.table_caption_checker import (
     find_table_caption,
     validate_table_caption,
@@ -16,22 +14,6 @@ from scripts.table_caption_checker import (
     find_table_continuation_caption,
     validate_table_continuation_caption,
 )
-
-# Константы макета страницы
-LEFT_MARGIN_PT   = 3 * 28.35
-RIGHT_MARGIN_PT  = 1.5 * 28.35
-TOP_MARGIN_PT    = 2 * 28.35
-BOTTOM_MARGIN_PT = 2 * 28.35
-TOLERANCE_PT     = 2
-MM_TO_PT = 2.8346456693  # 1 мм = 2.8346 pt
-
-# === НОВОЕ: эвристика «таблица — продолжение» по положению
-# 4 см от верхнего края страницы, при этом верхнее поле уже 2 см => дополнительно 2 см от границы области набора.
-CONT_NEAR_TOP_EXTRA_MM = 20.0  # 2 см сверх верхнего поля
-CONT_NEAR_TOP_EXTRA_PT = CONT_NEAR_TOP_EXTRA_MM * MM_TO_PT
-
-# Максимальный допустимый зазор между подписью «Продолжение таблицы …» и самой таблицей — 1 строка 12–14 pt
-CONT_MAX_GAP_PT = 14.0
 
 
 @dataclass
