@@ -87,8 +87,8 @@ RE_START_SIMPLE = re.compile(
 )
 BULLET_CHARS = "•·●∙◦▪▫■□◆►▶▸▹➤➣➢➧➜➔➙➛➟"
 PSEUDO_BULLET_CHARS = "oO"  
-MARKER_MAX_W_PT = mm_to_pt(8.0)
-MARKER_MAX_H_PT = mm_to_pt(8.0)
+MARKER_MAX_W_PT = 8.0 * MM_TO_PT
+MARKER_MAX_H_PT = 8.0 * MM_TO_PT
 DEBUG_DIAGNOSTICS = True
 
 
