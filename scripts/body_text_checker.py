@@ -6,41 +6,29 @@ import re
 import fitz  # PyMuPDF
 from collections import defaultdict
 
-# --- Геометрия страницы / поля ---
 MM_TO_PT = 2.8346456693
 CM_TO_PT = 28.35
-
 LEFT_MARGIN_PT   = 3.0 * CM_TO_PT
 RIGHT_MARGIN_PT  = 1.5 * CM_TO_PT
 TOP_MARGIN_PT    = 2.0 * CM_TO_PT
 BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
-
-# --- Нормы основного текста ---
-FIRST_LINE_INDENT_PT = 1.25 * CM_TO_PT         # 1.25 см
-FIRST_LINE_INDENT_TOL_PT = 4.0                 # допуск ~1.4 мм
-
-# Целевой межстрочный и допуск (настраиваемо):
+FIRST_LINE_INDENT_PT = 1.25 * CM_TO_PT
+FIRST_LINE_INDENT_TOL_PT = 4.0
 LINE_SPACING_TARGET = 1.50
-LINE_SPACING_TOL    = 0.06   # 0.06 => окно 1.44..1.56 ; поставь 0.02 для 1.48..1.52
-
+LINE_SPACING_TOL    = 0.06 
 FONT_MIN_PT = 12.0
 FONT_MAX_PT = 14.0
-
-# --- Критерии «это основной абзац» ---
-CLOSE_TO_EDGE_TOL_PT = 8.0                     # «рядом с полем»
-MIN_BODY_FILL_RATIO = 0.60                     # медианная ширина строк ≥ 60% рабочей области
-MIN_LEFT_COHESION_FRAC = 0.70                  # доля строк core в доминирующем левом кластере
-MAX_MED_RIGHT_AIR_PT = 24.0                    # допустимый медианный правый «воздух» ragged-right (~8 мм)
-
-# --- эвристики исключений по тексту ---
+CLOSE_TO_EDGE_TOL_PT = 8.0
+MIN_BODY_FILL_RATIO = 0.60
+MIN_LEFT_COHESION_FRAC = 0.70
+MAX_MED_RIGHT_AIR_PT = 24.0
 CAPTION_PREFIXES = ("рисунок", "таблица", "продолжение таблицы", "примечание", "схема")
 HEADING_WORDS = ("раздел", "глава", "введение", "заключение", "список литературы", "содержание", "приложение")
 LIST_BULLETS = ("•", "–", "-", "—", "∙", "·", "●")
-
-# --- лимиты логов ---
 MAX_REASONS_PER_PAR = 8
 MAX_FONT_ISSUES_PER_PAR = 8
 MAX_PER_LINE_DEBUG = 40  # сколько строк дампим в диагностику
+
 
 @dataclass
 class Line:
