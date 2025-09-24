@@ -52,3 +52,41 @@ CONT_NUMBER_RE = re.compile(
     re.IGNORECASE
 )
 BAD_PREFIX_RE = re.compile(r"^\s*таб(?:\.|\b)", re.IGNORECASE)
+
+
+
+
+#Списки
+CM_TO_PT = 28.35
+INDENT_STEP_CM = 0.75
+INDENT_STEP_PT = INDENT_STEP_CM * CM_TO_PT
+INDENT_TOL_PT  = 4.0
+PARAGRAPH_INDENT_CM = 1.25
+PARAGRAPH_INDENT_PT = PARAGRAPH_INDENT_CM * CM_TO_PT  # 35.4375 pt
+LINE_SPACING_TARGET = 1.50
+LINE_SPACING_TOL    = 0.06
+ALIGN_TOL_PT        = 4.0
+ALIGN_FRACTION_OK   = 0.70
+MAX_GAP_BEFORE_AFTER_FACTOR = 1.2  # * fontsize
+EN_DASH = "–"
+RUS_LETTERS = "абвгдеёжзийклмнопрстуфхцчшщьыъэюя"
+EXCLUDED = set("ёзйочьъы")
+ALLOWED_LETTERS = tuple(ch for ch in RUS_LETTERS if ch not in EXCLUDED)
+ALLOWED_STR = "".join(ALLOWED_LETTERS)  # noqa: E305
+NBSP = "\u00A0"
+SPACE_CLS = rf"[ \t{NBSP}]"
+RE_START_TIGHT = re.compile(
+    rf"^\s*(?:{re.escape(EN_DASH)}|"
+    rf"\d+[.)]|"
+    rf"[{ALLOWED_STR}][.)]|"
+    rf"[IVXLC]+[.)])"
+)
+RE_START_SIMPLE = re.compile(
+    rf"^\s*(?:{re.escape(EN_DASH)}{SPACE_CLS}+|\d+[.)]{SPACE_CLS}+|"
+    rf"[{ALLOWED_STR}][.)]{SPACE_CLS}+|[IVXLC]+[.)]{SPACE_CLS}+)"
+)
+BULLET_CHARS = "•·●∙◦▪▫■□◆►▶▸▹➤➣➢➧➜➔➙➛➟"
+PSEUDO_BULLET_CHARS = "oO"  
+MARKER_MAX_W_PT = mm_to_pt(8.0)
+MARKER_MAX_H_PT = mm_to_pt(8.0)
+DEBUG_DIAGNOSTICS = True
