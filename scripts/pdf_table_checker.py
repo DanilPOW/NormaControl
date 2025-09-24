@@ -3,10 +3,10 @@
 import time
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
-
 import camelot
 import pdfplumber
-import fitz  # PyMuPDF
+import fitz
+from const import *
 
 # === CAPTION: импортируем функции поиска и валидации подписи таблицы и продолжения
 from scripts.table_caption_checker import (
