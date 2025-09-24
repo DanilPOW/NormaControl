@@ -7,24 +7,17 @@ from typing import List, Optional, Tuple, Dict
 import re
 import fitz  # PyMuPDF
 
-# ======= Константы/единицы =======
 MM_TO_PT = 2.8346456693
 CM_TO_PT = 28.35
-
 LEFT_MARGIN_PT   = 3.0 * CM_TO_PT
 RIGHT_MARGIN_PT  = 1.5 * CM_TO_PT
 TOP_MARGIN_PT    = 2.0 * CM_TO_PT
 BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
-
-# ======= Регулярки/формат =======
 CAPTION_PREFIX = "Рисунок"
-
 BAD_PREFIX_RE = re.compile(
     r"^\s*(рис\.?|рис-|рисунок\.?|картинка|изображение|фото|figure|fig\.?)\b",
     re.IGNORECASE
 )
-
-# строго: Рисунок N – Название   (en dash и ровно по одному пробелу)
 CAPTION_NUMBER_RE = re.compile(
     r"^Рисунок\s+(?P<number>\d+(?:\.\d+)*)\s–\s(?P<title>.+?)\s*$"
 )
