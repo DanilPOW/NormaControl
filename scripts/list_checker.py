@@ -5,72 +5,13 @@ from typing import List, Dict, Tuple, Optional
 import re
 import fitz  # PyMuPDF
 from collections import defaultdict
+from const import *
 
-# ==========================
-# Константы
-# ==========================
-MM_TO_PT = 2.834646
-CM_TO_PT = 28.35
 
-LEFT_MARGIN_PT   = 3.0 * CM_TO_PT
-RIGHT_MARGIN_PT  = 1.5 * CM_TO_PT
-TOP_MARGIN_PT    = 2.0 * CM_TO_PT
-BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
+def mm_to_pt(mm: float) -> float: return mm * 2.8346456693
+def pt_to_mm(pt: float) -> float: return pt / 2.8346456693
 
-def mm_to_pt(mm: float) -> float: return mm * MM_TO_PT
-def pt_to_mm(pt: float) -> float: return pt / MM_TO_PT
 
-# Уровни и допуски
-INDENT_STEP_CM = 0.75
-INDENT_STEP_PT = INDENT_STEP_CM * CM_TO_PT
-INDENT_TOL_PT  = 4.0
-
-PARAGRAPH_INDENT_CM = 1.25
-PARAGRAPH_INDENT_PT = PARAGRAPH_INDENT_CM * CM_TO_PT  # 35.4375 pt
-
-LINE_SPACING_TARGET = 1.50
-LINE_SPACING_TOL    = 0.06
-ALIGN_TOL_PT        = 4.0
-ALIGN_FRACTION_OK   = 0.70
-
-# «До/после = 0 pt» (эвристика)
-MAX_GAP_BEFORE_AFTER_FACTOR = 1.2  # * fontsize
-
-# Маркеры / пробелы
-EN_DASH = "–"
-RUS_LETTERS = "абвгдеёжзийклмнопрстуфхцчшщьыъэюя"
-EXCLUDED = set("ёзйочьъы")
-ALLOWED_LETTERS = tuple(ch for ch in RUS_LETTERS if ch not in EXCLUDED)
-ALLOWED_STR = "".join(ALLOWED_LETTERS)  # noqa: E305
-NBSP = "\u00A0"
-SPACE_CLS = rf"[ \t{NBSP}]"
-
-# Головы пункта
-RE_START_TIGHT = re.compile(
-    rf"^\s*(?:{re.escape(EN_DASH)}|"
-    rf"\d+[.)]|"
-    rf"[{ALLOWED_STR}][.)]|"
-    rf"[IVXLC]+[.)])"
-)
-RE_START_SIMPLE = re.compile(
-    rf"^\s*(?:{re.escape(EN_DASH)}{SPACE_CLS}+|\d+[.)]{SPACE_CLS}+|"
-    rf"[{ALLOWED_STR}][.)]{SPACE_CLS}+|[IVXLC]+[.)]{SPACE_CLS}+)"
-)
-
-# Символьные буллиты
-BULLET_CHARS = "•·●∙◦▪▫■□◆►▶▸▹➤➣➢➧➜➔➙➛➟"
-PSEUDO_BULLET_CHARS = "oO"  # допускаем как буллит только при большом зазоре
-
-# Векторные маркеры (fallback)
-MARKER_MAX_W_PT = mm_to_pt(8.0)
-MARKER_MAX_H_PT = mm_to_pt(8.0)
-
-# Диагностика
-DEBUG_DIAGNOSTICS = True
-
-# ==========================
-# Структуры
-# ==========================
 @dataclass
 class Line:
     text: str
