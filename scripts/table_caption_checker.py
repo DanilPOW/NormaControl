@@ -3,7 +3,8 @@
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
 import re
-import fitz  # PyMuPDF
+import fitz
+from const import *
 
 # --- Константы макета / утилиты ---
 MM_TO_PT = 2.8346456693  # 1 мм = 2.8346 pt
