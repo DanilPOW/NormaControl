@@ -41,19 +41,20 @@ def _collect_text_lines(page: fitz.Page) -> List[TextLine]:
     lines.sort(key=lambda L: (L.bbox.y0, L.bbox.x0))
     return lines
 
-#убрать точки, запятые в конце
+# Убрать точки, запятые в конце
 _norm_trailing_re = re.compile(r"[.;]+\s*$")
 
+# Нормализуем строку
 def _normalize_for_match(s: str) -> str:
     s = (s or "").strip()
     s = re.sub(r"\s+", " ", s)
     s = _norm_trailing_re.sub("", s)
     return s.lower()
 
-#проверка на приложение
+# Проверка на приложение
 def _is_appendix_norm(norm: str) -> bool:
     return bool(APP_REGEX.match(norm))
-
+# Все буквы заглавные
 def _is_all_caps_letters(original: str) -> bool:
     has_letter = False
     for ch in original:
@@ -64,7 +65,7 @@ def _is_all_caps_letters(original: str) -> bool:
     return has_letter
 
 
-
+# Нормализация шрифта
 def _font_base_name(font_name: str) -> str:
     if not font_name:
         return ""
@@ -83,7 +84,7 @@ def _has_italic(font_name: str) -> bool:
     return ("italic" in f) or ("oblique" in f)
 
 
-
+# Центрирование заголовка
 def _is_centered_in_workarea(bbox: fitz.Rect, page: fitz.Page) -> Tuple[bool, Dict[str, float]]:
     work_left  = page.rect.x0 + LEFT_MARGIN_PT
     work_right = page.rect.x1 - RIGHT_MARGIN_PT
@@ -106,9 +107,7 @@ def _add_annot(page: fitz.Page, where: Tuple[float, float], msg: str):
         ann.update()
     except Exception:
         pass
-
-# --- Главная проверка --------------------------------------------------------
-
+#Главная проверка
 def check_structural_headings(pdf_document: fitz.Document) -> Dict[str, str]:
     admin_lines: List[str] = []
     issues_count = 0
