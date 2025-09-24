@@ -3,28 +3,11 @@ import fitz
 import math
 import re
 from scripts.figure_caption_checker import check_figure_captions
+from const import *
 
-CM_TO_PT = 28.35
-MM_TO_PT = 2.834646
 
-LEFT_MARGIN_PT   = 3.0 * CM_TO_PT
-RIGHT_MARGIN_PT  = 1.5 * CM_TO_PT
-TOP_MARGIN_PT    = 2.0 * CM_TO_PT
-BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
-
-# Допуск
-CENTER_TOL_CM = 0.2
-
-MIN_W_MM      = 30      
-MIN_H_MM      = 15     
-MIN_AREA_PCT  = 0.30    
-THIN_LINE_MM  = 1.0     
-
-MARKER_MAX_W_MM = 8.0
-MARKER_MAX_H_MM = 8.0
-
-def mm_to_pt(mm): return mm * MM_TO_PT
-def pt_to_mm(pt): return pt / MM_TO_PT
+def mm_to_pt(mm): return mm * 2.8346456693
+def pt_to_mm(pt): return pt / 2.8346456693
 
 def bbox_union(b1, b2):
     return (min(b1[0], b2[0]), min(b1[1], b2[1]),
