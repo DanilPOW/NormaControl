@@ -395,7 +395,7 @@ def _row_in_tables(row_bbox, table_bboxes, *, mode="intersect", iou_threshold=0.
 
 
 # --- Главная функция проверки ---
-def check_images(pdf_document, table_bboxes_by_page=None, debug_draw=False,
+def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_draw=False,
                  table_exclude_mode="intersect", iou_threshold=0.30, vector_annotate_center=True):
     """
     Основные проверки по графике:
