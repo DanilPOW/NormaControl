@@ -232,13 +232,6 @@ def bbox_intersection(a: BBox, b: BBox) -> Tuple[float, Optional[BBox]]:
     return bbox_area(inter), inter
 
 
-def bbox_iou(a: BBox, b: BBox) -> float:
-    inter_area, _ = bbox_intersection(a, b)
-    if inter_area <= 0:
-        return 0.0
-    return inter_area / (bbox_area(a) + bbox_area(b) - inter_area)
-
-
 def touches_cell_border(b: BBox, cell: BBox, tol: float = 1.2) -> bool:
     """Элемент касается границы ячейки (рамка/штрих)."""
     left   = abs(b.x0 - cell.x0) <= tol
@@ -260,21 +253,6 @@ def rect_reasonably_inside(elem: BBox, container: BBox, min_cover_ratio: float) 
     inter, _ = bbox_intersection(elem, container)
     ea = bbox_area(elem)
     return ea > 0 and (inter / ea) >= min_cover_ratio
-
-
-def camelot_to_fitz_bbox(cell, page_height: float) -> BBox:
-    """
-    Camelot/pdfminer: origin bottom-left (y↑)
-    PyMuPDF:          origin top-left    (y↓)
-    """
-    x0_c, y0_c, x1_c, y1_c = cell.x1, cell.y1, cell.x2, cell.y2
-    return BBox(
-        x0=float(x0_c),
-        y0=float(page_height - y1_c),  # верх
-        x1=float(x1_c),
-        y1=float(page_height - y0_c),  # низ
-    )
-
 
 def camelot_table_bbox_to_fitz(x0, y0, x1, y1, page_height: float) -> BBox:
     # входные coords из t._bbox — в miner-системе
