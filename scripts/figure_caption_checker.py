@@ -1,7 +1,5 @@
 # scripts/figure_caption_checker.py
-# -*- coding: utf-8 -*-
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
 import re
@@ -22,13 +20,6 @@ CAPTION_NUMBER_RE = re.compile(
     r"^Рисунок\s+(?P<number>\d+(?:\.\d+)*)\s–\s(?P<title>.+?)\s*$"
 )
 
-# Упоминание: «рисунок N» — слово строчными, N из ожидаемого
-def _mention_regex(expected_num_str: str) -> re.Pattern:
-    exp = re.escape(expected_num_str)
-    return re.compile(rf"\bрисунок\s+{exp}\b", re.IGNORECASE)
-
-# ======= Датаклассы =======
-
 @dataclass
 class BBox:
     x0: float
@@ -44,10 +35,10 @@ class BBox:
 
 @dataclass
 class CaptionDetected:
-    text: str             # нормализованный текст (тире приведены)
-    raw_text: str         # сырой текст как в PDF
+    text: str             
+    raw_text: str         
     bbox: BBox
-    lines: List[Dict]     # сырые строки: {'text','bbox','font','size','color'}
+    lines: List[Dict]     
     number_str: Optional[str]
     title: Optional[str]
     font: str
@@ -57,7 +48,7 @@ class CaptionDetected:
     no_first_line_indent: bool
     ends_with_dot: bool
     gap_from_figure_pt: float
-    gap_to_next_line_pt: Optional[float]  # дистанция до следующей строки после подписи
+    gap_to_next_line_pt: Optional[float]  
     line_spacing_ok: bool
 
 @dataclass
@@ -77,16 +68,17 @@ class FigureMention:
 class MentionValidation:
     ok: bool
     issues: List[str]
-    where: Optional[str]       # 'same_page_above' | 'prev_page' | None
+    where: Optional[str]
     found: Optional[FigureMention]
 
-# ======= Вспомогательные =======
+
+# Упоминание: «рисунок N» — слово строчными, N из ожидаемого
+def _mention_regex(expected_num_str: str) -> re.Pattern:
+    exp = re.escape(expected_num_str)
+    return re.compile(rf"\bрисунок\s+{exp}\b", re.IGNORECASE)
 
 def _line_spacing_ok(lines: List[Dict], tol_ratio=(0.85, 1.30)) -> bool:
-    """
-    Проверка «одинарного межстрочного интервала».
-    Берём средний dy между соседними строками и делим на средний size.
-    """
+    #Проверка одинарного межстрочного интервала.
     if len(lines) < 2:
         return True
     dy = []
@@ -103,10 +95,6 @@ def _line_spacing_ok(lines: List[Dict], tol_ratio=(0.85, 1.30)) -> bool:
     ratio = mean_dy / mean_sz
     lo, hi = tol_ratio
     return (lo <= ratio <= hi)
-
-def _normalize_dash(s: str) -> str:
-    # визуально не меняем пользователю, но для логов можем сводить — здесь оставим как есть
-    return s
 
 def _normalize_color_to_rgb255(c) -> Tuple[int, int, int]:
     def clamp255(x):
@@ -169,17 +157,14 @@ def _collect_text_lines(page: fitz.Page) -> List[Dict]:
             out.append({"text": text, "bbox": rect, "font": font, "size": size, "color": color, "spans": spans_out})
     out.sort(key=lambda L: (L["bbox"].y0, L["bbox"].x0))
     return out
-
+# проверка центрирования
 def _horiz_centered_ok(inner_left: float, inner_right: float, rect: fitz.Rect, tol_pt: float = 2.0) -> bool:
     inner_cx = (inner_left + inner_right) / 2.0
     rect_cx  = (rect.x0 + rect.x1) / 2.0
     return abs(inner_cx - rect_cx) <= tol_pt
 
 def _has_first_line_indent(cap_lines: List[Dict], indent_tol_pt: float = 6.0) -> bool:
-    """
-    Эвристика «красной строки»: если первая строка заметно больше смещена вправо,
-    чем последующие (для многострочных подписей).
-    """
+    # детекция красной строки у многострочных подписей
     if len(cap_lines) < 2:
         return False
     x0s = [float(L["bbox"].x0) for L in cap_lines]
@@ -187,25 +172,12 @@ def _has_first_line_indent(cap_lines: List[Dict], indent_tol_pt: float = 6.0) ->
     x0_rest_min = min(x0s[1:])
     return (x0_first - x0_rest_min) >= indent_tol_pt
 
-def _lines_between(page: fitz.Page, upper: fitz.Rect, lower: fitz.Rect) -> List[Dict]:
-    """Строки между двумя прямоугольниками по Y (upper над lower)."""
-    lines = _collect_text_lines(page)
-    y_top = upper.y1 + 0.5
-    y_bot = lower.y0 - 0.5
-    out = []
-    for L in lines:
-        if y_top <= L["bbox"].y1 <= y_bot:
-            out.append(L)
-    return out
-
-# ======= Поиск подписи под рисунком =======
-
+#поиск подписи под рисунком
 def find_figure_caption(
     page: fitz.Page,
     fig_rect: BBox,
     *,
     search_band_mm: float = 25.0,
-    require_prefix: str = CAPTION_PREFIX,
 ) -> Optional[CaptionDetected]:
     """
     Ищем подпись СРАЗУ ПОД рисунком в вертикальной «полосе» search_band_mm.
@@ -263,20 +235,17 @@ def find_figure_caption(
     # «красная строка» (эвристика по многострочной подписи)
     first_line_indent = _has_first_line_indent(cap_lines, indent_tol_pt=6.0)
 
-    # строки между рисунком и подписью (не допускаются)
-    between = _lines_between(page, fitz.Rect(fig_rect.x0, fig_rect.y0, fig_rect.x1, fig_rect.y1), cap_bbox)
     # зазор до подписи
     gap_to_cap_pt = cap_bbox.y0 - fig_rect.y1
 
     # следующая строка ПОСЛЕ подписи — чтобы проверить пустую строку после
-    all_lines = _collect_text_lines(page)
+    all_lines = lines
     after = [L for L in all_lines if L["bbox"].y0 >= (cap_bbox.y1 + 0.1)]
     after.sort(key=lambda L: (L["bbox"].y0, L["bbox"].x0))
     gap_after_pt = (after[0]["bbox"].y0 - cap_bbox.y1) if after else None
 
     # текст
     raw_text = " ".join(L["text"] for L in cap_lines).strip()
-    norm_text = _normalize_dash(raw_text)
 
     m = CAPTION_NUMBER_RE.match(raw_text)
     if m:
@@ -294,7 +263,7 @@ def find_figure_caption(
     line_spacing_ok = _line_spacing_ok(cap_lines)
 
     return CaptionDetected(
-        text=norm_text,
+        text=raw_text,
         raw_text=raw_text,
         bbox=BBox(cap_bbox.x0, cap_bbox.y0, cap_bbox.x1, cap_bbox.y1),
         lines=cap_lines,
@@ -311,7 +280,7 @@ def find_figure_caption(
         line_spacing_ok=line_spacing_ok,
     )
 
-# ======= Валидация подписи =======
+# Валидация подписи
 
 def _is_times_family(font_name: str) -> bool:
     if not font_name:
@@ -376,7 +345,6 @@ def validate_figure_caption(
         issues.append(f"Цвет подписи не чёрный: RGB{cap.rgb}.")
 
     # 6) Зазор между рисунком и подписью — не должно быть «пустой строки»
-    # используем порог как в таблицах: > ~0.6em считаем лишней пустой строкой
     allowed_gap_pt = 1.5 * max(12.0, min(14.0, cap.size))
     if cap.gap_from_figure_pt > allowed_gap_pt + 0.1:
         issues.append("Между рисунком и подписью не должно быть пустой строки (слишком большой зазор).")
@@ -393,13 +361,6 @@ def validate_figure_caption(
     return CaptionValidation(ok=(len(issues) == 0), issues=issues)
 
 # ======= Поиск упоминания «рисунок N» =======
-
-def _collect_text_lines_with_page(page: fitz.Page, page_index0: int) -> List[Dict]:
-    out = _collect_text_lines(page)
-    for L in out:
-        L["__page_idx0"] = page_index0
-    return out
-
 def _find_first_mention_on_page(
     page: fitz.Page,
     page_index0: int,
@@ -409,7 +370,7 @@ def _find_first_mention_on_page(
     y_upper_limit: Optional[float] = None,   # искать только выше этой Y
 ) -> Optional[FigureMention]:
     rx = _mention_regex(expected_num_str)
-    for L in _collect_text_lines_with_page(page, page_index0):
+    for L in _collect_text_lines(page):
         if exclude_line_ids and id(L) in exclude_line_ids:
             continue
         if y_upper_limit is not None and not (L["bbox"].y1 <= y_upper_limit + 0.1):
@@ -496,13 +457,6 @@ def check_figure_captions(
     *,
     search_band_mm: float = 25.0,
 ) -> Dict[str, str]:
-    """
-    Возвращает:
-      {
-        "user_summary": "...",
-        "admin_details": "...",
-      }
-    """
     admin_lines: List[str] = []
     error_pages = set()
     figure_caption_bboxes_by_page: Dict[int, List[Tuple[float,float,float,float]]] = {}
@@ -522,8 +476,6 @@ def check_figure_captions(
         figure_notes: List[str]  = []
 
         # Проверка «подпись и рисунок на одной странице»
-        # (если cap найден на другом page — у нас cap=None; проверим только при cap!=None,
-        # а сама геометрия подразумевает ту же страницу)
         if cap is None:
             admin_lines.append(f"[FigureCaption][Стр. {page_num}][Рис. {expected_number_str}] Подпись не найдена")
             figure_notes.append("Нет подрисуночной подписи.")
@@ -532,7 +484,6 @@ def check_figure_captions(
             figure_caption_bboxes_by_page.setdefault(page_num, []).append(
                 (cap.bbox.x0, cap.bbox.y0, cap.bbox.x1, cap.bbox.y1)
             )
-            # ============ [ДОБАВЬ ЭТО: диагностические числа по зазорам] ============
             # Формулы те же, что в validate_figure_caption()
             gap_to_cap_pt = cap.gap_from_figure_pt
             allowed_gap_pt = max(8.0, 0.6 * max(1.0, cap.size))  # «не должно быть пустой строки»
@@ -560,7 +511,6 @@ def check_figure_captions(
                     f"gap_to_caption={gap_to_cap_mm:.1f} мм (≤ {allowed_gap_mm:.1f} мм); "
                     f"gap_after=— (следующая строка не найдена)"
                 )
-            # =======================================================================
 
             # Валидация подписи
             val = validate_figure_caption(
@@ -634,7 +584,6 @@ def check_figure_captions(
         if figure_notes and any(s.strip() for s in figure_notes):
             _add_text_annot_silent(page, (fig_rect.x0, fig_rect.y0), "\n".join(figure_notes))
 
-    # Итоги
     if error_pages:
         user_summary = "⚠️Проверка рисунков/подписей: нарушения на стр " + ", ".join(map(str, sorted(error_pages)))
     else:
