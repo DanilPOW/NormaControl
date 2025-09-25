@@ -1,41 +1,38 @@
 # scripts/image_checker.py
+# Проверка рисунков: поля, центрирование, пустая строка сверху, сводки и вызов проверки подписей
 import fitz
 import math
 import re
 from scripts.figure_caption_checker import check_figure_captions
 from const import *
 
+def mm_to_pt(mm):  
+    return mm * 2.8346456693
 
-def mm_to_pt(mm): return mm * 2.8346456693
-def pt_to_mm(pt): return pt / 2.8346456693
+def pt_to_mm(pt):  
+    return pt / 2.8346456693
 
-def bbox_union(b1, b2):
+
+# Примитивы над bbox
+def bbox_union(b1, b2):  # объединение двух bbox-ов
     return (min(b1[0], b2[0]), min(b1[1], b2[1]),
             max(b1[2], b2[2]), max(b1[3], b2[3]))
 
-def bbox_distance(b1, b2):
-    ax0, ay0, ax1, ay1 = b1
-    bx0, by0, bx1, by1 = b2
-    dx = max(0, max(bx0 - ax1, ax0 - bx1))
-    dy = max(0, max(by0 - ay1, ay0 - by1))
-    return math.hypot(dx, dy)
-
-def bboxes_intersect(b1, b2, tol=2.0):
-    # Пересечение bbox с допуском
+def bboxes_intersect(b1, b2, tol=2.0):  # <зачем нужен> пересечение прямоугольников с допуском
     return not (b1[2] < b2[0] - tol or b1[0] > b2[2] + tol or
                 b1[3] < b2[1] - tol or b1[1] > b2[3] + tol)
 
-def bbox_area(b):
+def bbox_area(b):  # площадь bbox
     return max(0.0, b[2]-b[0]) * max(0.0, b[3]-b[1])
 
-def bbox_intersection(b1, b2):
+def bbox_intersection(b1, b2):  # пересечение двух bbox
     x0 = max(b1[0], b2[0]); y0 = max(b1[1], b2[1])
     x1 = min(b1[2], b2[2]); y1 = min(b1[3], b2[3])
     if x1 <= x0 or y1 <= y0:
         return (0, 0, 0, 0)
     return (x0, y0, x1, y1)
 
-def bbox_iou(b1, b2):
+def bbox_iou(b1, b2):  
     inter = bbox_intersection(b1, b2)
     ai = bbox_area(inter)
     if ai == 0:
@@ -43,20 +40,16 @@ def bbox_iou(b1, b2):
     a1 = bbox_area(b1); a2 = bbox_area(b2)
     return ai / (a1 + a2 - ai + 1e-9)
 
-def bbox_center(b):
+def bbox_center(b):  
     return ((b[0]+b[2])/2.0, (b[1]+b[3])/2.0)
 
-def center_distance(b1, b2):
+def center_distance(b1, b2):  
     c1 = bbox_center(b1); c2 = bbox_center(b2)
     return math.hypot(c1[0]-c2[0], c1[1]-c2[1])
 
-def x_overlap(a, b):
-    return max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
 
-def x_gap(a, b):
-    return max(0.0, max(a[0]-b[2], b[0]-a[2]))
-
-def color_distance(c1, c2):
+# Стили, видимость и сравнение графики
+def color_distance(c1, c2):  #евклидова метрика между цветами для группировки путей
     if not c1 or not c2:
         return 1e9
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(c1, c2)))
@@ -82,26 +75,26 @@ def is_visible_path(d):
     filled  = bool(fill) and (fo is None or fo > 0)
     return stroked or filled
 
+
+# Сбор текстовых строк
 _PUNCT_ONLY_RE = re.compile(r"^[\s\.\,\-\–\—\·•:;…]+$")
 
-def _is_noise_line(line):
-    """Отбрасываем микролинии/мусор."""
+def _is_noise_line(line):  # отсев «мусорных» строк
     fs = float(line.get("fontsize") or 0)
     x0,y0,x1,y1 = line["bbox"]
     h = max(0.0, y1 - y0)
     txt = (line.get("text") or "").strip()
-    # критерии шума:
-    if fs < 6.0:                       
+    if fs < 6.0:                       # слишком мелкий кегль
         return True
-    if h < mm_to_pt(2.0):              
+    if h < mm_to_pt(2.0):              # слишком маленькая высота
         return True
-    if len(txt) == 0:                  
+    if len(txt) == 0:                  # пустой текст
         return True
-    if _PUNCT_ONLY_RE.match(txt):      
+    if _PUNCT_ONLY_RE.match(txt):      # только пунктуация
         return True
     return False
 
-def collect_text_lines(page):
+def collect_text_lines(page):  # собрать и нормализовать строки текста на странице
     lines = []
     d = page.get_text("dict")
     for b in d.get("blocks", []):
@@ -116,85 +109,53 @@ def collect_text_lines(page):
             xs1 = [s["bbox"][2] for s in spans]
             ys1 = [s["bbox"][3] for s in spans]
             bx = (min(xs0), min(ys0), max(xs1), max(ys1))
-            # средний кегль
-            fs = sum(float(s.get("size", 0)) for s in spans) / max(1, len(spans))
-            # текст строки (склеим спаны)
-            txt = "".join(s.get("text", "") for s in spans)
+            fs = sum(float(s.get("size", 0)) for s in spans) / max(1, len(spans))  # средний кегль
+            txt = "".join(s.get("text", "") for s in spans)  # склейка спанов
             line = {"bbox": bx, "fontsize": fs, "text": txt}
             if not _is_noise_line(line):
                 lines.append(line)
     return lines
 
-def _nearest_valid_line_above(
-    fig_bbox,
-    lines,
-    *,
-    mode="global",           
-    max_x_gap_mm=15.0,      
-    max_center_dx_mm=25.0,   
-    max_edge_dx_mm=50.0,    
-    y_tol_pt=1.5             
-):
+
+# Поиск ближайшей строки выше фигуры
+def _nearest_valid_line_above(fig_bbox, lines, *, y_tol_pt=1.5):
+    """Вернуть ближайшую сверху строку (учитывая вертикальный допуск)."""
     x0f, y0f, x1f, y1f = fig_bbox
-
-    if mode == "global":
-        best, best_dy = None, None
-        for ln in lines:
-            x0, y0, x1, y1 = ln["bbox"]
-            if y1 > (y0f + y_tol_pt):
-                continue  # строка не выше (с учётом допуска)
-            dy = max(0.0, y0f - y1)
-            if best_dy is None or dy < best_dy:
-                best, best_dy = ln, dy
-        return best, (best_dy or 0.0)
-
-    def mm_to_pt(mm): return mm * 2.834646
-    max_gap_pt  = mm_to_pt(max_x_gap_mm)
-    max_cdx_pt  = mm_to_pt(max_center_dx_mm)
-    max_edge_pt = mm_to_pt(max_edge_dx_mm)
-    fx_c = (x0f + x1f) / 2.0
-
-    def x_gap(a, b):
-        return max(0.0, max(a[0]-b[2], b[0]-a[2]))
-
-    near_cand, any_cand = [], []
+    best, best_dy = None, None
     for ln in lines:
         x0, y0, x1, y1 = ln["bbox"]
-        if y1 > (y0f + y_tol_pt):
+        if y1 > (y0f + y_tol_pt):  # строка не выше фигуры
             continue
-        gap = x_gap(ln["bbox"], fig_bbox)
-        lx_c = (x0 + x1) / 2.0
-        cdx = abs(lx_c - fx_c)
-        edge_dx = min(abs(fx_c - x0), abs(fx_c - x1))
         dy = max(0.0, y0f - y1)
-        if (gap <= max_gap_pt) or (cdx <= max_cdx_pt) or (edge_dx <= max_edge_pt):
-            near_cand.append((dy, ln))
-        else:
-            any_cand.append((dy, ln))
-    near_cand.sort(key=lambda t: t[0]); any_cand.sort(key=lambda t: t[0])
-    if near_cand: return near_cand[0][1], near_cand[0][0]
-    if any_cand:  return any_cand[0][1], any_cand[0][0]
-    return None, 0.0
+        if best_dy is None or dy < best_dy:
+            best, best_dy = ln, dy
+    return best
 
-def check_empty_line_above(page, fig_bbox, page_rect, work_top_pt,
-                           work_left_pt, work_right_pt,
-                           font_min_pt=12.0, font_max_pt=14.0,
-                           first_elem_top_thresh_mm=5.0,
-                           lines=None):
+
+def check_empty_line_above(
+    page,
+    fig_bbox,
+    *,
+    work_top_pt,
+    font_min_pt=12.0,
+    font_max_pt=14.0,
+    first_elem_top_thresh_mm=5.0,
+    lines=None,
+):
+    """Проверка пустой строки перед фигурой (≈ 1.5 * fontsize)."""
     x0, y0, x1, y1 = fig_bbox
-
     if lines is None:
         lines = collect_text_lines(page)
 
-    above, best_dy = _nearest_valid_line_above(fig_bbox, lines, mode="global", y_tol_pt=1.5)
+    above = _nearest_valid_line_above(fig_bbox, lines, y_tol_pt=1.5)
 
+    # Если фигура в самом верху рабочей области — не ругаемся
     if not above:
         if (y0 - work_top_pt) <= mm_to_pt(first_elem_top_thresh_mm):
             return None
-        # строк нет — мягко пропускаем
         return None
 
-    # Требуемый зазор = 1.5 * fontsize (fontsize в [12;14] pt)
+    # Требуемый зазор = 1.5 * fontsize, с ограничением кегля в [12..14]
     fs = float(above["fontsize"]) if above["fontsize"] > 0 else font_min_pt
     fs = max(font_min_pt, min(font_max_pt, fs))
     required_gap_pt = 1.5 * fs
@@ -205,7 +166,9 @@ def check_empty_line_above(page, fig_bbox, page_rect, work_top_pt,
                 f"{pt_to_mm(actual_gap_pt):.1f} мм, требуется ≥ {pt_to_mm(required_gap_pt):.1f} мм (межстрочник 1.5)")
     return None
 
-def choose_repr(a, b):
+
+# --- Группировка путей (векторная графика) ---
+def choose_repr(a, b):  # <зачем нужен> выбрать «представителя» группы по приоритету обводки/заливки
     def priority(d):
         stroke = bool(d.get("stroke")) and (d.get("width") or d.get("linewidth") or 0) > 0
         fill = bool(d.get("fill"))
@@ -215,11 +178,11 @@ def choose_repr(a, b):
         return 0
     return b if priority(b) > priority(a) else a
 
-def group_paths(paths):
+def group_paths(paths):  # <зачем нужен> склеить близкие по IoU/стилю пути в логические объекты
     groups = []
     iou_thr_high = 0.65
     iou_thr_lo   = 0.30
-    dist_factor  = 0.6  # множитель для порога по центрам
+    dist_factor  = 0.6  # масштабир. порог по центрам
 
     for p in paths:
         pb = tuple(p["bbox"])
@@ -256,7 +219,9 @@ def group_paths(paths):
 
     return groups
 
-def group_rasters_by_row(raster_blocks, y_tol_pt):
+
+# --- Группировка растров по строкам ---
+def group_rasters_by_row(raster_blocks, y_tol_pt):  # <зачем нужен> склеить соседние по Y растры в «ряды»
     if not raster_blocks:
         return []
 
@@ -269,9 +234,8 @@ def group_rasters_by_row(raster_blocks, y_tol_pt):
     def flush_group():
         if not cur_items:
             return
-        # объединяем bbox-ы
         bx = cur_items[0]["bbox"]
-        for it in cur_items[1:]               :
+        for it in cur_items[1:]:
             bx = bbox_union(bx, it["bbox"])
         groups.append({"bbox": bx, "items": cur_items.copy()})
 
@@ -293,9 +257,12 @@ def group_rasters_by_row(raster_blocks, y_tol_pt):
     flush_group()
     return groups
 
+
+# --- Проверка центрирования ---
 def centered_status(group_bbox, page_rect,
                     left_pt=LEFT_MARGIN_PT, right_pt=RIGHT_MARGIN_PT,
                     tol_cm=CENTER_TOL_CM):
+    """Проверка центрирования относительно рабочей области страницы."""
     work_left  = page_rect.x0 + left_pt
     work_right = page_rect.x1 - right_pt
     work_center = (work_left + work_right) / 2.0
@@ -305,18 +272,18 @@ def centered_status(group_bbox, page_rect,
     tol_pt = tol_cm * CM_TO_PT
 
     is_centered = abs(dx_pt) <= tol_pt
-    dx_mm = pt_to_mm(dx_pt)  # 1 мм = 2.834646 pt
+    dx_mm = pt_to_mm(dx_pt)
     return is_centered, dx_mm
 
-def _reading_key_single_column(bbox, y_snap_mm=0.3):
-    """Ключ сортировки: сверху-вниз, слева-направо, со снапом по Y (≈0.3 мм)."""
+
+# --- Выделение кандидатов на «рисунок» и нумерация ---
+def _reading_key_single_column(bbox, y_snap_mm=0.3):  # <зачем нужен> ключ сортировки: сверху-вниз, слева-направо
     x0,y0,x1,y1 = bbox
     y_snap_pt = mm_to_pt(y_snap_mm)
     y0s = round(y0 / y_snap_pt) * y_snap_pt
     return (y0s, x0)
 
-def _collect_page_fig_candidates_single(page_rect, raster_rows, vector_groups):
-    """Единый список кандидатов на рисунок с теми же порогами, что и в проверках."""
+def _collect_page_fig_candidates_single(page_rect, raster_rows, vector_groups):  # <зачем нужен> набор крупных объектов
     def _is_figure(bx):
         x0,y0,x1,y1 = bx
         w = x1 - x0; h = y1 - y0
@@ -339,6 +306,7 @@ def _collect_page_fig_candidates_single(page_rect, raster_rows, vector_groups):
     return items
 
 def _enumerate_figures_single_column(pdf_document, raster_rows_by_page, vector_groups_by_page):
+    """Плоский список всех фигур (растров/векторов) с глобальной нумерацией."""
     all_items = []
     for i, page in enumerate(pdf_document):
         page_num = i + 1
@@ -355,20 +323,10 @@ def _enumerate_figures_single_column(pdf_document, raster_rows_by_page, vector_g
     for idx, it in enumerate(all_items, start=1):
         it["fig_index"] = idx
 
-    page_to_figs = {}
-    for it in all_items:
-        page_to_figs.setdefault(it["page"], []).append(it)
-    return all_items, page_to_figs
+    return all_items  # <упрощено> возвращаем только то, что реально используется
 
-def _match_fig_index(page_num, bbox, page_to_figs, tol_pt=1.5):
-    def _close(a,b,t): return abs(a-b) <= t
-    for it in page_to_figs.get(page_num, []):
-        x0,y0,x1,y1 = it["bbox"]
-        if (_close(x0,bbox[0],tol_pt) and _close(y0,bbox[1],tol_pt) and
-            _close(x1,bbox[2],tol_pt) and _close(y1,bbox[3],tol_pt)):
-            return it["fig_index"]
-    return None
 
+# --- Фильтры и сборка векторных групп на странице ---
 def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="intersect", iou_threshold=0.30):
     entries = []
     try:
@@ -387,12 +345,13 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
             "stroke": d.get("stroke"),
             "fill": d.get("fill"),
             "width": d.get("width") or d.get("linewidth") or 0.0,
-            "stroke_opacity": d.get("stroke_opacity", 1.0) if hasattr(d, "get") else None,
-            "fill_opacity": d.get("fill_opacity", 1.0) if hasattr(d, "get") else None,
+            "stroke_opacity": d.get("stroke_opacity", 1.0),
+            "fill_opacity": d.get("fill_opacity", 1.0),
         }
         if is_visible_path(entry):
             entries.append(entry)
 
+    # Исключаем объекты внутри таблиц
     filtered = []
     for e in entries:
         eb = e["bbox"]
@@ -411,6 +370,7 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
 
     groups = group_paths(filtered)
 
+    # Убираем слишком мелкие группы
     cleaned = []
     for g in groups:
         x0, y0, x1, y1 = g["bbox"]
@@ -424,17 +384,27 @@ def _vector_groups(page, table_bboxes, debug_draw=False, table_exclude_mode="int
 
     return cleaned
 
-def _row_in_tables(row_bbox, table_bboxes, *, mode="intersect", iou_threshold=0.30):
+
+def _row_in_tables(row_bbox, table_bboxes, *, mode="intersect", iou_threshold=0.30):  # <зачем нужен> проверка «ряд в таблице»
     if not table_bboxes:
         return False
     if mode == "iou":
         max_iou = max((bbox_iou(row_bbox, tb) for tb in table_bboxes), default=0.0)
         return max_iou > iou_threshold
-    # режим пересечения
     return any(bboxes_intersect(row_bbox, tb) for tb in table_bboxes)
 
-def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_draw=False,
+
+# --- Главная функция проверки ---
+def check_images(pdf_document, table_bboxes_by_page=None, debug_draw=False,
                  table_exclude_mode="intersect", iou_threshold=0.30, vector_annotate_center=True):
+    """
+    Основные проверки по графике:
+      - выход за поля (рабочую область);
+      - центрирование крупных объектов;
+      - пустая строка перед рисунком (≈1.5*fontsize);
+      - сводки по растровым/векторным объектам;
+      - вызов проверки подрисуночных подписей.
+    """
     if table_bboxes_by_page is None:
         table_bboxes_by_page = {}
 
@@ -453,12 +423,13 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         has_error = False
         text_lines = collect_text_lines(page)
 
-        # Рабочая область страницы с учетом реальных границ
+        # Рабочая область страницы с учётом полей
         work_left   = rect.x0 + LEFT_MARGIN_PT
         work_right  = rect.x1 - RIGHT_MARGIN_PT
         work_top    = rect.y0 + TOP_MARGIN_PT
         work_bottom = rect.y1 - BOTTOM_MARGIN_PT
 
+        # --- Сбор растров ---
         raster_blocks = []
         try:
             for block in page.get_text("dict").get("blocks", []):
@@ -469,12 +440,12 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             admin_lines.append(f"[image_checker] raster collect error on page {page_num}: {e}")
 
         raster_count = len(raster_blocks)
-        y_tol_pt = mm_to_pt(50.7)  # (оставлено как в исходном коде)
+        y_tol_pt = mm_to_pt(50.7)  # исходное допущение «рядовость» по Y
         raster_rows = group_rasters_by_row(raster_blocks, y_tol_pt=y_tol_pt)
         raster_rows_by_page[page_num] = raster_rows
         grouped_raster_count = len(raster_rows)
 
-        # Лог по количеству
+        # Сводка по растру
         vector_summary_lines.append(
             f"[Raster][Стр. {page_num}] найдено {raster_count} растровых объектов, "
             f"сгруппировано в {grouped_raster_count} ряд(ов)"
@@ -482,20 +453,20 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
 
         tbl_bboxes = table_bboxes_by_page.get(page_num, [])
 
+        # --- Проверки по растровым рядам ---
         try:
             for ri, row in enumerate(raster_rows, 1):
                 row_bbox = row["bbox"]
 
-                # NEW: если ряд попал в таблицу — пропускаем все проверки по выравниванию/полям/строке
+                # Пропускаем, если ряд внутри таблицы
                 if _row_in_tables(row_bbox, tbl_bboxes, mode=table_exclude_mode, iou_threshold=iou_threshold):
-                    admin_lines.append(
-                        f"[Стр. {page_num}] Растровый ряд #{ri}: пропущен (внутри таблицы)"
-                    )
+                    admin_lines.append(f"[Стр. {page_num}] Растровый ряд #{ri}: пропущен (внутри таблицы)")
                     continue
 
+                # Если в ряду >1 картинки — проверка «каждая в своей строке»
                 items_sorted = sorted(row["items"], key=lambda it: it["bbox"][0])
                 if len(items_sorted) >= 2:
-                    y_misaligned_tol_pt = mm_to_pt(1.0)  # допуск по "разным y"
+                    y_misaligned_tol_pt = mm_to_pt(1.0)
                     base_y0 = items_sorted[0]["bbox"][1]
                     for idx_in_row, it in enumerate(items_sorted[1:], start=2):
                         x0i, y0i, x1i, y1i = it["bbox"]
@@ -514,22 +485,19 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                 errs = []
 
                 # Выход за поля
-                if (x0 < work_left or x1 > work_right or
-                    y0 < work_top  or y1 > work_bottom):
+                if (x0 < work_left or x1 > work_right or y0 < work_top or y1 > work_bottom):
                     errs.append("Рисунок выходит за поля.")
 
-                # Центрирование по рабочему полю (допуск в pt)
+                # Центрирование по рабочему полю (строгий порог в pt)
                 work_cx = (work_left + work_right) / 2.0
                 obj_cx  = (x0 + x1) / 2.0
                 if abs(obj_cx - work_cx) > 2:
                     errs.append("Рисунок должен быть выровнен по центру без абзацного отступа.")
 
-                # ПУСТАЯ СТРОКА ПЕРЕД КАРТИНКОЙ
+                # Пустая строка перед картинкой
                 gap_err = check_empty_line_above(
-                    page, (x0, y0, x1, y1), rect,
+                    page, (x0, y0, x1, y1),
                     work_top_pt=work_top,
-                    work_left_pt=work_left,
-                    work_right_pt=work_right,
                     font_min_pt=12.0, font_max_pt=14.0,
                     first_elem_top_thresh_mm=5.0,
                     lines=text_lines,
@@ -539,10 +507,9 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
 
                 if errs:
                     has_error = True
-                    msg = (f"" + "; ".join(errs))
+                    msg = "; ".join(errs)
                     admin_lines.append(msg)
-                    ann_point = fitz.Point(x0, y0)
-                    ann = page.add_text_annot(ann_point, "\n".join(errs))
+                    ann = page.add_text_annot(fitz.Point(x0, y0), "\n".join(errs))
                     ann.set_info(title="Сервис нормоконтроля", content=msg)
                     ann.update()
         except Exception as e:
@@ -551,7 +518,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         total_raster_images += raster_count
         page_raster_counts.append((page_num, raster_count, grouped_raster_count))
 
-        # Векторные группы (как было, с исключением по таблицам)
+        # --- Векторные группы (с исключением по таблицам) ---
         groups = _vector_groups(page, tbl_bboxes, debug_draw=debug_draw,
                                 table_exclude_mode=table_exclude_mode, iou_threshold=iou_threshold)
         vector_groups_by_page[page_num] = groups
@@ -568,6 +535,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         small_objs = []
         figure_objs = []
 
+        # Диагностическая сводка по векторным
         for gi, g in enumerate(groups, 1):
             x0, y0, x1, y1 = g["bbox"]
             w = x1 - x0
@@ -603,7 +571,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
             admin_lines.append("    Мелкие/маркерные объекты:")
             admin_lines.extend(small_objs)
 
-        # Основные проверки/аннотации по векторным группам
+        # Основные проверки по векторным группам
         for g in groups:
             x0, y0, x1, y1 = g["bbox"]
             w = x1 - x0
@@ -612,16 +580,15 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
 
             is_marker_like = (w <= mm_to_pt(MARKER_MAX_W_MM) and h <= mm_to_pt(MARKER_MAX_H_MM))
             if is_marker_like:
-                continue
+                continue  # мелкие «маркеры» пропускаем
 
             errs = []
 
             # Выход за поля
-            if (x0 < work_left or x1 > work_right or
-                y0 < work_top  or y1 > work_bottom):
+            if (x0 < work_left or x1 > work_right or y0 < work_top or y1 > work_bottom):
                 errs.append("Графический объект выходит за поля")
 
-            # Центровку проверяем ТОЛЬКО для крупных фигур
+            # Центровка и пустая строка — только для крупных фигур
             is_figure = (
                 w >= mm_to_pt(MIN_W_MM) and
                 h >= mm_to_pt(MIN_H_MM) and
@@ -640,10 +607,8 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                     )
 
                 gap_err = check_empty_line_above(
-                    page, g["bbox"], rect,
+                    page, g["bbox"],
                     work_top_pt=work_top,
-                    work_left_pt=work_left,
-                    work_right_pt=work_right,
                     font_min_pt=12.0, font_max_pt=14.0,
                     first_elem_top_thresh_mm=5.0,
                     lines=text_lines,
@@ -656,7 +621,6 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                 msg = f"[Стр. {page_num}] Векторный объект: " + "; ".join(errs)
                 admin_lines.append(msg)
 
-                # точка аннотации
                 cx, cy = bbox_center(g["bbox"])
                 ann_point = fitz.Point(cx, cy) if vector_annotate_center else fitz.Point(x0, y0)
                 ann = page.add_text_annot(ann_point, "\n".join(errs))
@@ -666,14 +630,16 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         if has_error:
             error_pages.append(page_num)
 
-    all_figs, page_to_figs = _enumerate_figures_single_column(
-    pdf_document, raster_rows_by_page, vector_groups_by_page
-    )
+    # --- Глобальная нумерация найденных фигур (растров/вектора) ---
+    all_figs = _enumerate_figures_single_column(pdf_document, raster_rows_by_page, vector_groups_by_page)
+
+    # --- Проверка подрисуночных подписей ---
     fig_caption_result = check_figure_captions(pdf_document, all_figs) or {}
     cap_admin   = fig_caption_result.get("admin_details", "Нет деталей по подписям (пустой ответ)")
     cap_summary = fig_caption_result.get("user_summary", "✅Проверка подрисуночных подписей")
     cap_err_pages = set(fig_caption_result.get("error_pages", []))
-    
+
+    # Сводка по нумерации
     if all_figs:
         admin_lines.append("\n[Нумерация рисунков]")
         for it in all_figs:
@@ -683,6 +649,8 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
                 f"{'растровый' if it['kind']=='raster' else 'векторный'} — "
                 f"bbox=({pt_to_mm(x0):.1f},{pt_to_mm(y0):.1f})–({pt_to_mm(x1):.1f},{pt_to_mm(y1):.1f}) мм"
             )
+
+    # Сводка по количеству растров
     counts_lines = [
         f"Стр. {n}: растровых картинок {orig}, рядов (после склейки) {grp}"
         for n, orig, grp in page_raster_counts
@@ -711,7 +679,7 @@ def check_images(pdf_document, pdf_path=None, table_bboxes_by_page=None, debug_d
         parts = []
         if not graphics_ok:
             parts.append(f"⚠️Проверка рисунков: нарушения на страницах {', '.join(map(str, error_pages))}")
-        parts.append(cap_summary)  # краткий статус из модуля подписей
+        parts.append(cap_summary)  # статус из модуля подписей
         user_summary = " | ".join(parts)
 
     return {
