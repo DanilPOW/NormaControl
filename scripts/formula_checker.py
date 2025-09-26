@@ -5,14 +5,8 @@ from typing import List, Dict, Tuple, Optional, Iterable
 import re
 import fitz  # PyMuPDF
 from collections import defaultdict
-from const import *  # ожидаются: CM_TO_PT, LEFT_MARGIN_PT, RIGHT_MARGIN_PT, TOP_MARGIN_PT, BOTTOM_MARGIN_PT
-                     # а также флаги DEBUG_DIAGNOSTICS, ALIGN_TOL_PT (если нет — можно задать локально)
+from const import * 
 
-# Если в const нет этих констант — можно задать дефолты:
-try:
-    _ALIGN_TOL_PT = ALIGN_TOL_PT
-except Exception:
-    _ALIGN_TOL_PT = 6.0
 
 MATH_FONTS = {"Cambria Math"}  # при необходимости можно расширить
 NUMBER_RE = re.compile(r"\((\d+)\)")
@@ -67,10 +61,8 @@ def _collect_text_spans(page: fitz.Page) -> List[Span]:
                 )
     return out
 
+#группировка частей формул по близости
 def _cluster_spans_into_lines(spans: List[Span], y_tol_pt: float = 3.0) -> List[List[Span]]:
-    """
-    Группируем близко лежащие по Y спаны в визуальные строки.
-    """
     if not spans:
         return []
     spans = sorted(spans, key=lambda s: (s.bbox.y0, s.bbox.x0))
@@ -263,13 +255,6 @@ def check_formulas(
     annotate_pdf: bool = True,
     start_page: int = 2,
 ) -> Dict[str, object]:
-    """
-    Главная функция чекера формул по ГОСТ 7.32 п. 6.8.x
-    Возвращает:
-      - user_summary: краткая сводка для пользователя
-      - admin_details: полный лог
-      - formula_bboxes_by_page: карта {page_num: [(x0,y0,x1,y1), ...]}
-    """
     admin: List[str] = []
     formula_bboxes_by_page: Dict[int, List[Tuple[float,float,float,float]]] = defaultdict(list)
     error_pages = set()
