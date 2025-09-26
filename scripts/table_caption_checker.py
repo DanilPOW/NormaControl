@@ -578,7 +578,7 @@ def validate_table_caption(cap: CaptionDetected, expected_num_str: str,
         if sep_m:
             sep_char = sep_m.group("sep")
             exact_en_ok = bool(re.match(
-                r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?\d+(?:\.\д+)*\s–\s",
+                r"^Таблица\s+(?:[A-Za-zА-Яа-я]\.\s*)?\d+(?:\.\d+)*\s–\s",
                 cap.raw_text
             ))
             if sep_char != "–":
