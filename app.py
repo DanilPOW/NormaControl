@@ -14,6 +14,7 @@ from scripts.body_text_checker import check_body_text
 from scripts.figure_caption_checker import check_figure_captions
 from scripts.structural_headings_checker import check_structural_headings
 from scripts.list_checker import check_lists
+from scripts.formula_checker import check_formulas
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
