@@ -44,9 +44,7 @@ class FoundList:
     items: List[Item]
     bbox: fitz.Rect
 
-# ==========================
 # Вспомогательные
-# ==========================
 def _median(vals: List[float]) -> float:
     if not vals: return 0.0
     s = sorted(vals); n = len(s)
@@ -62,9 +60,8 @@ def _rect_area_overlap(a: fitz.Rect, b: fitz.Rect) -> float:
         return (ix1-ix0)*(iy1-iy0)
     return 0.0
 
-# ==========================
+
 # Сбор текста + RAW (char-level)
-# ==========================
 def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
     vis_lines: List[Line] = []
     d = page.get_text("dict")
@@ -124,7 +121,7 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
         head_text, head_kind, number_kind, tight_sep_ok = "", "", "", False
         x0_text = L.bbox.x0; x0_text_src = "line_bbox"
 
-        # --- маркер регуляркой
+        # маркер регуляркой
         m = RE_START_SIMPLE.match(L.text) or RE_START_TIGHT.match(L.text)
         if m:
             head_text = m.group(0).lstrip()
@@ -178,7 +175,7 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
             L.marker_x1 = marker_x1
 
         else:
-            # --- маркер-символ
+            # маркер-символ
             if L.spans:
                 s0 = L.spans[0].get("text", "")
                 if s0:
@@ -237,9 +234,7 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
     vis_lines.sort(key=lambda L: (round(L.bbox.y0 / y_snap)*y_snap, L.bbox.x0))
     return vis_lines
 
-# ==========================
 # Векторные маркеры (fallback)
-# ==========================
 def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
     markers: List[fitz.Rect] = []
     try:
@@ -259,9 +254,7 @@ def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
                 markers.append(r)
     return markers
 
-# ==========================
 # Склейка «буллит-строка + текст-строка»
-# ==========================
 _SIMPLE_BULLET_ONLY = re.compile(
     r"^\s*(?:[" + BULLET_CHARS + r"]|{}|-|—)\s*$".format(re.escape(EN_DASH))
 )
@@ -304,9 +297,7 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
         i += 1
     return out
 
-# ==========================
 # Классификация линии -> Item
-# ==========================
 def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rect]) -> Optional[Item]:
     t = line.text
     x0 = line.x0_text if line.x0_text_src else line.bbox.x0
@@ -360,9 +351,7 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
         return Item(-1, line, level, "bulleted", "[vector]", "")
     return None
 
-# ==========================
-# Сбор многострочных пунктов (простой режим)
-# ==========================
+# Сбор многострочных пунктов 
 def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers: List[fitz.Rect]) -> List[Item]:
     items: List[Item] = []
     current: Optional[Item] = None
@@ -404,9 +393,7 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
 
     return items
 
-# ==========================
 # Кластеризация
-# ==========================
 def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
     if not items:
         return []
@@ -461,9 +448,7 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
     flush()
     return out
 
-# ==========================
 # Нормализация уровней внутри списка
-# ==========================
 def _normalize_levels_in_list(fl: FoundList) -> None:
     if not fl.items:
         return
@@ -500,9 +485,7 @@ def _normalize_levels_in_list(fl: FoundList) -> None:
 
         cur.level = lvl
 
-# ==========================
 # Выравнивание и межстрочник
-# ==========================
 def _detect_align_justify(lines: List[Line], work_left: float, work_right: float) -> bool:
     if len(lines) < 2:
         return True
@@ -570,9 +553,7 @@ def _apply_excludes_to_markers(markers: List[fitz.Rect], excludes: List[fitz.Rec
             kept.append(r)
     return kept
 
-# ==========================
 # Оценка ширины пробела и зазора после маркера
-# ==========================
 def _space_visual_width_estimate(line: Line) -> float:
     """
     Оцениваем визуальную ширину пробела для строки.
@@ -608,9 +589,7 @@ def _gap_after_marker(line: Line) -> Optional[float]:
     x_text = line.x0_text if line.x0_text_src else line.bbox.x0
     return float(x_text) - float(line.marker_x1)
 
-# ==========================
 # Основная проверка
-# ==========================
 def check_lists(
     pdf_document: fitz.Document,
     *,
@@ -702,7 +681,6 @@ def check_lists(
                     if top_number_kind and it.number_kind and it.number_kind == top_number_kind:
                         issues.append(f"Ур.{it.level+1}: тип нумерации должен отличаться от уровня 1.")
 
-                # (Старую проверку "ровно один пробел после –" — убрали.)
                 # Теперь контролируем визуальный зазор после любого маркера.
 
             # Контекст до/после списка
@@ -761,7 +739,6 @@ def check_lists(
                 if not ok_ls:
                     issues.append(f"Межстрочный интервал в списке должен быть 1.5 (получено {ratio_adj:.2f}; допуск {lo:.2f}–{hi:.2f}).")
 
-            # ===== КЛЮЧЕВЫЕ НОВЫЕ ПРОВЕРКИ =====
             for it in fl.items:
                 # берем левую границу маркера (если есть), иначе fallback на текст
                 marker_x0 = it.line.marker_x0
