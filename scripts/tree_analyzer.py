@@ -25,13 +25,13 @@ class PDFQuoteAnalyzer:
         self.bad_quotes_str = BAD_QUOTES
         self.wrong_quotes_pattern = re.compile(f"[{re.escape(BAD_QUOTES)}]")
         
-        logger.info("🔍 Инициализация анализатора кавычек")
-        logger.info("📋 Неправильные кавычки для поиска:")
+        logger.info(" Инициализация анализатора кавычек")
+        logger.info(" Неправильные кавычки для поиска:")
         for char in BAD_QUOTES:
             logger.info(f"   '{char}' (U+{ord(char):04X})")
     
     def _analyze_text_methods(self, methods, page_num):
-        logger.info(f"🔍 СРАВНЕНИЕ МЕТОДОВ ИЗВЛЕЧЕНИЯ ТЕКСТА (стр. {page_num}):")
+        logger.info(f" СРАВНЕНИЕ МЕТОДОВ ИЗВЛЕЧЕНИЯ ТЕКСТА (стр. {page_num}):")
         
         best_method = None
         max_quotes = 0
@@ -47,7 +47,7 @@ class PDFQuoteAnalyzer:
                         quote_count += 1
                         found_quotes.append(f"'{char}'(U+{ord(char):04X})")
                 
-                logger.info(f"📖 {method_name}: {len(text)} символов, {quote_count} неправильных кавычек")
+                logger.info(f" {method_name}: {len(text)} символов, {quote_count} неправильных кавычек")
                 if found_quotes:
                     # Показываем уникальные кавычки
                     unique_quotes = list(set(found_quotes))
@@ -60,9 +60,9 @@ class PDFQuoteAnalyzer:
                     max_quotes = quote_count
                     best_method = method_name
             else:
-                logger.error(f"❌ {method_name}: {text}")
+                logger.error(f" {method_name}: {text}")
         
-        logger.info(f"🏆 Лучший метод: {best_method} ({max_quotes} кавычек)")
+        logger.info(f" Лучший метод: {best_method} ({max_quotes} кавычек)")
         return best_method, methods.get(best_method, "")
     
     def _get_context(self, text, position, context_length=30):
@@ -74,27 +74,20 @@ class PDFQuoteAnalyzer:
     def analyze_document(self, pdf_document, pdf_handler):
         """
         Анализирует PDF документ на наличие неправильных кавычек
-        
-        Args:
-            pdf_document: Объект PDF документа (fitz.Document)
-            pdf_handler: Экземпляр PDFHandler для работы с PDF
-            
-        Returns:
-            dict: Результаты анализа
         """
         try:
             violations = []
             total_violations = 0
             total_annotations = 0
             
-            logger.info(f"📄 Начинаем анализ PDF документа")
-            logger.info(f"📊 Количество страниц: {len(pdf_document)}")
+            logger.info(f" Начинаем анализ PDF документа")
+            logger.info(f" Количество страниц: {len(pdf_document)}")
             
             for page_num in range(len(pdf_document)):
                 page = pdf_document[page_num]
                 
                 logger.info(f"\n{'='*60}")
-                logger.info(f"📖 АНАЛИЗ СТРАНИЦЫ {page_num + 1}")
+                logger.info(f" АНАЛИЗ СТРАНИЦЫ {page_num + 1}")
                 logger.info(f"{'='*60}")
                 
                 # Получаем текст разными методами
@@ -102,11 +95,11 @@ class PDFQuoteAnalyzer:
                 best_method, page_text = self._analyze_text_methods(text_methods, page_num + 1)
                 
                 if not page_text or isinstance(page_text, str) and len(page_text.strip()) == 0:
-                    logger.warning(f"⚠️ Страница {page_num + 1}: текст не извлечен")
+                    logger.warning(f" Страница {page_num + 1}: текст не извлечен")
                     continue
                 
                 # Детальный анализ кавычек в тексте
-                logger.info("🔍 Детальный анализ кавычек в тексте:")
+                logger.info(" Детальный анализ кавычек в тексте:")
                 all_quotes_in_text = []
                 for i, char in enumerate(page_text):
                     if char in self.bad_quotes_str:
@@ -121,9 +114,9 @@ class PDFQuoteAnalyzer:
                     logger.info("   Кавычек в тексте не найдено")
                 
                 # Применяем regex поиск
-                logger.info(f"🔍 Применяем regex поиск...")
+                logger.info(f" Применяем regex поиск...")
                 matches = list(self.wrong_quotes_pattern.finditer(page_text))
-                logger.info(f"🔎 Regex нашел совпадений: {len(matches)}")
+                logger.info(f" Regex нашел совпадений: {len(matches)}")
                 
                 # Группируем совпадения по символам
                 matches_by_char = {}
