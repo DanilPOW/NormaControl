@@ -9,12 +9,15 @@ from const import *
 
 # --- настройки ---
 MATH_FONTS = {"Cambria Math"}
-TOL_Y = 3.0
-TOL_CENTER = 6.0
-MIN_LINE_GAP = 12.0
-TOL_RIGHT = 6.0
+TOL_Y = 3.0              # принадлежность к одной логической высоте
+TOL_CENTER = 6.0         # допуск центрирования
+TOL_RIGHT = 6.0          # допуск к правому краю
+# Адаптивный порог «свободной строки»: min..max с масштабом от кегля
+MIN_GAP_PT = 8.0         # нижняя планка
+MAX_GAP_PT = 11.0        # верхняя планка
+GAP_SCALE = 0.75         # доля кегля (ref_font_size * GAP_SCALE)
 
-NUM_TAIL_RE = re.compile(r"\((\d+)\)\s*$")  # номер в КОНЦЕ строки
+NUM_TAIL_RE = re.compile(r"\((\d+)\)\s*$")  # номер в КОНЦЕ текста
 
 @dataclass
 class FormulaLine:
@@ -47,7 +50,13 @@ def _is_math_char(c: str) -> bool:
     u = ord(c)
     return (0x0370 <= u <= 0x03FF) or (0x2200 <= u <= 0x22FF)
 
+def _y_close(a: float, b: float, tol: float = TOL_Y) -> bool:
+    return abs(a - b) <= tol
+
 def _collect_lines_raw(page: fitz.Page) -> List[dict]:
+    """
+    Линии из rawdict: сохраняем spans, bbox и y_mid; chars внутри spans.
+    """
     out: List[dict] = []
     d = page.get_text("rawdict")
     for b in d.get("blocks", []):
@@ -67,7 +76,18 @@ def _collect_lines_raw(page: fitz.Page) -> List[dict]:
                 })
     return out
 
+def _line_text_by_chars(line: dict) -> str:
+    chars = []
+    for sp in line["spans"]:
+        for ch in sp.get("chars", []) or []:
+            c = ch.get("c","")
+            if c: chars.append(c)
+    return "".join(chars)
+
 def _line_core_bbox_and_ratio(line: dict) -> Tuple[Optional[fitz.Rect], float]:
+    """
+    Посимвольно собираем bbox мат. символов и долю math-символов.
+    """
     char_rects: List[fitz.Rect] = []
     total = math_total = 0
     for sp in line["spans"]:
@@ -84,11 +104,10 @@ def _line_core_bbox_and_ratio(line: dict) -> Tuple[Optional[fitz.Rect], float]:
     if total == 0: return (None, 0.0)
     return (_rect_union(char_rects), math_total / total)
 
-def _find_trailing_number_bbox(line: dict) -> Tuple[Optional[int], Optional[fitz.Rect]]:
+def _find_trailing_number_bbox_same_line(line: dict) -> Tuple[Optional[int], Optional[fitz.Rect]]:
     """
-    Ищем (n) в КОНЦЕ той же линии посимвольно, чтобы получить точный bbox.
+    Ищем (n) в КОНЦЕ той же линии посимвольно (точный bbox).
     """
-    # соберём все chars в порядке возрастания x
     chars = []
     for sp in line["spans"]:
         for ch in sp.get("chars", []) or []:
@@ -98,20 +117,53 @@ def _find_trailing_number_bbox(line: dict) -> Tuple[Optional[int], Optional[fitz
     if not chars: return (None, None)
     chars.sort(key=lambda t: (t[1].y0, t[1].x0))
 
-    # восстановим текст линии и сопоставим индексы → ббоксы
     text = "".join(c for c,_ in chars)
     m = NUM_TAIL_RE.search(text)
     if not m: return (None, None)
 
-    n = int(m.group(1))
-    start, end = m.span()  # диапазон в тексте
-    # защитимся от несоответствий длины
+    try:
+        n = int(m.group(1))
+    except:
+        return (None, None)
+
+    start, end = m.span()
     if not (0 <= start < end <= len(chars)): return (None, None)
     num_rects = [chars[i][1] for i in range(start, end)]
     num_bb = _rect_union(num_rects)
     return (n, num_bb)
 
+def _find_number_on_right_same_height(lines: List[dict], ref_line: dict, core_bb: fitz.Rect) -> Tuple[Optional[int], Optional[fitz.Rect]]:
+    """
+    Ищем отдельную короткую линию '(n)' справа на той же логической высоте (табличный кейс).
+    """
+    candidates: List[Tuple[int, fitz.Rect]] = []
+    for ln in lines:
+        if ln is ref_line: 
+            continue
+        if not _y_close(ln["y_mid"], ref_line["y_mid"]):
+            continue
+        txt = _line_text_by_chars(ln).strip()
+        m = NUM_TAIL_RE.fullmatch(txt)
+        if not m:
+            continue
+        bb = ln["bbox"]
+        # номер справа от формулы и компактный
+        if bb.x0 >= core_bb.x1 - 0.5 and bb.width <= 60.0:
+            try:
+                n = int(m.group(1))
+                candidates.append((n, bb))
+            except:
+                pass
+    if not candidates:
+        return (None, None)
+    candidates.sort(key=lambda t: t[1].x1, reverse=True)
+    return candidates[0]
+
 def _nearest_text_line_gaps(page: fitz.Page, formula_bb: fitz.Rect, ignore_rects: List[fitz.Rect]) -> Tuple[Optional[float], Optional[float], float]:
+    """
+    Ищем ближайшие вверх/вниз текстовые линии и считаем зазоры.
+    ignore_rects — прямоугольники, которые надо игнорировать (например, номер).
+    """
     lines: List[Tuple[fitz.Rect, float]] = []
     d = page.get_text("dict")
     for b in d.get("blocks", []):
@@ -125,7 +177,8 @@ def _nearest_text_line_gaps(page: fitz.Page, formula_bb: fitz.Rect, ignore_rects
                 if sz>0: sizes.append(sz)
             if not xs: continue
             rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
-            if any(rect.intersects(ir) for ir in ignore_rects):  # игнорим номер
+            # игнорируем «служебные» прямоугольники (номер и т.п.)
+            if any(rect.intersects(ir) for ir in ignore_rects):
                 continue
             avg = (sum(sizes)/len(sizes)) if sizes else 12.0
             lines.append((rect, avg))
@@ -147,7 +200,14 @@ def _gather_formula_rows_on_page(page: fitz.Page, pidx: int) -> List[FormulaLine
         core_bb, ratio = _line_core_bbox_and_ratio(ln)
         if not core_bb or ratio < 0.6:
             continue
-        num, num_bb = _find_trailing_number_bbox(ln)
+
+        # 1) номер в конце ТЕ ЖЕЙ линии
+        num, num_bb = _find_trailing_number_bbox_same_line(ln)
+
+        # 2) иначе — отдельная правая линия на той же высоте (табличный кейс)
+        if num is None:
+            num, num_bb = _find_number_on_right_same_height(lines, ln, core_bb)
+
         row_bb = _rect_union([core_bb, num_bb] if num_bb else [core_bb])
         out.append(FormulaLine(
             page_index0=pidx,
@@ -212,36 +272,41 @@ def check_formulas(
 
             issues: List[str] = []
 
-            # свободные строки (считаем от объединённого bbox; номер игнорим как «следующую строку»)
+            # --- свободные строки ---
+            # считаем от ОБЩЕГО bbox (формула+номер); номер игнорим как «следующую строку»
             ig = [f.number_bbox] if f.number_bbox else []
             gap_above, gap_below, ref = _nearest_text_line_gaps(page, f.bbox, ig)
-            need = max(MIN_LINE_GAP, ref * 1.0)
-            if gap_above is None or gap_above < need:
+
+            # Адаптивный порог: clamp(ref * GAP_SCALE, MIN_GAP_PT .. MAX_GAP_PT)
+            ref_based = (ref or 12.0) * GAP_SCALE
+            need = max(MIN_GAP_PT, min(MAX_GAP_PT, ref_based))
+
+            if gap_above is None or gap_above + 1e-3 < need:
                 issues.append(f"Перед формулой должна быть как минимум одна свободная строка (~≥{need:.1f} pt).")
-            if gap_below is None or gap_below < need:
+            if gap_below is None or gap_below + 1e-3 < need:
                 issues.append(f"После формулы должна быть как минимум одна свободная строка (~≥{need:.1f} pt).")
 
-            # ЦЕНТР: только формула (без номера)
+            # --- центрирование (только формула, без номера) ---
             if not _center_ok(f.core_bbox, work_left, work_right):
                 issues.append("Формула должна быть выровнена по центру строки.")
 
-            # номер справа
+            # --- номер справа ---
             if f.number is None:
                 issues.append("Формула должна иметь порядковый номер в круглых скобках справа, например (1).")
             else:
                 if f.number_bbox and abs(work_right - f.number_bbox.x1) > TOL_RIGHT:
                     issues.append("Номер формулы должен располагаться у правого края рабочей области строки.")
-                # ссылки (6.8.4)
+                # наличие ссылок на формулу (6.8.4)
                 refs = [(p,bb) for p,items in all_refs.items() for (n,bb) in items if n==f.number]
-                # исключим совпадение с самой строкой
                 refs = [(p,bb) for (p,bb) in refs if not (p==pg and bb.intersects(f.bbox))]
                 if not refs:
                     issues.append(f"Нет ссылок в тексте вида «({f.number})» на эту формулу (6.8.4).")
 
+            # --- выход за рабочую область ---
             if not _inside_work(f.bbox, page_bound):
                 issues.append("Формула/номер выходят за пределы рабочих полей страницы.")
 
-            # аннотации и лог
+            # --- аннотации и логи ---
             if issues:
                 error_pages.add(pg)
                 if annotate_pdf:
