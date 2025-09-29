@@ -11,12 +11,12 @@ LEFT_MARGIN_PT   = 3.0 * CM_TO_PT
 RIGHT_MARGIN_PT  = 1.5 * CM_TO_PT
 TOP_MARGIN_PT    = 2.0 * CM_TO_PT
 BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
-CAPTION_PREFIX = "Рисунок"
-BAD_PREFIX_RE = re.compile(
+CAPTION_PREFIX_TB = "Рисунок"
+BAD_PREFIX_RE_TB = re.compile(
     r"^\s*(рис\.?|рис-|рисунок\.?|картинка|изображение|фото|figure|fig\.?)\b",
     re.IGNORECASE
 )
-CAPTION_NUMBER_RE = re.compile(
+CAPTION_NUMBER_RE_TB = re.compile(
     r"^Рисунок\s+(?P<number>\d+(?:\.\d+)*)\s–\s(?P<title>.+?)\s*$"
 )
 
@@ -247,7 +247,7 @@ def find_figure_caption(
     # текст
     raw_text = " ".join(L["text"] for L in cap_lines).strip()
 
-    m = CAPTION_NUMBER_RE.match(raw_text)
+    m = CAPTION_NUMBER_RE_TB.match(raw_text)
     if m:
         number_str = m.group("number")
         title = (m.group("title") or "").strip()
@@ -301,11 +301,11 @@ def validate_figure_caption(
     issues: List[str] = []
 
     # 0) Запрещённые префиксы
-    if BAD_PREFIX_RE.match(cap.raw_text) and not cap.raw_text.startswith(CAPTION_PREFIX):
+    if BAD_PREFIX_RE_TB.match(cap.raw_text) and not cap.raw_text.startswith(CAPTION_PREFIX_TB):
         issues.append("Подпись неверно оформлена: должно быть «Рисунок», а не «рис.», «картинка», «фото» и т.п.")
 
     # 1) Формат «Рисунок N – Наименование»
-    m = CAPTION_NUMBER_RE.match(cap.raw_text)
+    m = CAPTION_NUMBER_RE_TB.match(cap.raw_text)
     if not m:
         issues.append("Подпись не соответствует формату «Рисунок N – Наименование» (короткое тире «–», пробелы по обе стороны).")
     else:
