@@ -3,22 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
 import re
-import fitz  # PyMuPDF
+import fitz  
+from const import *
 
-MM_TO_PT = 2.8346456693
-CM_TO_PT = 28.35
-LEFT_MARGIN_PT   = 3.0 * CM_TO_PT
-RIGHT_MARGIN_PT  = 1.5 * CM_TO_PT
-TOP_MARGIN_PT    = 2.0 * CM_TO_PT
-BOTTOM_MARGIN_PT = 2.0 * CM_TO_PT
-CAPTION_PREFIX_TB = "Рисунок"
-BAD_PREFIX_RE_TB = re.compile(
-    r"^\s*(рис\.?|рис-|рисунок\.?|картинка|изображение|фото|figure|fig\.?)\b",
-    re.IGNORECASE
-)
-CAPTION_NUMBER_RE_TB = re.compile(
-    r"^Рисунок\s+(?P<number>\d+(?:\.\d+)*)\s–\s(?P<title>.+?)\s*$"
-)
 
 @dataclass
 class BBox:
