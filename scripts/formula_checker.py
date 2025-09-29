@@ -7,7 +7,6 @@ import fitz  # PyMuPDF
 from collections import defaultdict
 from const import * 
 
-
 MATH_FONTS = {"Cambria Math"}  # при необходимости можно расширить
 NUMBER_RE = re.compile(r"\((\d+)\)")
 
@@ -115,7 +114,6 @@ def _joined_text(spans: List[Span]) -> str:
 def _non_number_bbox(spans: List[Span]) -> fitz.Rect:
     """
     Объединённый bbox без правого спана с номером (если он есть).
-    Используем эвристику: спан, содержащий '(n)', самый правый.
     """
     num_idx = None
     candidates = []
@@ -134,7 +132,6 @@ def _non_number_bbox(spans: List[Span]) -> fitz.Rect:
 def _nearest_text_line_gaps(page: fitz.Page, formula_bb: fitz.Rect) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """
     Оцениваем свободные промежутки сверху/снизу (между ближайшими текстовыми линиями и формулой).
-    Возвращаем (gap_above_pt, gap_below_pt, ref_font_size_pt)
     """
     # собираем «линии» как блоки из dict
     lines: List[Tuple[fitz.Rect, float]] = []  # (bbox, avg_size)
