@@ -160,6 +160,15 @@ def process_pdf_file(pdf_path: str):
         struct_user = struct_results['user_summary']
         struct_admin = struct_results['admin_details']
 
+        formula_results = check_formulas(
+            pdf_doc,
+            annotate_pdf=True,
+            start_page=2,  
+        )
+        formula_user = formula_results['user_summary']
+        formula_admin = formula_results['admin_details']
+        formula_bboxes_by_page = formula_results.get('formula_bboxes_by_page', {})
+
         pdf_doc.save(out_path)
 
     user_notes = (
@@ -169,7 +178,8 @@ def process_pdf_file(pdf_path: str):
         f"{double_space_user}\n"
         f"{table_user}\n"
         f"{image_user}\n"
-        f"{list_user}\n"   # ← ДОБАВЛЕНО
+        f"{formula_user}\n"     
+        f"{list_user}\n"
         f"{struct_user}"
     )
 
@@ -180,7 +190,8 @@ def process_pdf_file(pdf_path: str):
         "\n\n[DoubleSpaceCheck]\n" + double_space_admin +
         "\n\n[TableCheck]\n" + table_admin +
         "\n\n[ImageCheck]\n" + image_admin +
-        "\n\n[ListCheck]\n" + list_admin +      # ← ДОБАВЛЕНО
+        "\n\n[FormulaCheck]\n" + formula_admin +   
+        "\n\n[ListCheck]\n" + list_admin +
         "\n\n[StructHeadings]\n" + struct_admin
     )
     return (
