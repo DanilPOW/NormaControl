@@ -9,40 +9,44 @@ from const import *  # ожидаются LEFT/RIGHT/TOP/BOTTOM_MARGIN_PT, DEBUG
 
 # --- настройки/эвристики ---
 MATH_FONTS = {"Cambria Math"}
-TOL_Y = 3.0              # pt: принадлежность одной логической высоте
-TOL_CENTER = 6.0         # pt: допуск по центрированию
-TOL_RIGHT = 6.0          # pt: допуск к правому краю для номера
-MIN_OVERLAP_X = 0.30     # доля перекрытия по X для склейки строк формулы
-MAX_VGAP_FACTOR = 1.5    # вертикальный зазор для склейки, в долях ref_font
-NUM_MAX_WIDTH = 60.0     # pt: максимальная ширина строки-номера
+TOL_Y = 4.5               # ↑ устойчивее к дробям/индексам
+TOL_CENTER = 6.0          # допуск по центрированию
+TOL_RIGHT = 6.0           # допуск к правому краю для номера
+MIN_OVERLAP_X = 0.30      # доля перекрытия по X для склейки строк формулы
+MAX_VGAP_FACTOR = 1.5     # вертикальный зазор для склейки, в долях ref_font
+NUM_MAX_WIDTH = 80.0      # ↑ бывают чуть шире 60pt
 # Адаптивный порог свободной строки: clamp(ref * SCALE, MIN..MAX)
 GAP_MIN_PT = 8.0
 GAP_MAX_PT = 11.0
 GAP_SCALE = 0.75
 
+# Разрешим обычные/узкие пробелы внутри скобок, чтобы быть дружелюбнее к верстке
+NBSP = "\u00A0\u202F\u2009"
+SPACE = f"[ \\t{NBSP}]"
+
 # Регэкспы для номера
-NUM_TAIL_RE = re.compile(r"\((\d+)\)\s*$")   # номер в КОНЦЕ строки
-NUM_ANY_RE  = re.compile(r"\((\d+)\)")       # номер где угодно
+NUM_TAIL_RE = re.compile(r"\(" + SPACE + r"*([0-9]+)" + SPACE + r"*\)\s*$")  # номер в КОНЦЕ строки
+NUM_ANY_RE  = re.compile(r"\(" + SPACE + r"*([0-9]+)" + SPACE + r"*\)")      # номер где угодно
 
 @dataclass
 class FormulaLineRaw:
     spans: list
-    bbox: fitz.Rect
+    bbox: fitz.Rect          # визуальный bbox строки (все спаны)
     y_mid: float
-    core_bbox: Optional[fitz.Rect]
+    core_bbox: Optional[fitz.Rect]  # bbox по math-символам (для группировки)
     math_ratio: float
 
 @dataclass
 class FormulaBlock:
     page_index0: int
-    core_bbox: fitz.Rect          # bbox формулы без номера (объединённый по строкам)
+    core_bbox: fitz.Rect          # ВИЗУАЛЬНЫЙ bbox формулы без номера (объединённый по строкам)
     bbox: fitz.Rect               # формула + номер (если найден)
     number: Optional[int]
     number_bbox: Optional[fitz.Rect]
 
 # ---------- утилиты ----------
 def _rect_union(rects: List[fitz.Rect]) -> Optional[fitz.Rect]:
-    if not rects: 
+    if not rects:
         return None
     r = fitz.Rect(rects[0])
     for x in rects[1:]:
@@ -61,7 +65,7 @@ def _inside_work(bb: fitz.Rect, page_bound: fitz.Rect) -> bool:
     )
 
 def _is_math_char(c: str) -> bool:
-    if not c: 
+    if not c:
         return False
     u = ord(c)
     # греческий + математические операторы
@@ -69,6 +73,14 @@ def _is_math_char(c: str) -> bool:
 
 def _y_close(a: float, b: float, tol: float = TOL_Y) -> bool:
     return abs(a - b) <= tol
+
+def _y_overlap_ok(a: fitz.Rect, b: fitz.Rect, frac: float = 0.5) -> bool:
+    """Строки считаем 'на одной высоте', если пересечение по Y >= frac * min(высот)."""
+    top = max(a.y0, b.y0)
+    bot = min(a.y1, b.y1)
+    inter = max(0.0, bot - top)
+    minh = max(1.0, min(a.height, b.height))
+    return inter / minh >= frac
 
 def _x_overlap_ratio(a: fitz.Rect, b: fitz.Rect) -> float:
     left = max(a.x0, b.x0)
@@ -158,12 +170,15 @@ def _find_trailing_number_same_line(line_spans: list) -> Tuple[Optional[int], Op
     num_bb = _rect_union([chars[i][1] for i in range(start, end)])
     return (n, num_bb)
 
+def _same_height_or_overlap(a: FormulaLineRaw, b: FormulaLineRaw) -> bool:
+    return _y_close(a.y_mid, b.y_mid) or _y_overlap_ok(a.bbox, b.bbox, 0.5)
+
 def _find_number_right_same_height(all_lines: List[FormulaLineRaw], ref: FormulaLineRaw, core_bb: fitz.Rect) -> Tuple[Optional[int], Optional[fitz.Rect]]:
     candidates: List[Tuple[int, fitz.Rect]] = []
     for ln in all_lines:
         if ln is ref:
             continue
-        if not _y_close(ln.y_mid, ref.y_mid):
+        if not _same_height_or_overlap(ln, ref):
             continue
         txt = _line_text_by_chars(ln.spans).strip()
         m = NUM_TAIL_RE.fullmatch(txt)
@@ -181,16 +196,24 @@ def _find_number_right_same_height(all_lines: List[FormulaLineRaw], ref: Formula
     candidates.sort(key=lambda t: t[1].x1, reverse=True)
     return candidates[0]
 
-def _find_number_on_next_line(all_lines: List[FormulaLineRaw], block_bb: fitz.Rect, ref_font: float, work_right: float) -> Tuple[Optional[int], Optional[fitz.Rect]]:
+def _find_number_on_adjacent_line(all_lines: List[FormulaLineRaw], block_bb: fitz.Rect, ref_font: float, work_right: float, direction: int) -> Tuple[Optional[int], Optional[fitz.Rect]]:
     """
-    Номер на следующей строке, сразу под формулой, у правого края.
+    Поиск номера на соседней строке у правого края.
+    direction: +1 = на следующей строке (ниже), -1 = на предыдущей (выше).
     """
     max_vgap = max(8.0, ref_font * 1.2)
-    best: Optional[Tuple[int, fitz.Rect, float]] = None  # (n, bb, vertical_gap)
+    best: Optional[Tuple[int, fitz.Rect, float]] = None  # (n, bb, |vgap|)
     for ln in all_lines:
-        if ln.bbox.y0 < block_bb.y1 - 0.5:
-            continue
-        vgap = ln.bbox.y0 - block_bb.y1
+        if direction > 0:
+            # ниже формулы
+            if ln.bbox.y0 < block_bb.y1 - 0.5:
+                continue
+            vgap = ln.bbox.y0 - block_bb.y1
+        else:
+            # выше формулы
+            if ln.bbox.y1 > block_bb.y0 + 0.5:
+                continue
+            vgap = block_bb.y0 - ln.bbox.y1
         if vgap < -0.5 or vgap > max_vgap:
             continue
         txt = _line_text_by_chars(ln.spans).strip()
@@ -202,7 +225,6 @@ def _find_number_on_next_line(all_lines: List[FormulaLineRaw], block_bb: fitz.Re
         except:
             continue
         bb = ln.bbox
-        # у правого края
         if abs(work_right - bb.x1) <= max(TOL_RIGHT, 6.0) and bb.width <= NUM_MAX_WIDTH:
             if best is None or vgap < best[2]:
                 best = (n, bb, vgap)
@@ -217,7 +239,7 @@ def _group_math_lines_to_blocks(lines: List[FormulaLineRaw], ref_font: float) ->
       - обе «достаточно математические» (ratio >= 0.6);
       - вертикальный зазор <= MAX_VGAP_FACTOR * ref_font;
       - по X есть перекрытие долей не меньше MIN_OVERLAP_X.
-    Возвращает список пар: (список_строк_блока, core_bbox_union)
+    Возвращает список пар: (список_строк_блока, VISUAL_core_bbox_union)
     """
     math_lines = [ln for ln in lines if ln.core_bbox and ln.math_ratio >= 0.6]
     if not math_lines:
@@ -229,6 +251,7 @@ def _group_math_lines_to_blocks(lines: List[FormulaLineRaw], ref_font: float) ->
     for ln in math_lines[1:]:
         prev = cur[-1]
         vgap = ln.bbox.y0 - prev.bbox.y1
+        # критерии "рядом по X" и "по вертикали"
         xov = _x_overlap_ratio(prev.core_bbox, ln.core_bbox)
         if vgap <= MAX_VGAP_FACTOR * max(10.0, ref_font) and xov >= MIN_OVERLAP_X:
             cur.append(ln)
@@ -239,9 +262,10 @@ def _group_math_lines_to_blocks(lines: List[FormulaLineRaw], ref_font: float) ->
 
     out: List[Tuple[List[FormulaLineRaw], fitz.Rect]] = []
     for bl in blocks:
-        core = _rect_union([ln.core_bbox for ln in bl if ln.core_bbox])
-        if core:
-            out.append((bl, core))
+        # ВАЖНО: визуальный bbox формулы (центруем по нему)
+        visual_core = _rect_union([ln.bbox for ln in bl])
+        if visual_core:
+            out.append((bl, visual_core))
     return out
 
 # ---------- сборка формульных блоков на странице ----------
@@ -275,14 +299,17 @@ def _gather_formula_blocks_on_page(page: fitz.Page, pidx: int, work_right: float
                 if num is not None:
                     break
 
-        # 3) если не найден — номер на следующей строке у правого края
+        # 3а) если не найден — номер на следующей строке у правого края
         if num is None:
-            num, num_bb = _find_number_on_next_line(raw_lines, core_bb, ref_font, work_right)
+            num, num_bb = _find_number_on_adjacent_line(raw_lines, core_bb, ref_font, work_right, direction=+1)
+        # 3б) если не найден — номер на предыдущей строке у правого края (симметрично)
+        if num is None:
+            num, num_bb = _find_number_on_adjacent_line(raw_lines, core_bb, ref_font, work_right, direction=-1)
 
         row_bb = _rect_union([core_bb, num_bb] if num_bb else [core_bb])
         out.append(FormulaBlock(
             page_index0=pidx,
-            core_bbox=core_bb,
+            core_bbox=core_bb,   # ВИЗУАЛЬНЫЙ bbox блока формулы
             bbox=row_bb,
             number=num,
             number_bbox=num_bb
@@ -360,7 +387,7 @@ def check_formulas(
             if gap_below is None or gap_below + 1e-3 < need:
                 issues.append(f"После формулы должна быть как минимум одна свободная строка (~≥{need:.1f} pt).")
 
-            # --- центрирование (только core, без номера) ---
+            # --- центрирование (по ВИЗУАЛЬНОМУ bbox блока формулы) ---
             if not _center_ok(blk.core_bbox, work_left, work_right):
                 issues.append("Формула должна быть выровнена по центру строки.")
 
