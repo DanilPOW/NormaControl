@@ -300,7 +300,7 @@ def check_formulas(
                 refs = [(p,bb) for p,items in all_refs.items() for (n,bb) in items if n==f.number]
                 refs = [(p,bb) for (p,bb) in refs if not (p==pg and bb.intersects(f.bbox))]
                 if not refs:
-                    issues.append(f"Нет ссылок в тексте вида «({f.number})» на эту формулу (6.8.4).")
+                    issues.append(f"Нет ссылок в тексте вида «({f.number})» на эту формулу.")
 
             # --- выход за рабочую область ---
             if not _inside_work(f.bbox, page_bound):
