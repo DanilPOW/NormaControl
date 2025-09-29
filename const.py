@@ -102,3 +102,17 @@ THIN_LINE_MM  = 1.0
 MARKER_MAX_W_MM = 8.0
 MARKER_MAX_H_MM = 8.0
 
+
+#подписи таблиц
+LEFT_MARGIN_PT   = 3.0 * CM_TO_PT
+RIGHT_MARGIN_PT  = 1.5 * CM_TO_PT
+TOP_MARGIN_PT    = 2.0 * CM_TO_PT
+CAPTION_PREFIX_TB = "Рисунок"
+BAD_PREFIX_RE_TB = re.compile(
+    r"^\s*(рис\.?|рис-|рисунок\.?|картинка|изображение|фото|figure|fig\.?)\b",
+    re.IGNORECASE
+)
+CAPTION_NUMBER_RE_TB = re.compile(
+    r"^Рисунок\s+(?P<number>\d+(?:\.\d+)*)\s–\s(?P<title>.+?)\s*$"
+)
+
