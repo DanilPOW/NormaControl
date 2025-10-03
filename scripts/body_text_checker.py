@@ -41,6 +41,23 @@ def _is_times_font(fontname: str) -> bool:
         name = name.split("+", 1)[1]
     return any(key in name for key in TIMES_FALLBACKS)
 
+def _span_is_bold(sp: dict) -> bool:
+    # 1) по флагам (если есть)
+    try:
+        if int(sp.get("flags", 0)) & 2:  # у PyMuPDF бит 2 часто означает bold
+            return True
+    except Exception:
+        pass
+    # 2) по имени шрифта
+    name = (sp.get("font") or "").lower()
+    return any(k in name for k in ("bold", "bd", "black", "semibold", "demi", "demibold"))
+
+def _line_is_all_bold(spans: list) -> bool:
+    """Истинно, если все спаны строки полужирные."""
+    if not spans:
+        return False
+    return all(_span_is_bold(s) for s in spans)
+
 def _dominant_span_props(spans: List[dict]) -> Tuple[str, float]:
     """Вернуть (основной_шрифт, основной_кегль) по спану с максимальной шириной."""
     if not spans:
@@ -167,6 +184,8 @@ def check_body_text(
         # Проверки по строкам
         for i, (bbox_i, spans_i) in enumerate(lines):
             font_i, size_i = _dominant_span_props(spans_i)
+            if _line_is_all_bold(spans_i):
+                continue
 
             # ШРИФТ
             if not _is_times_font(font_i):
@@ -195,6 +214,8 @@ def check_body_text(
             # МЕЖСТРОЧНИК (top-to-top)
             if i + 1 < len(lines):
                 bbox_j, spans_j = lines[i + 1]
+                if _line_is_all_bold(spans_i) or _line_is_all_bold(spans_j):
+                    continue
                 # эвристика «та же колонка»: схожий x0 или наложение по X
                 same_column = (abs(bbox_i.x0 - bbox_j.x0) < 40) or (bbox_j.x0 < bbox_i.x1)
                 if same_column:
