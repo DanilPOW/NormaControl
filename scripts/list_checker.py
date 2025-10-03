@@ -5,12 +5,18 @@ from typing import List, Dict, Tuple, Optional
 import re
 import fitz  # PyMuPDF
 from collections import defaultdict
-from const import *
+from const import *  # ожидаются: EN_DASH, NBSP, LEFT_MARGIN_PT, RIGHT_MARGIN_PT, PARAGRAPH_INDENT_PT,
+                     # INDENT_STEP_PT, INDENT_TOL_PT, ALIGN_TOL_PT, ALIGN_FRACTION_OK,
+                     # LINE_SPACING_TARGET, LINE_SPACING_TOL, MAX_GAP_BEFORE_AFTER_FACTOR,
+                     # RE_START_SIMPLE, RE_START_TIGHT, DEBUG_DIAGNOSTICS, CM_TO_PT, MARKER_MAX_W_PT, MARKER_MAX_H_PT
 
+# --- локальные расширения символов-маркеров ---
+MINUS = "\u2212"  # математический минус − (U+2212)
+# Базовый набор буллитов + en/em-dash + дефис + минус
+BULLET_CHARS = "•·●▪■" + EN_DASH + "—-" + MINUS
 
 def mm_to_pt(mm: float) -> float: return mm * 2.8346456693
 def pt_to_mm(pt: float) -> float: return pt / 2.8346456693
-
 
 @dataclass
 class Line:
@@ -27,16 +33,16 @@ class Line:
     tight_sep_ok: bool
     marker_x0: Optional[float] = None
     marker_x1: Optional[float] = None
-    is_bold: bool = False
+    is_bold: bool = False  # вся видимая строка жирная?
 
 @dataclass
 class Item:
     page_index0: int
     line: Line
     level: int
-    kind: str
-    marker_text: str
-    number_kind: str
+    kind: str            # "bulleted" | "numbered"
+    marker_text: str     # сам маркер (символ или префикс)
+    number_kind: str     # "digits" | "rusalpha" | "roman" | ""
 
 @dataclass
 class FoundList:
@@ -44,8 +50,7 @@ class FoundList:
     items: List[Item]
     bbox: fitz.Rect
 
-
-# --- простая регэкса заголовка раздела источников ---
+# --- заголовок раздела источников, ниже которого списки не проверяем ---
 RE_REFS_HEAD = re.compile(
     r"^\s*(?:СПИСОК\s+ИСПОЛЬЗОВАННЫХ\s+ИСТОЧНИКОВ|СПИСОК\s+ИСТОЧНИКОВ|ЛИТЕРАТУРА|ИСТОЧНИКИ|БИБЛИОГРАФИЧЕСКИЙ\s+СПИСОК)\s*\.?\s*$",
     re.IGNORECASE
@@ -74,7 +79,6 @@ def _line_all_bold(spans: List[Dict]) -> bool:
                 return False
     return has_visible
 
-
 def _median(vals: List[float]) -> float:
     if not vals: return 0.0
     s = sorted(vals); n = len(s)
@@ -89,7 +93,6 @@ def _rect_area_overlap(a: fitz.Rect, b: fitz.Rect) -> float:
     if ix1 > ix0 and iy1 > iy0:
         return (ix1-ix0)*(iy1-iy0)
     return 0.0
-
 
 # ---- Сбор текста + RAW (char-level) ----
 def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
@@ -140,7 +143,11 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                 raw_lines.append({"bbox": [min(xs), min(ys), max(xs), max(ys)],
                                   "spans": ln.get("spans", [])})
 
+    # Сопоставление для извлечения позиционирования после маркера
     for L in vis_lines:
+        # жирность строки
+        L.is_bold = _line_all_bold(L.spans)
+
         best = None
         best_overlap = 0.0
         for rl in raw_lines:
@@ -152,11 +159,11 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
         head_text, head_kind, number_kind, tight_sep_ok = "", "", "", False
         x0_text = L.bbox.x0; x0_text_src = "line_bbox"
 
-        # маркер регуляркой
+        # пробуем регулярку по префиксу
         m = RE_START_SIMPLE.match(L.text) or RE_START_TIGHT.match(L.text)
         if m:
             head_text = m.group(0).lstrip()
-            if head_text.startswith(EN_DASH):
+            if head_text.startswith(EN_DASH) or head_text[:1] in BULLET_CHARS:
                 head_kind = "bulleted"; number_kind = ""
             elif head_text and head_text[0].isdigit():
                 head_kind = "numbered"; number_kind = "digits"
@@ -195,6 +202,7 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                         x0_text = float(L.spans[1].get("bbox", [L.bbox.x0])[0]); x0_text_src = "next_span"
                     else:
                         x0_text = L.bbox.x0; x0_text_src = "tight_regex_fallback"
+
             else:
                 if len(L.spans) >= 2:
                     x0_text = float(L.spans[1].get("bbox", [L.bbox.x0])[0]); x0_text_src = "next_span"
@@ -205,7 +213,7 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
             L.marker_x1 = marker_x1
 
         else:
-            # маркер-символ
+            # маркер-символ в первом span
             if L.spans:
                 s0 = L.spans[0].get("text", "")
                 if s0:
@@ -227,26 +235,6 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                                     x0_text = float(bb[0]); x0_text_src = "after_marker_char"
                                     prev_bb = chars[j-1].get("bbox", bb)
                                     tight_sep_ok = (x0_text - float(prev_bb[2])) >= 0.4 * (L.size or 10.0)
-                                else:
-                                    x0_text = L.bbox.x0; x0_text_src = "line_bbox"
-
-                    elif ch0 in PSEUDO_BULLET_CHARS:
-                        head_text = ch0; head_kind = "bulleted"; number_kind = ""
-                        if best and best.get("spans"):
-                            sp0 = best["spans"][0]; chars = sp0.get("chars", [])
-                            if len(chars) >= 1:
-                                first_bb = chars[0].get("bbox", [L.bbox.x0, L.bbox.y0, L.bbox.x1, L.bbox.y1])
-                                L.marker_x0 = float(first_bb[0])
-                                L.marker_x1 = float(first_bb[2])
-                            if len(chars) >= 2:
-                                j = 1
-                                while j < len(chars) and chars[j].get("c") in (" ", NBSP, "\t"):
-                                    j += 1
-                                if j < len(chars):
-                                    bb = chars[j].get("bbox", [L.bbox.x0, L.bbox.y0, L.bbox.x1, L.bbox.y1])
-                                    x0_text = float(bb[0]); x0_text_src = "after_marker_char"
-                                    prev_bb = chars[j-1].get("bbox", bb)
-                                    tight_sep_ok = (x0_text - float(prev_bb[2])) >= 0.8 * (L.size or 10.0)
 
         L.x0_text = x0_text
         L.x0_text_src = x0_text_src
@@ -254,12 +242,11 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
         L.head_kind = head_kind
         L.number_kind = number_kind
         L.tight_sep_ok = tight_sep_ok
-        L.is_bold = _line_all_bold(L.spans)
 
+    # горизонтальный снап, чтобы упорядочивание было стабильнее
     y_snap = mm_to_pt(0.3)
     vis_lines.sort(key=lambda L: (round(L.bbox.y0 / y_snap)*y_snap, L.bbox.x0))
     return vis_lines
-
 
 # ---- Векторные маркеры (fallback) ----
 def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
@@ -281,10 +268,9 @@ def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
                 markers.append(r)
     return markers
 
-
-# ---- Склейка «буллит-строка + текст-строка» ----
+# ---- Склейка «строка-маркер + строка-текст» в PDF, где маркер отдельной строкой ----
 _SIMPLE_BULLET_ONLY = re.compile(
-    r"^\s*(?:[" + BULLET_CHARS + r"]|{}|-|—)\s*$".format(re.escape(EN_DASH))
+    r"^\s*(?:[" + re.escape(BULLET_CHARS) + r"]|" + re.escape(EN_DASH) + r")\s*$"
 )
 
 def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
@@ -326,7 +312,6 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
         i += 1
     return out
 
-
 def _marker_is_bold(line: Line) -> bool:
     if not line.spans:
         return False
@@ -342,9 +327,9 @@ def _marker_is_bold(line: Line) -> bool:
         return True
     return False
 
-
 # ---- Классификация линии -> Item ----
 def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rect]) -> Optional[Item]:
+    # ЖИРНЫЕ пункты НЕ детектим
     if line.is_bold:
         return None
     if _marker_is_bold(line):
@@ -356,6 +341,7 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     delta = x0 - base
     level = max(0, int((delta + INDENT_TOL_PT) // INDENT_STEP_PT))
 
+    # уже выделенный head_kind/number_kind
     if line.head_kind:
         if line.head_kind == "bulleted":
             mt = (line.head_text or "").strip()
@@ -369,11 +355,14 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
         elif line.head_kind == "numbered":
             return Item(-1, line, level, "numbered", (line.head_text or "").strip(), line.number_kind or "")
 
+    # регулярки
     m = RE_START_SIMPLE.match(t) or RE_START_TIGHT.match(t)
     if m:
         head = m.group(0).lstrip()
-        if head.startswith(EN_DASH):
-            return Item(-1, line, level, "bulleted", EN_DASH, "")
+        if head.startswith(EN_DASH) or (head[:1] in BULLET_CHARS):
+            # распознаём как маркер (в т.ч. "-" и "−"), потом на валидации наругаем
+            mt = head[:1] if head[:1] in BULLET_CHARS else EN_DASH
+            return Item(-1, line, level, "bulleted", mt, "")
         elif head[:1].isdigit():
             return Item(-1, line, level, "numbered", head.strip(), "digits")
         elif head[:1] in ALLOWED_LETTERS:
@@ -381,9 +370,11 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
         elif re.match(r"[IVXLC]", head[:1] or ""):
             return Item(-1, line, level, "numbered", head.strip(), "roman")
 
+    # первый символ — явный буллит
     if t and t[:1] in BULLET_CHARS:
         return Item(-1, line, level, "bulleted", t[:1], "")
 
+    # векторный маркер слева от текста
     best = None; best_dx = None
     for r in vector_markers:
         if _y_overlap(r, line.bbox) / max(1.0, min(r.height, line.bbox.height)) < 0.4:
@@ -400,7 +391,6 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
         return Item(-1, line, level, "bulleted", "[vector]", "")
     return None
 
-
 # ---- Сбор многострочных пунктов ----
 def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers: List[fitz.Rect]) -> List[Item]:
     items: List[Item] = []
@@ -410,7 +400,8 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
     TAIL_DY_FACTOR = 3.0
 
     for ln in lines:
-        if ln.is_bold:
+        # ЖИРНЫЕ строки обнуляют текущий пункт и пропускаются
+        if ln.is_bold or _marker_is_bold(ln):
             current = None
             last_y1 = None
             continue
@@ -418,6 +409,7 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
         head = _classify_simple(ln, work_left, vector_markers)
 
         if head:
+            # очистим ведущий маркер в тексте пункта (оставим «голый» текст)
             clean = RE_START_TIGHT.sub("", head.line.text, count=1).lstrip()
             head.line = Line(
                 text=clean,
@@ -449,7 +441,6 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
 
     return items
 
-
 # ---- Кластеризация ----
 def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
     if not items:
@@ -465,6 +456,10 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
             xs1 = [it.line.bbox.x1 for it in cur]
             ys1 = [it.line.bbox.y1 for it in cur]
             out.append(FoundList(cur[0].page_index0, cur.copy(), fitz.Rect(min(xs0),min(ys0),max(xs1),max(ys1))))
+        elif len(cur) == 1:
+            # одиночный явный список (важно для продолжения на следующей странице)
+            it = cur[0]
+            out.append(FoundList(it.page_index0, [it], it.line.bbox))
         cur.clear()
 
     MAX_DY_FACTOR = 2.0
@@ -505,7 +500,6 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
     flush()
     return out
 
-
 # ---- Нормализация уровней ----
 def _normalize_levels_in_list(fl: FoundList) -> None:
     if not fl.items:
@@ -543,19 +537,7 @@ def _normalize_levels_in_list(fl: FoundList) -> None:
 
         cur.level = lvl
 
-
 # ---- Межстрочник ----
-def _detect_align_justify(lines: List[Line], work_left: float, work_right: float) -> bool:
-    if len(lines) < 2:
-        return True
-    x1s = [ln.bbox.x1 for ln in lines[:-1]]
-    if not x1s:
-        return True
-    spread = max(x1s) - min(x1s)
-    right_air = [max(0.0, work_right - x1) for x1 in x1s]
-    ok_count = sum(ra <= 8.0 for ra in right_air)
-    return (spread <= ALIGN_TOL_PT) and (ok_count >= max(1, int(ALIGN_FRACTION_OK * len(x1s))))
-
 def _first_text_span_size(ln: Line) -> float:
     if ln.spans:
         for sp in ln.spans:
@@ -584,7 +566,7 @@ def _line_spacing_check(lines: List[Line]):
     lo, hi = LINE_SPACING_TARGET - LINE_SPACING_TOL, LINE_SPACING_TARGET + LINE_SPACING_TOL
     return (lo-1e-3 <= r <= hi+1e-3), r
 
-
+# ---- Исключения пересекающихся регионов (иллюстрации и т.п.) ----
 def _apply_excludes_to_lines(lines: List[Line], excludes: List[fitz.Rect]) -> List[Line]:
     if not excludes:
         return lines
@@ -613,7 +595,6 @@ def _apply_excludes_to_markers(markers: List[fitz.Rect], excludes: List[fitz.Rec
             kept.append(r)
     return kept
 
-
 def _space_visual_width_estimate(line: Line) -> float:
     fs = line.size or 12.0
     w = None
@@ -639,14 +620,8 @@ def _gap_after_marker(line: Line) -> Optional[float]:
     x_text = line.x0_text if line.x0_text_src else line.bbox.x0
     return float(x_text) - float(line.marker_x1)
 
-
-# ---- Простой поиск среза: «Список источников» ----
+# ---- Поиск "среза" по «Списку источников» ----
 def _find_refs_cutoff(pdf_document: fitz.Document, start_page: int = 1) -> Optional[Tuple[int, float]]:
-    """
-    Возвращает (page_index0, y0) первой строки заголовка раздела источников.
-    Всё на этой странице ниже y0 и все последующие страницы — не проверяются.
-    Если не найдено — None.
-    """
     for pidx, page in enumerate(pdf_document):
         page_num = pidx + 1
         if page_num < start_page:
@@ -670,6 +645,17 @@ def _find_refs_cutoff(pdf_document: fitz.Document, start_page: int = 1) -> Optio
                     return (pidx, float(min(ys)))
     return None
 
+# ---- Вспомогательное: продолжение списков через разрыв страницы ----
+def _clean_item_text_for_end(item: Item) -> str:
+    """Текст пункта без ведущего маркера, для проверки финальной точки."""
+    t = RE_START_TIGHT.sub("", item.line.text, count=1).strip()
+    return t
+
+def _append_item_to_foundlist(fl: FoundList, it: Item):
+    """Добавить пункт к уже найденному списку и расширить bbox."""
+    fl.items.append(it)
+    cb = fl.bbox; lb = it.line.bbox
+    fl.bbox = fitz.Rect(min(cb.x0, lb.x0), min(cb.y0, lb.y0), max(cb.x1, lb.x1), max(cb.y1, lb.y1))
 
 # ---- Основная проверка ----
 def check_lists(
@@ -684,17 +670,20 @@ def check_lists(
     error_pages = set()
     n_lists = 0
 
-    # находим позицию начала «Списка источников»
+    # начало «Списка источников»
     cutoff = _find_refs_cutoff(pdf_document, start_page=start_page)
     if DEBUG_DIAGNOSTICS:
         admin.append(f"[Dbg] Refs cutoff: {cutoff!r}")
+
+    # висячий список, который будет продолжен на следующей странице
+    pending: Optional[FoundList] = None
 
     for pidx, page in enumerate(pdf_document):
         page_num = pidx + 1
         if page_num < start_page:
             continue
 
-        # если уже после «Списка источников» — пропускаем страницу целиком
+        # после «Списка источников» — пропускаем
         if cutoff and pidx > cutoff[0]:
             if DEBUG_DIAGNOSTICS:
                 admin.append(f"[Dbg][p{page_num}] skipped (after refs cutoff)")
@@ -735,9 +724,31 @@ def check_lists(
         if DEBUG_DIAGNOSTICS:
             admin.append(f"[Dbg][p{page_num}] Items after classify+multiline: {len(candidates)}")
 
+        # Кластеризация кандидатов в списки
         found = _cluster_items(candidates, admin)
 
-        for fl in found:
+        # Если есть "висячий" список с предыдущей страницы — продолжим его первым списком текущей страницы
+        if pending and found:
+            # Склеиваем pending + found[0]
+            first = found.pop(0)
+            for it in first.items:
+                _append_item_to_foundlist(pending, it)
+            # Проверяем завершающую точку в последнем пункте
+            if pending.items:
+                last_txt = _clean_item_text_for_end(pending.items[-1])
+                if last_txt.endswith("."):
+                    # список закрыт — считаем, нормализуем уровни и отдаём в общую обработку как один из found
+                    _normalize_levels_in_list(pending)
+                    found.insert(0, pending)
+                    pending = None
+                else:
+                    # всё ещё висит — оставляем pending, а found продолжаем как обычно
+                    pass
+
+        # Если pending был, но на этой странице нет ни одного списка — оставляем pending висеть дальше
+
+        # Обработка/валидация найденных (и, возможно, склеенного pending) списков
+        for fl in list(found):
             _normalize_levels_in_list(fl)
             n_lists += 1
             list_bboxes_by_page[page_num].append((fl.bbox.x0, fl.bbox.y0, fl.bbox.x1, fl.bbox.y1))
@@ -749,6 +760,7 @@ def check_lists(
                 if it.level == 0 and top_kind is None:
                     top_kind = it.kind; top_number_kind = it.number_kind
 
+                # Вид маркера верхнего уровня
                 if it.level == 0:
                     if it.kind == "bulleted" and it.marker_text not in (EN_DASH, "[vector]"):
                         issues.append(f"Ур.1: маркированный список должен использовать только «{EN_DASH}».")
@@ -784,10 +796,11 @@ def check_lists(
                     if gap2 > MAX_GAP_BEFORE_AFTER_FACTOR * fs2:
                         issues.append("После списка не должно быть пустой строки (интервал после = 0 pt).")
 
+            # Межстрочный интервал внутри списка
             block_lines = [it.line for it in fl.items]
-
             ok_raw, ratio_raw = _line_spacing_check(block_lines)
             if ratio_raw is not None:
+                # корректировка под возможные смещения
                 ratio_adj = max(0.0, ratio_raw - 0.25)
                 lo = LINE_SPACING_TARGET - LINE_SPACING_TOL
                 hi = LINE_SPACING_TARGET + LINE_SPACING_TOL
@@ -795,6 +808,7 @@ def check_lists(
                 if not ok_ls:
                     issues.append(f"Межстрочный интервал в списке должен быть 1.5 (получено {ratio_adj:.2f}; допуск {lo:.2f}–{hi:.2f}).")
 
+            # Отступы и зазор после маркера (жирные мы уже отфильтровали на входе => здесь всё обычное)
             for it in fl.items:
                 marker_x0 = it.line.marker_x0
                 if marker_x0 is None:
@@ -814,7 +828,7 @@ def check_lists(
                     if gap > space_w * 1.15:
                         issues.append("После маркера слишком большой зазор: не больше одного пробела.")
 
-            # Пунктуация
+            # Пунктуация пунктов
             pure_texts = [RE_START_TIGHT.sub("", it.line.text, count=1).strip() for it in fl.items]
             for i, txt in enumerate(pure_texts):
                 last = (i == len(pure_texts)-1)
@@ -831,6 +845,7 @@ def check_lists(
                 if not last and re.search(r"\.\s+[А-ЯЁA-Z]", txt):
                     issues.append("Внутри пункта не допускаются новые предложения.")
 
+            # Аннотации/сигналы
             if issues:
                 error_pages.add(page_num)
                 if annotate_pdf:
@@ -850,6 +865,37 @@ def check_lists(
                         ann.update()
                     except Exception:
                         pass
+
+        # Если на странице остались списки и последний из них НЕ заканчивается точкой — вешаем pending
+        if not pending and found:
+            last_fl = found[-1]
+            if last_fl.items:
+                last_txt = _clean_item_text_for_end(last_fl.items[-1])
+                if not last_txt.endswith("."):
+                    # переносим его в pending (и НЕ считаем сейчас, он будет учтён когда закроется точкой)
+                    pending = last_fl
+                    # выкидываем его из подсчитанных (мы уже увеличили n_lists и добавили bbox выше, скорректируем)
+                    # Корректно: отменим учёт последнего — уменьшим n_lists и уберём bbox
+                    n_lists -= 1
+                    if list_bboxes_by_page.get(page_num):
+                        try:
+                            list_bboxes_by_page[page_num].pop()
+                            if not list_bboxes_by_page[page_num]:
+                                list_bboxes_by_page.pop(page_num, None)
+                        except Exception:
+                            pass
+                    # Также надо убрать аннотации, но это сложно постфактум — оставим как есть.
+
+    # Если документ закончился, а pending не закрыт точкой — считаем его завер­шившимся на последнем пункте этой же страницы
+    # (но добавим предупреждение)
+    if pending and pending.items:
+        # финализируем
+        _normalize_levels_in_list(pending)
+        page_num = pending.page_index0 + 1
+        if page_num >= start_page:
+            n_lists += 1
+            list_bboxes_by_page[page_num].append((pending.bbox.x0, pending.bbox.y0, pending.bbox.x1, pending.bbox.y1))
+            error_pages.add(page_num)
 
     user_summary = ("⚠️Проверка списков: обнаружены нарушения на стр. " + ", ".join(map(str, sorted(error_pages)))
                     ) if error_pages else "✅Проверка списков"
