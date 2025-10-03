@@ -138,27 +138,29 @@ def process_pdf_file(pdf_path: str):
         list_admin = list_results['admin_details']
         list_bboxes_by_page = list_results.get('list_bboxes_by_page', {})
 
+
+        struct_results = check_structural_headings(pdf_doc)
+        struct_user = struct_results['user_summary']
+        struct_admin = struct_results['admin_details']
+
+
+        # --- Основной текст (Times New Roman, 12–14 pt, межстрочник ≈1.5; исключаем не-текст) ---
         exclude_for_bodytext = _merge_bbox_maps(
             table_bboxes_by_page,
             table_caption_bboxes_by_page,
             figure_caption_bboxes_by_page,
-            list_bboxes_by_page
+            list_bboxes_by_page,
         )
-
         body_results = check_body_text(
             pdf_doc,
             table_bboxes_by_page=table_bboxes_by_page,
             table_caption_bboxes_by_page=table_caption_bboxes_by_page,
             figure_caption_bboxes_by_page=figure_caption_bboxes_by_page,
-            exclude_bboxes_by_page=exclude_for_bodytext,   # ← ДОБАВЛЕНО
-            start_page=1
+            exclude_bboxes_by_page=exclude_for_bodytext,
+            start_page=1,
         )
-        body_user = body_results['user_summary']
-        body_admin = body_results['admin_details']
-
-        struct_results = check_structural_headings(pdf_doc)
-        struct_user = struct_results['user_summary']
-        struct_admin = struct_results['admin_details']
+        body_user = body_results["user_summary"]
+        body_admin = body_results["admin_details"]
 
         formula_results = check_formulas(
             pdf_doc,
@@ -180,7 +182,8 @@ def process_pdf_file(pdf_path: str):
         f"{image_user}\n"
         f"{formula_user}\n"     
         f"{list_user}\n"
-        f"{struct_user}"
+        f"{struct_user}\n"
+        f"{body_user}"
     )
 
     admin_logs = (
@@ -192,7 +195,10 @@ def process_pdf_file(pdf_path: str):
         "\n\n[ImageCheck]\n" + image_admin +
         "\n\n[FormulaCheck]\n" + formula_admin +   
         "\n\n[ListCheck]\n" + list_admin +
-        "\n\n[StructHeadings]\n" + struct_admin
+        "\n\n[StructHeadings]\n" + struct_admin+
+        "\n\n[BodyText]\n" + body_admin
+        
+        
     )
     return (
         out_path,
