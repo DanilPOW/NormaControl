@@ -8,15 +8,45 @@ from collections import defaultdict
 from const import *  # ожидаются: EN_DASH, NBSP, LEFT_MARGIN_PT, RIGHT_MARGIN_PT, PARAGRAPH_INDENT_PT,
                      # INDENT_STEP_PT, INDENT_TOL_PT, ALIGN_TOL_PT, ALIGN_FRACTION_OK,
                      # LINE_SPACING_TARGET, LINE_SPACING_TOL, MAX_GAP_BEFORE_AFTER_FACTOR,
-                     # RE_START_SIMPLE, RE_START_TIGHT, DEBUG_DIAGNOSTICS, CM_TO_PT, MARKER_MAX_W_PT, MARKER_MAX_H_PT
-
-# --- локальные расширения символов-маркеров ---
-MINUS = "\u2212"  # математический минус − (U+2212)
-# Базовый набор буллитов + en/em-dash + дефис + минус
-BULLET_CHARS = "•·●▪■" + EN_DASH + "—-" + MINUS
+                     # RE_START_SIMPLE, RE_START_TIGHT, DEBUG_DIAGNOSTICS, CM_TO_PT,
+                     # MARKER_MAX_W_PT, MARKER_MAX_H_PT, ALLOWED_LETTERS
 
 def mm_to_pt(mm: float) -> float: return mm * 2.8346456693
 def pt_to_mm(pt: float) -> float: return pt / 2.8346456693
+
+# --- локальные расширения символов-маркеров ---
+MINUS = "\u2212"  # математический минус − (U+2212)
+# Базовый набор буллитов + en-dash + em-dash + обычный дефис + математический минус
+BULLET_CHARS = "•·●▪■" + EN_DASH + "—-" + MINUS
+
+# --- заголовок раздела источников ---
+RE_REFS_HEAD = re.compile(
+    r"^\s*(?:СПИСОК\s+ИСПОЛЬЗОВАННЫХ\s+ИСТОЧНИКОВ|СПИСОК\s+ИСТОЧНИКОВ|ЛИТЕРАТУРА|ИСТОЧНИКИ|БИБЛИОГРАФИЧЕСКИЙ\s+СПИСОК)\s*\.?\s*$",
+    re.IGNORECASE
+)
+
+# --- эвристики жирности ---
+BOLD_HINTS = ("bold", "semibold", "demi", "black", "heavy", "extrabold", "ultrabold")
+NON_BOLD_HINTS = ("regular", "book", "light", "thin")
+
+def _fontname_is_bold(name: str) -> bool:
+    n = (name or "").lower()
+    if any(h in n for h in NON_BOLD_HINTS):
+        return False
+    return any(h in n for h in BOLD_HINTS)
+
+def _span_is_bold(sp: Dict) -> bool:
+    return _fontname_is_bold(sp.get("font", ""))
+
+def _line_all_bold(spans: List[Dict]) -> bool:
+    has_visible = False
+    for sp in spans or []:
+        t = sp.get("text", "")
+        if t and t.strip():
+            has_visible = True
+            if not _span_is_bold(sp):
+                return False
+    return has_visible
 
 @dataclass
 class Line:
@@ -50,34 +80,6 @@ class FoundList:
     items: List[Item]
     bbox: fitz.Rect
 
-# --- заголовок раздела источников, ниже которого списки не проверяем ---
-RE_REFS_HEAD = re.compile(
-    r"^\s*(?:СПИСОК\s+ИСПОЛЬЗОВАННЫХ\s+ИСТОЧНИКОВ|СПИСОК\s+ИСТОЧНИКОВ|ЛИТЕРАТУРА|ИСТОЧНИКИ|БИБЛИОГРАФИЧЕСКИЙ\s+СПИСОК)\s*\.?\s*$",
-    re.IGNORECASE
-)
-
-# --- эвристики жирности ---
-BOLD_HINTS = ("bold", "semibold", "demi", "black", "heavy", "extrabold", "ultrabold")
-NON_BOLD_HINTS = ("regular", "book", "light", "thin")
-
-def _fontname_is_bold(name: str) -> bool:
-    n = (name or "").lower()
-    if any(h in n for h in NON_BOLD_HINTS):
-        return False
-    return any(h in n for h in BOLD_HINTS)
-
-def _span_is_bold(sp: Dict) -> bool:
-    return _fontname_is_bold(sp.get("font", ""))
-
-def _line_all_bold(spans: List[Dict]) -> bool:
-    has_visible = False
-    for sp in spans or []:
-        t = sp.get("text", "")
-        if t and t.strip():
-            has_visible = True
-            if not _span_is_bold(sp):
-                return False
-    return has_visible
 
 def _median(vals: List[float]) -> float:
     if not vals: return 0.0
@@ -93,6 +95,7 @@ def _rect_area_overlap(a: fitz.Rect, b: fitz.Rect) -> float:
     if ix1 > ix0 and iy1 > iy0:
         return (ix1-ix0)*(iy1-iy0)
     return 0.0
+
 
 # ---- Сбор текста + RAW (char-level) ----
 def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
@@ -143,9 +146,8 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                 raw_lines.append({"bbox": [min(xs), min(ys), max(xs), max(ys)],
                                   "spans": ln.get("spans", [])})
 
-    # Сопоставление для извлечения позиционирования после маркера
     for L in vis_lines:
-        # жирность строки
+        # пометить жирность строки
         L.is_bold = _line_all_bold(L.spans)
 
         best = None
@@ -159,7 +161,6 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
         head_text, head_kind, number_kind, tight_sep_ok = "", "", "", False
         x0_text = L.bbox.x0; x0_text_src = "line_bbox"
 
-        # пробуем регулярку по префиксу
         m = RE_START_SIMPLE.match(L.text) or RE_START_TIGHT.match(L.text)
         if m:
             head_text = m.group(0).lstrip()
@@ -242,11 +243,13 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
         L.head_kind = head_kind
         L.number_kind = number_kind
         L.tight_sep_ok = tight_sep_ok
+        # жирность уже отмечена в начале цикла
 
-    # горизонтальный снап, чтобы упорядочивание было стабильнее
+    # лёгкий снап по Y
     y_snap = mm_to_pt(0.3)
     vis_lines.sort(key=lambda L: (round(L.bbox.y0 / y_snap)*y_snap, L.bbox.x0))
     return vis_lines
+
 
 # ---- Векторные маркеры (fallback) ----
 def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
@@ -268,7 +271,8 @@ def _collect_vector_markers(page: fitz.Page) -> List[fitz.Rect]:
                 markers.append(r)
     return markers
 
-# ---- Склейка «строка-маркер + строка-текст» в PDF, где маркер отдельной строкой ----
+
+# ---- Склейка «маркер отдельно + текст» ----
 _SIMPLE_BULLET_ONLY = re.compile(
     r"^\s*(?:[" + re.escape(BULLET_CHARS) + r"]|" + re.escape(EN_DASH) + r")\s*$"
 )
@@ -312,6 +316,7 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
         i += 1
     return out
 
+
 def _marker_is_bold(line: Line) -> bool:
     if not line.spans:
         return False
@@ -327,9 +332,10 @@ def _marker_is_bold(line: Line) -> bool:
         return True
     return False
 
+
 # ---- Классификация линии -> Item ----
 def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rect]) -> Optional[Item]:
-    # ЖИРНЫЕ пункты НЕ детектим
+    # ЖИРНЫЕ пункты НЕ детектируются
     if line.is_bold:
         return None
     if _marker_is_bold(line):
@@ -360,7 +366,7 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
     if m:
         head = m.group(0).lstrip()
         if head.startswith(EN_DASH) or (head[:1] in BULLET_CHARS):
-            # распознаём как маркер (в т.ч. "-" и "−"), потом на валидации наругаем
+            # распознаём как маркер (в т.ч. "-" и "−"), валидация про «неправильный вид» — ниже
             mt = head[:1] if head[:1] in BULLET_CHARS else EN_DASH
             return Item(-1, line, level, "bulleted", mt, "")
         elif head[:1].isdigit():
@@ -370,7 +376,7 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
         elif re.match(r"[IVXLC]", head[:1] or ""):
             return Item(-1, line, level, "numbered", head.strip(), "roman")
 
-    # первый символ — явный буллит
+    # явный буллит первым символом
     if t and t[:1] in BULLET_CHARS:
         return Item(-1, line, level, "bulleted", t[:1], "")
 
@@ -391,6 +397,7 @@ def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rec
         return Item(-1, line, level, "bulleted", "[vector]", "")
     return None
 
+
 # ---- Сбор многострочных пунктов ----
 def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers: List[fitz.Rect]) -> List[Item]:
     items: List[Item] = []
@@ -409,7 +416,7 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
         head = _classify_simple(ln, work_left, vector_markers)
 
         if head:
-            # очистим ведущий маркер в тексте пункта (оставим «голый» текст)
+            # очистим ведущий маркер (оставим «голый» текст)
             clean = RE_START_TIGHT.sub("", head.line.text, count=1).lstrip()
             head.line = Line(
                 text=clean,
@@ -441,7 +448,23 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
 
     return items
 
-# ---- Кластеризация ----
+
+# ---- Группировка по колонкам ----
+def _split_by_columns(items: List[Item], bin_w: float) -> List[List[Item]]:
+    cols: List[List[Item]] = []
+    for it in sorted(items, key=lambda i: (i.line.x0_text if i.line.x0_text_src else i.line.bbox.x0)):
+        x = it.line.x0_text if it.line.x0_text_src else it.line.bbox.x0
+        placed = False
+        for g in cols:
+            gx = sum((jj.line.x0_text if jj.line.x0_text_src else jj.line.bbox.x0) for jj in g)/len(g)
+            if abs(x - gx) <= bin_w:
+                g.append(it); placed = True; break
+        if not placed:
+            cols.append([it])
+    return cols
+
+
+# ---- Кластеризация внутри одной колонки ----
 def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
     if not items:
         return []
@@ -456,10 +479,7 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
             xs1 = [it.line.bbox.x1 for it in cur]
             ys1 = [it.line.bbox.y1 for it in cur]
             out.append(FoundList(cur[0].page_index0, cur.copy(), fitz.Rect(min(xs0),min(ys0),max(xs1),max(ys1))))
-        elif len(cur) == 1:
-            # одиночный явный список (важно для продолжения на следующей странице)
-            it = cur[0]
-            out.append(FoundList(it.page_index0, [it], it.line.bbox))
+        # одиночки НЕ считаем отдельным списком
         cur.clear()
 
     MAX_DY_FACTOR = 2.0
@@ -500,6 +520,7 @@ def _cluster_items(items: List[Item], admin: List[str]) -> List[FoundList]:
     flush()
     return out
 
+
 # ---- Нормализация уровней ----
 def _normalize_levels_in_list(fl: FoundList) -> None:
     if not fl.items:
@@ -537,6 +558,7 @@ def _normalize_levels_in_list(fl: FoundList) -> None:
 
         cur.level = lvl
 
+
 # ---- Межстрочник ----
 def _first_text_span_size(ln: Line) -> float:
     if ln.spans:
@@ -566,7 +588,8 @@ def _line_spacing_check(lines: List[Line]):
     lo, hi = LINE_SPACING_TARGET - LINE_SPACING_TOL, LINE_SPACING_TARGET + LINE_SPACING_TOL
     return (lo-1e-3 <= r <= hi+1e-3), r
 
-# ---- Исключения пересекающихся регионов (иллюстрации и т.п.) ----
+
+# ---- Исключения по регионам ----
 def _apply_excludes_to_lines(lines: List[Line], excludes: List[fitz.Rect]) -> List[Line]:
     if not excludes:
         return lines
@@ -620,7 +643,8 @@ def _gap_after_marker(line: Line) -> Optional[float]:
     x_text = line.x0_text if line.x0_text_src else line.bbox.x0
     return float(x_text) - float(line.marker_x1)
 
-# ---- Поиск "среза" по «Списку источников» ----
+
+# ---- Поиск "среза" «Список источников» ----
 def _find_refs_cutoff(pdf_document: fitz.Document, start_page: int = 1) -> Optional[Tuple[int, float]]:
     for pidx, page in enumerate(pdf_document):
         page_num = pidx + 1
@@ -645,7 +669,8 @@ def _find_refs_cutoff(pdf_document: fitz.Document, start_page: int = 1) -> Optio
                     return (pidx, float(min(ys)))
     return None
 
-# ---- Вспомогательное: продолжение списков через разрыв страницы ----
+
+# ---- Вспомогательное для «точки в конце» и склейки ----
 def _clean_item_text_for_end(item: Item) -> str:
     """Текст пункта без ведущего маркера, для проверки финальной точки."""
     t = RE_START_TIGHT.sub("", item.line.text, count=1).strip()
@@ -656,6 +681,7 @@ def _append_item_to_foundlist(fl: FoundList, it: Item):
     fl.items.append(it)
     cb = fl.bbox; lb = it.line.bbox
     fl.bbox = fitz.Rect(min(cb.x0, lb.x0), min(cb.y0, lb.y0), max(cb.x1, lb.x1), max(cb.y1, lb.y1))
+
 
 # ---- Основная проверка ----
 def check_lists(
@@ -670,12 +696,12 @@ def check_lists(
     error_pages = set()
     n_lists = 0
 
-    # начало «Списка источников»
+    # начало «Список источников»
     cutoff = _find_refs_cutoff(pdf_document, start_page=start_page)
     if DEBUG_DIAGNOSTICS:
         admin.append(f"[Dbg] Refs cutoff: {cutoff!r}")
 
-    # висячий список, который будет продолжен на следующей странице
+    # висячий список (продолжается на следующей странице, пока нет точки)
     pending: Optional[FoundList] = None
 
     for pidx, page in enumerate(pdf_document):
@@ -683,7 +709,7 @@ def check_lists(
         if page_num < start_page:
             continue
 
-        # после «Списка источников» — пропускаем
+        # после «Списка источников» — пропуск страницы
         if cutoff and pidx > cutoff[0]:
             if DEBUG_DIAGNOSTICS:
                 admin.append(f"[Dbg][p{page_num}] skipped (after refs cutoff)")
@@ -696,7 +722,7 @@ def check_lists(
         lines = _collect_text_lines_with_raw(page)
         lines = _merge_bullet_lines(lines)
 
-        # на странице с заголовком «Список источников» берём только строки выше заголовка
+        # на странице с заголовком «Список источников»: берём только выше заголовка
         if cutoff and pidx == cutoff[0]:
             cut_y0 = cutoff[1]
             lines = [ln for ln in lines if ln.bbox.y0 < cut_y0]
@@ -724,31 +750,45 @@ def check_lists(
         if DEBUG_DIAGNOSTICS:
             admin.append(f"[Dbg][p{page_num}] Items after classify+multiline: {len(candidates)}")
 
-        # Кластеризация кандидатов в списки
-        found = _cluster_items(candidates, admin)
+        # --- Колонночная группировка + кластеризация внутри колонки ---
+        found: List[FoundList] = []
+        for group in _split_by_columns(candidates, bin_w=1.5*INDENT_STEP_PT):
+            found.extend(_cluster_items(group, admin))
 
-        # Если есть "висячий" список с предыдущей страницы — продолжим его первым списком текущей страницы
-        if pending and found:
-            # Склеиваем pending + found[0]
-            first = found.pop(0)
-            for it in first.items:
-                _append_item_to_foundlist(pending, it)
-            # Проверяем завершающую точку в последнем пункте
-            if pending.items:
-                last_txt = _clean_item_text_for_end(pending.items[-1])
+        # --- Склейка с pending с предыдущей страницы ---
+        if pending:
+            if found:
+                # приклеиваем первый список текущей страницы к pending
+                first = found.pop(0)
+                for it in first.items:
+                    _append_item_to_foundlist(pending, it)
+                # проверяем, закрывается ли точкой
+                last_txt = _clean_item_text_for_end(pending.items[-1]) if pending.items else ""
                 if last_txt.endswith("."):
-                    # список закрыт — считаем, нормализуем уровни и отдаём в общую обработку как один из found
+                    # финализируем pending как список этой страницы
                     _normalize_levels_in_list(pending)
+                    # теперь pending становится обычным найденным списком и попадёт в валидации/подсчёт ниже
                     found.insert(0, pending)
                     pending = None
                 else:
-                    # всё ещё висит — оставляем pending, а found продолжаем как обычно
+                    # всё ещё висит — не учитывать на этой странице
                     pass
+            else:
+                # на странице списков нет — pending переносится далее
+                pass
 
-        # Если pending был, но на этой странице нет ни одного списка — оставляем pending висеть дальше
+        # --- Если последний список на странице не оканчивается точкой, подвесим его в pending и не учитываем сейчас ---
+        if found:
+            last_fl = found[-1]
+            if last_fl.items:
+                last_txt = _clean_item_text_for_end(last_fl.items[-1])
+                if not last_txt.endswith("."):
+                    # уводим последний список в pending: не считаем и не валидируем на этой странице
+                    pending = last_fl
+                    found.pop()
 
-        # Обработка/валидация найденных (и, возможно, склеенного pending) списков
-        for fl in list(found):
+        # --- Обработка/валидация всех финализированных на странице списков ---
+        for fl in found:
             _normalize_levels_in_list(fl)
             n_lists += 1
             list_bboxes_by_page[page_num].append((fl.bbox.x0, fl.bbox.y0, fl.bbox.x1, fl.bbox.y1))
@@ -800,7 +840,6 @@ def check_lists(
             block_lines = [it.line for it in fl.items]
             ok_raw, ratio_raw = _line_spacing_check(block_lines)
             if ratio_raw is not None:
-                # корректировка под возможные смещения
                 ratio_adj = max(0.0, ratio_raw - 0.25)
                 lo = LINE_SPACING_TARGET - LINE_SPACING_TOL
                 hi = LINE_SPACING_TARGET + LINE_SPACING_TOL
@@ -808,7 +847,7 @@ def check_lists(
                 if not ok_ls:
                     issues.append(f"Межстрочный интервал в списке должен быть 1.5 (получено {ratio_adj:.2f}; допуск {lo:.2f}–{hi:.2f}).")
 
-            # Отступы и зазор после маркера (жирные мы уже отфильтровали на входе => здесь всё обычное)
+            # Отступы и зазор после маркера
             for it in fl.items:
                 marker_x0 = it.line.marker_x0
                 if marker_x0 is None:
@@ -866,30 +905,8 @@ def check_lists(
                     except Exception:
                         pass
 
-        # Если на странице остались списки и последний из них НЕ заканчивается точкой — вешаем pending
-        if not pending and found:
-            last_fl = found[-1]
-            if last_fl.items:
-                last_txt = _clean_item_text_for_end(last_fl.items[-1])
-                if not last_txt.endswith("."):
-                    # переносим его в pending (и НЕ считаем сейчас, он будет учтён когда закроется точкой)
-                    pending = last_fl
-                    # выкидываем его из подсчитанных (мы уже увеличили n_lists и добавили bbox выше, скорректируем)
-                    # Корректно: отменим учёт последнего — уменьшим n_lists и уберём bbox
-                    n_lists -= 1
-                    if list_bboxes_by_page.get(page_num):
-                        try:
-                            list_bboxes_by_page[page_num].pop()
-                            if not list_bboxes_by_page[page_num]:
-                                list_bboxes_by_page.pop(page_num, None)
-                        except Exception:
-                            pass
-                    # Также надо убрать аннотации, но это сложно постфактум — оставим как есть.
-
-    # Если документ закончился, а pending не закрыт точкой — считаем его завер­шившимся на последнем пункте этой же страницы
-    # (но добавим предупреждение)
+    # Документ закончился, а pending не закрыт точкой — финализируем как есть и помечаем как нарушение
     if pending and pending.items:
-        # финализируем
         _normalize_levels_in_list(pending)
         page_num = pending.page_index0 + 1
         if page_num >= start_page:
