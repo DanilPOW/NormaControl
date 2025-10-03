@@ -59,12 +59,15 @@ def _expected_top2top(size_a: float, size_b: float) -> Tuple[float, float]:
     target = LINE_SPACING_TARGET * ref
     return target * (1.0 - LINE_SPACING_TOL), target * (1.0 + LINE_SPACING_TOL)
 
-def _annotate(page: fitz.Page, rect: fitz.Rect, msg: str):
-    annot = page.add_rect_annot(rect)
-    annot.set_info(content=f"Сервис нормоконтроля: {msg}")
-    annot.set_colors(stroke=(1, 0, 0))
-    annot.set_border(width=0.7)
-    annot.update()
+def _add_text_annot_silent(page: fitz.Page, x: float, y: float, msg: str):
+    """Безопасно добавить точечную аннотацию (pin) с заголовком."""
+    try:
+        pt = fitz.Point(float(x), float(y))
+        ann = page.add_text_annot(pt, f"Сервис нормоконтроля: {msg}")
+        ann.set_info(title="Сервис нормоконтроля", content=msg)
+        ann.update()
+    except Exception:
+        pass
 
 def _normalize_page_map(
     mp: Optional[Dict[int, List[Tuple[float, float, float, float]]]],
@@ -103,8 +106,9 @@ def check_body_text(
     annotate_pdf: bool = True,
 ) -> dict:
     """
-    Проверяет основной текст: Times New Roman, 12–14 pt, межстрочник ≈1.5×кегль.
+    Проверяет основной текст: Times New Roman, 12–14 pt, межстрочник ≈1.5×кегля.
     Исключает области других элементов по карте exclude_bboxes_by_page (если передана).
+    Делает ТОЛЬКО точечные аннотации (без рамок) в местах ошибок.
     Возвращает отчёт в стиле других чекеров: {"user_summary": str, "admin_details": str}.
     """
     total_pages = len(doc)
@@ -164,31 +168,31 @@ def check_body_text(
         for i, (bbox_i, spans_i) in enumerate(lines):
             font_i, size_i = _dominant_span_props(spans_i)
 
-            # Шрифт
+            # ШРИФТ
             if not _is_times_font(font_i):
                 page_issues += 1; total_issues += 1
                 if annotate_pdf:
-                    _annotate(
-                        page, bbox_i,
+                    _add_text_annot_silent(
+                        page, bbox_i.x0, bbox_i.y0,
                         "Использован не Times New Roman. Как должно быть: основной текст набран гарнитурой Times New Roman."
                     )
                 admin_lines.append(
                     f"[Стр. {page_num}] Неверная гарнитура на y≈{bbox_i.y0:.1f} pt: '{font_i}'"
                 )
 
-            # Кегль
+            # КЕГЛЬ
             if not _check_size_ok(size_i):
                 page_issues += 1; total_issues += 1
                 if annotate_pdf:
-                    _annotate(
-                        page, bbox_i,
+                    _add_text_annot_silent(
+                        page, bbox_i.x0, bbox_i.y0,
                         f"Неверный кегль основного текста ({size_i:.1f} pt). Как должно быть: 12–14 pt."
                     )
                 admin_lines.append(
                     f"[Стр. {page_num}] Неверный кегль на y≈{bbox_i.y0:.1f} pt: {size_i:.1f} pt (нужно 12–14)"
                 )
 
-            # Межстрочник (top-to-top)
+            # МЕЖСТРОЧНИК (top-to-top)
             if i + 1 < len(lines):
                 bbox_j, spans_j = lines[i + 1]
                 # эвристика «та же колонка»: схожий x0 или наложение по X
@@ -200,13 +204,9 @@ def check_body_text(
                     if not (lo <= top2top <= hi):
                         page_issues += 1; total_issues += 1
                         if annotate_pdf:
-                            gap_rect = fitz.Rect(min(bbox_i.x0, bbox_j.x0),
-                                                 bbox_i.y0,
-                                                 max(bbox_i.x1, bbox_j.x1),
-                                                 bbox_j.y0)
-                            _annotate(
-                                page,
-                                gap_rect,
+                            # ставим пин примерно в «зазоре» — у верхней строки
+                            _add_text_annot_silent(
+                                page, min(bbox_i.x0, bbox_j.x0), min(bbox_i.y0, bbox_j.y0),
                                 (f"Неверный межстрочный интервал (~{top2top:.1f} pt). "
                                  f"Как должно быть: ≈ 1.5×кегль (диапазон {lo:.1f}–{hi:.1f} pt для текущего кегля).")
                             )
