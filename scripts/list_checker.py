@@ -5,7 +5,7 @@ from typing import List, Dict, Tuple, Optional
 import re
 import fitz  # PyMuPDF
 from collections import defaultdict
-from const import *  # Ожидаемые константы см. ниже
+from const import *  # см. список ожидаемых констант ниже
 
 # Ожидается, что в const.py определено:
 # EN_DASH, NBSP,
@@ -18,12 +18,12 @@ from const import *  # Ожидаемые константы см. ниже
 def mm_to_pt(mm: float) -> float: return mm * 2.8346456693
 def pt_to_mm(pt: float) -> float: return pt / 2.8346456693
 
-# --- Расширенный набор простых буллитов и тире ---
+# --- Набор буллитов и тире (расширенный) ---
 MINUS = "\u2212"  # − (U+2212)
 BULLET_CHARS = "•·●▪■"
 DASH_CHARS = EN_DASH + "—-" + MINUS  # короткое тире + длинное тире + дефис + минус
 
-# --- Заголовок раздела источников («срез» документа) ---
+# --- Заголовок раздела источников (срез документа) ---
 RE_REFS_HEAD = re.compile(
     r"^\s*(?:СПИСОК\s+ИСПОЛЬЗОВАННЫХ\s+ИСТОЧНИКОВ|СПИСОК\s+ИСТОЧНИКОВ|ЛИТЕРАТУРА|ИСТОЧНИКИ|БИБЛИОГРАФИЧЕСКИЙ\s+СПИСОК)\s*\.?\s*$",
     re.IGNORECASE
@@ -62,7 +62,6 @@ class Line:
     spans: List[Dict]
     x0_text: float
     x0_text_src: str
-    # служебное:
     is_bold: bool = False
 
 
@@ -70,7 +69,7 @@ class Line:
 class Item:
     page_index0: int
     line: Line
-    level: int              # 0 = верхний уровень (ожидаем EN_DASH), 1+ = вложенные
+    level: int              # 0 = верхний уровень (требуется EN_DASH), 1+ = остальные
     kind: str               # "bulleted" | "numbered"
     marker_text: str        # исходный маркер (символ/токен)
     number_kind: str        # "digits" | "rusalpha" | "roman" | ""
@@ -113,7 +112,7 @@ def _first_text_span_size(ln: Line) -> float:
     return ln.size or 12.0
 
 
-# --- Сбор видимых строк + маркировка жирности ---
+# --- Сбор видимых строк + жирность ---
 def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
     out: List[Line] = []
     d = page.get_text("dict")
@@ -143,18 +142,17 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                 text=text, bbox=rect, size=size, font=font, spans=spans,
                 x0_text=rect.x0, x0_text_src="line_bbox", is_bold=_line_all_bold(spans)
             ))
-    # стабилизируем порядок
     snap = mm_to_pt(0.3)
     out.sort(key=lambda L: (round(L.bbox.y0/snap)*snap, L.bbox.x0))
     return out
 
 
-# --- Регэкспы для нумерации ---
+# --- Регэкспы нумерации ---
 RE_NUM_DIGITS  = re.compile(r"^\s*(\d+)(?:[.)])\s+")
 RE_NUM_ALPHA   = re.compile(r"^\s*([А-Яа-яЁёA-Za-z])(?:[.)])\s+")
 RE_NUM_ROMAN   = re.compile(r"^\s*([IVXLC]+)(?:[.)])\s+")
 
-def _classify_marker(line: Line) -> Optional[Tuple[str,str,str]]:
+def _classify_marker(line: Line, admin: Optional[List[str]] = None) -> Optional[Tuple[str,str,str]]:
     """
     Возвращает (kind, number_kind, marker_text) либо None.
     kind: "bulleted"|"numbered"
@@ -168,35 +166,51 @@ def _classify_marker(line: Line) -> Optional[Tuple[str,str,str]]:
 
     # 1) Символьный буллит/тире
     if t and (t[0] in BULLET_CHARS or t[0] in DASH_CHARS):
-        # берём ровно первый символ как маркер
+        if DEBUG_DIAGNOSTICS and admin is not None:
+            admin.append(f"[Dbg][classify] bulleted '{t[:10].replace(NBSP,' ')}' -> '{t[0]}'")
         return ("bulleted", "", t[0])
 
     # 2) Нумерация
     m = RE_NUM_DIGITS.match(t)
     if m:
+        if DEBUG_DIAGNOSTICS and admin is not None:
+            admin.append(f"[Dbg][classify] digits '{t[:10]}' -> '{m.group(1)})'")
         return ("numbered", "digits", m.group(1)+")")
 
     m = RE_NUM_ALPHA.match(t)
     if m:
+        if DEBUG_DIAGNOSTICS and admin is not None:
+            admin.append(f"[Dbg][classify] alpha '{t[:10]}' -> '{m.group(1)})'")
         return ("numbered", "rusalpha", m.group(1)+")")
 
     m = RE_NUM_ROMAN.match(t)
     if m:
+        if DEBUG_DIAGNOSTICS and admin is not None:
+            admin.append(f"[Dbg][classify] roman '{t[:10]}' -> '{m.group(1)})'")
         return ("numbered", "roman", m.group(1)+")")
 
-    # 3) Попытка «плотной» записи маркера через RE_START_*
     m2 = RE_START_SIMPLE.match(t) or RE_START_TIGHT.match(t)
     if m2:
         head = m2.group(0).lstrip()
         if head and (head[0] in BULLET_CHARS or head[0] in DASH_CHARS):
+            if DEBUG_DIAGNOSTICS and admin is not None:
+                admin.append(f"[Dbg][classify] bulleted-tight '{head[:10]}' -> '{head[0]}'")
             return ("bulleted", "", head[0])
         if head[:1].isdigit():
+            if DEBUG_DIAGNOSTICS and admin is not None:
+                admin.append(f"[Dbg][classify] digits-tight '{head[:10]}'")
             return ("numbered", "digits", head.strip())
         if head[:1] in ALLOWED_LETTERS:
+            if DEBUG_DIAGNOSTICS and admin is not None:
+                admin.append(f"[Dbg][classify] alpha-tight '{head[:10]}'")
             return ("numbered", "rusalpha", head.strip())
         if re.match(r"[IVXLC]", head[:1] or ""):
+            if DEBUG_DIAGNOSTICS and admin is not None:
+                admin.append(f"[Dbg][classify] roman-tight '{head[:10]}'")
             return ("numbered", "roman", head.strip())
 
+    if DEBUG_DIAGNOSTICS and admin is not None:
+        admin.append(f"[Dbg][classify] no-marker '{t[:40]}'")
     return None
 
 
@@ -206,38 +220,44 @@ def _strip_marker_text(kind: str, marker_text: str, txt: str) -> str:
     """
     s = txt.lstrip()
     if kind == "bulleted":
-        # убираем первый символ (буллит/тире)
         return s[1:].lstrip() if s else ""
-    # numbered: отрежем ведущий токен до пробела
-    m = re.match(r"^\s*\S+\s+(.*)$", s)
+    m = re.match(r"^\s*\S+\s+(.*)$", s)  # numbered
     if m:
         return m.group(1).strip()
     return s
 
 
-# --- Сбор пунктов (с многострочкой) слева-направо, сверху-вниз ---
-def _gather_items(lines: List[Line]) -> List[Item]:
+# --- Сбор пунктов с многострочкой и логами ---
+def _gather_items(lines: List[Line], admin: List[str], stats: Dict[str, int]) -> List[Item]:
     items: List[Item] = []
     cur: Optional[Item] = None
     last_y1: Optional[float] = None
 
     for ln in lines:
-        # жирные — пропускаем
+        # краткое описание строки для логов
+        if DEBUG_DIAGNOSTICS:
+            msg = f"[Dbg][gather] y0={ln.bbox.y0:.2f} '{ln.text[:40].replace(NBSP,' ')}'"
+
+        # жирные — пропускаем полностью
         if ln.is_bold:
+            stats["bold_skipped"] += 1
+            if DEBUG_DIAGNOSTICS:
+                admin.append(msg + " -> skip: bold line")
             cur = None
             last_y1 = None
             continue
 
-        mark = _classify_marker(ln)
+        mark = _classify_marker(ln, admin if DEBUG_DIAGNOSTICS else None)
         if mark:
+            stats["marker_hits"] += 1
             kind, number_kind, marker_text = mark
 
-            # Уровень определяем максимально просто:
-            #  - если маркер — КОРОТКОЕ тире EN_DASH → уровень 0 (верхний)
-            #  - иначе уровень 1 (или глубже; нам не критично точное число)
+            # уровень 0 только если маркер — короткое тире EN_DASH
             level = 0 if (kind == "bulleted" and marker_text == EN_DASH) else 1
-
             clean = _strip_marker_text(kind, marker_text, ln.text)
+
+            if DEBUG_DIAGNOSTICS:
+                admin.append(msg + f" -> marker: kind={kind} num={number_kind} mark='{marker_text}' level={level}")
 
             it = Item(
                 page_index0=-1,
@@ -252,13 +272,20 @@ def _gather_items(lines: List[Line]) -> List[Item]:
             last_y1 = ln.bbox.y1
             continue
 
-        # многострочка: если нет маркера, но есть «текущий» пункт — аккуратно присоединяем
+        stats["marker_none"] += 1
+        if DEBUG_DIAGNOSTICS:
+            admin.append(msg + " -> no marker")
+
+        # многострочный хвост?
         if cur is not None:
             fs = _first_text_span_size(cur.line)
             dy = _y_dist(cur.line.bbox, ln.bbox)
-            if dy <= 2.5 * fs:  # простой разумный порог
+            if dy <= 2.5 * fs:
+                stats["multiline_attached"] += 1
+                if DEBUG_DIAGNOSTICS:
+                    admin.append(f"[Dbg][gather] multiline attach: dy={dy:.2f} fs={fs:.2f} -> '{ln.text[:40]}'")
+                # склеиваем текст и bbox
                 cur.line.text = (cur.line.text.rstrip() + " " + ln.text.lstrip()).strip()
-                # расширяем bbox
                 cb = cur.line.bbox
                 cur.line.bbox = fitz.Rect(
                     min(cb.x0, ln.bbox.x0), min(cb.y0, ln.bbox.y0),
@@ -266,8 +293,11 @@ def _gather_items(lines: List[Line]) -> List[Item]:
                 )
                 last_y1 = cur.line.bbox.y1
                 continue
+            else:
+                if DEBUG_DIAGNOSTICS:
+                    admin.append(f"[Dbg][gather] multiline FAIL: dy={dy:.2f} fs={fs:.2f} (too far)")
 
-        # иначе — сбрасываем «текущий» контекст
+        # сброс текущего пункта
         cur = None
         last_y1 = None
 
@@ -285,7 +315,7 @@ def _normalize_bbox(fl: FoundList) -> None:
 def _find_refs_cutoff(pdf_document: fitz.Document, start_page: int = 1) -> Optional[Tuple[int, float]]:
     """
     Возвращает (page_index0, y0) первой строки заголовка «Список источников».
-    Всё ниже этой строки (на странице заголовка) и все дальнейшие страницы — не проверяются.
+    Всё ниже этой строки (на странице заголовка) и все последующие страницы — не проверяются.
     """
     for pidx, page in enumerate(pdf_document):
         page_num = pidx + 1
@@ -341,18 +371,30 @@ def check_lists(
     error_pages = set()
     n_lists = 0
 
+    # сводная статистика
+    stats = dict(
+        bold_skipped=0,
+        marker_hits=0,
+        marker_none=0,
+        multiline_attached=0,
+        list_breaks=0,
+        pending_started=0,
+        pending_attached=0,
+        pending_finalized=0,
+    )
+
     cutoff = _find_refs_cutoff(pdf_document, start_page=start_page)
     if DEBUG_DIAGNOSTICS:
         admin.append(f"[Dbg] Refs cutoff: {cutoff!r}")
 
-    pending: Optional[FoundList] = None  # незакрытый (переносящийся) список
+    pending: Optional[FoundList] = None  # переносимый список между страницами
 
     for pidx, page in enumerate(pdf_document):
         page_num = pidx + 1
         if page_num < start_page:
             continue
 
-        # после «Списка источников» — ничего не проверяем
+        # после «Списка источников» — пропускаем
         if cutoff and pidx > cutoff[0]:
             if DEBUG_DIAGNOSTICS:
                 admin.append(f"[Dbg][p{page_num}] skipped (after refs cutoff)")
@@ -360,13 +402,12 @@ def check_lists(
 
         lines = _collect_text_lines_with_raw(page)
 
-        # отрезаем низ страницы с заголовком «Список источников»
+        # на странице с заголовком источников — режем низ
         if cutoff and pidx == cutoff[0]:
             cut_y0 = cutoff[1]
             lines = [ln for ln in lines if ln.bbox.y0 < cut_y0]
 
-        # применим исключения, если есть
-        excludes = []
+        # исключаем заданные области
         if exclude_bboxes_by_page and page_num in exclude_bboxes_by_page:
             excludes = [fitz.Rect(*b) for b in exclude_bboxes_by_page.get(page_num, [])]
             if excludes:
@@ -383,16 +424,15 @@ def check_lists(
         if DEBUG_DIAGNOSTICS:
             admin.append(f"[Dbg][p{page_num}] Lines after collect+merge: {len(lines)}")
 
-        # --- Кандидаты пунктов (с многострочкой) ---
-        candidates = _gather_items(lines)
+        # кандидаты пунктов
+        candidates = _gather_items(lines, admin, stats)
         for it in candidates:
             it.page_index0 = pidx
 
         if DEBUG_DIAGNOSTICS:
             admin.append(f"[Dbg][p{page_num}] Items after classify+multiline: {len(candidates)}")
 
-        # --- Грубая линейная группировка: подряд идущие пункты формируют список ---
-        # Никаких сложных «совместимостей» — просто последовательность item'ов без больших дыр.
+        # --- Простая линейная группировка на странице ---
         found_on_page: List[FoundList] = []
         cur_list: Optional[FoundList] = None
         prev_item: Optional[Item] = None
@@ -401,70 +441,81 @@ def check_lists(
             if cur_list is None:
                 cur_list = FoundList(page_index0=pidx, items=[it], bbox=it.line.bbox)
                 prev_item = it
+                if DEBUG_DIAGNOSTICS:
+                    admin.append(f"[Dbg][page {page_num}] list:start @y={it.line.bbox.y0:.2f} '{it.line.text[:40]}'")
                 continue
 
-            # если пункт идёт «рядом» — добавим
             dy = _y_dist(prev_item.line.bbox, it.line.bbox)
             fs = _median([_first_text_span_size(prev_item.line), _first_text_span_size(it.line)])
-            # Разумный порог «подряд»: до двух межстрочных интервалов
+
             if dy <= 2.0 * fs:
                 cur_list.items.append(it)
                 _normalize_bbox(cur_list)
                 prev_item = it
+                if DEBUG_DIAGNOSTICS:
+                    admin.append(f"[Dbg][page {page_num}] list:append dy={dy:.2f} fs={fs:.2f} '{it.line.text[:40]}'")
             else:
-                # закрываем текущий список
+                stats["list_breaks"] += 1
+                if DEBUG_DIAGNOSTICS:
+                    admin.append(f"[Dbg][page {page_num}] list:break dy={dy:.2f} fs={fs:.2f} -> NEW '{it.line.text[:40]}'")
                 found_on_page.append(cur_list)
                 cur_list = FoundList(page_index0=pidx, items=[it], bbox=it.line.bbox)
                 prev_item = it
+                if DEBUG_DIAGNOSTICS:
+                    admin.append(f"[Dbg][page {page_num}] list:start @y={it.line.bbox.y0:.2f} '{it.line.text[:40]}'")
 
         if cur_list and cur_list.items:
             found_on_page.append(cur_list)
 
-        # --- Склейка с pending: если предыдущая страница завершилась без точки ---
-        if pending:
-            if found_on_page:
-                # «приклеиваем» первый список страницы к хвосту
-                first = found_on_page.pop(0)
-                for it in first.items:
-                    pending.items.append(it)
-                _normalize_bbox(pending)
-                # Не закрываем прямо сейчас: логика «если маркеры продолжают появляться — берём последний маркер как последний пункт»
-                # То есть pending живёт, пока внизу страницы был пункт без точки.
-            # Если на странице нет пунктов — просто пойдём дальше с pending
-
-        # --- Перенос по правилу точки: если список оканчивается строкой БЕЗ точки — он переносится ---
-        finalized: List[FoundList] = []
-
+        # --- Склейка с pending (перенос между страницами) ---
         def _ends_with_dot(fl: FoundList) -> bool:
             if not fl.items:
                 return True
             last_txt = (fl.items[-1].line.text or "").rstrip()
             return last_txt.endswith(".")
 
+        if pending:
+            # приклеиваем «первый» список текущей страницы, если он есть
+            if found_on_page:
+                first = found_on_page.pop(0)
+                for it in first.items:
+                    pending.items.append(it)
+                _normalize_bbox(pending)
+                stats["pending_attached"] += 1
+                if DEBUG_DIAGNOSTICS:
+                    admin.append(f"[Dbg][page {page_num}] pending:attach {len(first.items)} items (carry-over)")
+
+        finalized: List[FoundList] = []
+
         for i, fl in enumerate(found_on_page):
             if pending:
-                # продолжаем перенос
+                # продолжаем перенос — всё, что осталось на странице, прилепляем к pending
                 for it in fl.items:
                     pending.items.append(it)
                 _normalize_bbox(pending)
-                # Если следующий блок существует — перенос продолжается до конца страницы.
-                # Закрывать будем после прохода всех блоков.
+                stats["pending_attached"] += 1
+                if DEBUG_DIAGNOSTICS:
+                    admin.append(f"[Dbg][page {page_num}] pending:attach {len(fl.items)} items (cont)")
             else:
-                # новый самостоятельный список
-                pending = fl if not _ends_with_dot(fl) else None
-                if pending is None:
+                # новый самостоятельный список: если оканчивается на точку — сразу финализируем
+                if _ends_with_dot(fl):
                     finalized.append(fl)
+                else:
+                    pending = fl
+                    stats["pending_started"] += 1
+                    if DEBUG_DIAGNOSTICS:
+                        admin.append(f"[Dbg][page {page_num}] pending:start (ends-without-dot) items={len(fl.items)}")
 
-        # По окончании страницы: если pending есть —
-        # «если маркеры продолжают появляться — берём последний маркер как последний пункт списка»
-        # Интерпретируем так: если на этой странице были пункты,
-        # то pending закрываем последним увиденным пунктом (то есть — закрываем всегда на границе страницы).
+        # граница страницы: по текущей упрощённой логике
+        # «берём последний маркер как последний пункт» → закрываем pending на границе страницы
         if pending:
-            # Закрываем переносимую цепочку на границе страницы
             finalized.append(pending)
+            stats["pending_finalized"] += 1
+            if DEBUG_DIAGNOSTICS:
+                admin.append(f"[Dbg][page {page_num}] pending:finalize-at-pagebreak items={len(pending.items)}")
             pending = None
 
-        # --- Фильтр мусора: списком считаем только те цепочки, где >=2 пунктов ---
+        # считаем списком только цепочки с >=2 пунктами
         finalized = [fl for fl in finalized if len(fl.items) >= 2]
 
         # --- Валидации и подсчёт ---
@@ -474,13 +525,12 @@ def check_lists(
 
             issues = []
 
-            # Проверка маркера верхнего уровня: только EN_DASH
-            # (Мы не полагаемся на отступы: уровень 0 = маркер EN_DASH, остальное — уровень 1+)
+            # Маркер верхнего уровня: только EN_DASH
             for it in fl.items:
                 if it.level == 0 and not (it.kind == "bulleted" and it.marker_text == EN_DASH):
                     issues.append(f"Ур.1: маркированный список должен использовать только «{EN_DASH}» (найдено «{it.marker_text}»).")
 
-            # Межстрочный интервал в блоке
+            # Межстрочный интервал
             ok_raw, ratio_raw = _line_spacing_check([it.line for it in fl.items])
             if ratio_raw is not None:
                 ratio_adj = max(0.0, ratio_raw - 0.25)
@@ -489,7 +539,7 @@ def check_lists(
                 if not (lo - 1e-3 <= ratio_adj <= hi + 1e-3):
                     issues.append(f"Межстрочный интервал в списке должен быть 1.5 (получено {ratio_adj:.2f}; допуск {lo:.2f}–{hi:.2f}).")
 
-            # Контекст до/после списка (минимально)
+            # Контекст до/после (минимум)
             head = fl.items[0].line
             prev = max((ln for ln in lines if ln.bbox.y1 <= head.bbox.y0), key=lambda L: L.bbox.y1, default=None)
             if prev:
@@ -530,7 +580,7 @@ def check_lists(
                     except Exception:
                         pass
 
-    # На всякий случай: если документ закончился, а pending оставался — закрываем как есть
+    # если документ закончился, а pending висел — закрываем (без потери)
     if pending and pending.items:
         page_num = pending.page_index0 + 1
         if page_num >= start_page:
@@ -538,10 +588,12 @@ def check_lists(
             list_bboxes_by_page[page_num].append((pending.bbox.x0, pending.bbox.y0, pending.bbox.x1, pending.bbox.y1))
             error_pages.add(page_num)
 
+    # сводка
     user_summary = ("⚠️Проверка списков: обнаружены нарушения на стр. " + ", ".join(map(str, sorted(error_pages)))
                     ) if error_pages else "✅Проверка списков"
-    admin_details = (f"[Lists] Найдено списков: {n_lists}"
-                     + ("\n" + "\n".join(admin) if admin else ""))
+
+    admin_header = f"[Lists] Найдено списков: {n_lists}\n[Dbg] Stats: {stats}"
+    admin_details = admin_header + (("\n" + "\n".join(admin)) if admin else "")
 
     return {
         "user_summary": user_summary,
