@@ -28,6 +28,8 @@ class Line:
     # NEW: координаты маркера (левая/правая границы)
     marker_x0: Optional[float] = None
     marker_x1: Optional[float] = None
+    # NEW: признак «вся строка жирная»
+    is_bold: bool = False
 
 @dataclass
 class Item:
@@ -45,6 +47,35 @@ class FoundList:
     bbox: fitz.Rect
 
 # Вспомогательные
+BOLD_HINTS = ("bold", "semibold", "demi", "black", "heavy", "extrabold", "ultrabold")
+NON_BOLD_HINTS = ("regular", "book", "light", "thin")
+
+def _fontname_is_bold(name: str) -> bool:
+    n = (name or "").lower()
+    if any(h in n for h in NON_BOLD_HINTS):
+        # явные не-жирные пометки — считаем не жирным
+        return False
+    return any(h in n for h in BOLD_HINTS)
+
+def _span_is_bold(sp: Dict) -> bool:
+    # Эвристика по имени шрифта (надежнее и кросс-PDF)
+    return _fontname_is_bold(sp.get("font", ""))
+
+def _line_all_bold(spans: List[Dict]) -> bool:
+    """
+    Считаем строку «полностью жирной», если все спаны с видимыми символами (не только пробелы)
+    используют жирный шрифт по эвристике имени.
+    Пустые/пробельные спаны не учитываем.
+    """
+    has_visible = False
+    for sp in spans or []:
+        t = sp.get("text", "")
+        if t and t.strip():
+            has_visible = True
+            if not _span_is_bold(sp):
+                return False
+    return has_visible
+
 def _median(vals: List[float]) -> float:
     if not vals: return 0.0
     s = sorted(vals); n = len(s)
@@ -85,10 +116,11 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
             rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
             size = sum(sizes)/len(sizes) if sizes else 0.0
             font = fonts[0] if fonts else ""
+
             vis_lines.append(Line(
                 text=text, bbox=rect, size=size, font=font, spans=spans,
                 x0_text=rect.x0, x0_text_src="", head_text="", head_kind="",
-                number_kind="", tight_sep_ok=False
+                number_kind="", tight_sep_ok=False, is_bold=False
             ))
 
     if not vis_lines:
@@ -223,12 +255,15 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
                                     prev_bb = chars[j-1].get("bbox", bb)
                                     tight_sep_ok = (x0_text - float(prev_bb[2])) >= 0.8 * (L.size or 10.0)
 
+        # Итоговые поля:
         L.x0_text = x0_text
         L.x0_text_src = x0_text_src
         L.head_text = head_text
         L.head_kind = head_kind
         L.number_kind = number_kind
         L.tight_sep_ok = tight_sep_ok
+        # NEW: вычисляем «вся строка жирная»
+        L.is_bold = _line_all_bold(L.spans)
 
     y_snap = mm_to_pt(0.3)
     vis_lines.sort(key=lambda L: (round(L.bbox.y0 / y_snap)*y_snap, L.bbox.x0))
@@ -289,7 +324,8 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
                         number_kind="",
                         tight_sep_ok=True,
                         marker_x0=cur.marker_x0,
-                        marker_x1=cur.marker_x1
+                        marker_x1=cur.marker_x1,
+                        is_bold=(cur.is_bold and nxt.is_bold)
                     ))
                     i += 2
                     continue
@@ -297,8 +333,35 @@ def _merge_bullet_lines(lines: List[Line]) -> List[Line]:
         i += 1
     return out
 
+def _marker_is_bold(line: Line) -> bool:
+    """
+    Маркер считаем жирным, если первый спан жирный и его текст начинается с признака маркера.
+    Это отсечёт заголовки/подзаголовки, оформленные жирным с «1)», «—», «а)», «I)».
+    """
+    if not line.spans:
+        return False
+    sp0 = line.spans[0]
+    if not _span_is_bold(sp0):
+        return False
+    t0 = sp0.get("text", "") or ""
+    if not t0:
+        return False
+    # Проверяем локально в пределах первого спана
+    if RE_START_SIMPLE.match(t0) or RE_START_TIGHT.match(t0):
+        return True
+    if t0 and t0[0] in BULLET_CHARS:
+        return True
+    return False
+
 # Классификация линии -> Item
 def _classify_simple(line: Line, work_left: float, vector_markers: List[fitz.Rect]) -> Optional[Item]:
+    # NEW: полностью жирные строки не считаем списками
+    if line.is_bold:
+        return None
+    # NEW: жирный маркер в начале — не считаем списком
+    if _marker_is_bold(line):
+        return None
+
     t = line.text
     x0 = line.x0_text if line.x0_text_src else line.bbox.x0
     base = work_left + PARAGRAPH_INDENT_PT
@@ -360,6 +423,12 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
     TAIL_DY_FACTOR = 3.0
 
     for ln in lines:
+        # NEW: жирные строки игнорируем полностью (не стартуют/не продолжают пункт)
+        if ln.is_bold:
+            current = None
+            last_y1 = None
+            continue
+
         head = _classify_simple(ln, work_left, vector_markers)
 
         if head:
@@ -372,7 +441,8 @@ def _gather_multiline_items(lines: List[Line], work_left: float, vector_markers:
                 x0_text_src=head.line.x0_text_src or "line_bbox",
                 head_text=head.line.head_text, head_kind=head.line.head_kind,
                 number_kind=head.line.number_kind, tight_sep_ok=head.line.tight_sep_ok,
-                marker_x0=head.line.marker_x0, marker_x1=head.line.marker_x1
+                marker_x0=head.line.marker_x0, marker_x1=head.line.marker_x1,
+                is_bold=head.line.is_bold
             )
             items.append(head)
             current = items[-1]
@@ -631,7 +701,8 @@ def check_lists(
                 admin.append(
                     f"  [L{idx}] y0={L.bbox.y0:.2f} x0_line={L.bbox.x0:.2f} "
                     f"x0_text={(L.x0_text if L.x0_text_src else L.bbox.x0):.2f}  "
-                    f"head=«{head_tag}» ({head_kind}) tight_sep_ok={L.tight_sep_ok}  text=«{(L.text[:60] + '…') if len(L.text)>60 else L.text}»"
+                    f"bold={L.is_bold}  head=«{head_tag}» ({head_kind}) tight_sep_ok={L.tight_sep_ok}  "
+                    f"text=«{(L.text[:60] + '…') if len(L.text)>60 else L.text}»"
                 )
                 if L.spans:
                     parts = []
@@ -680,8 +751,6 @@ def check_lists(
                         issues.append(f"Ур.{it.level+1}: вид маркера/номера должен отличаться от уровня 1.")
                     if top_number_kind and it.number_kind and it.number_kind == top_number_kind:
                         issues.append(f"Ур.{it.level+1}: тип нумерации должен отличаться от уровня 1.")
-
-                # Теперь контролируем визуальный зазор после любого маркера.
 
             # Контекст до/после списка
             if fl.items:
