@@ -132,7 +132,7 @@ def process_pdf_file(pdf_path: str):
             pdf_doc,
             exclude_bboxes_by_page=exclude_for_lists,
             annotate_pdf=True,
-            start_page=1
+            start_page=3
         )
         list_user = list_results['user_summary']
         list_admin = list_results['admin_details']
@@ -157,7 +157,7 @@ def process_pdf_file(pdf_path: str):
             table_caption_bboxes_by_page=table_caption_bboxes_by_page,
             figure_caption_bboxes_by_page=figure_caption_bboxes_by_page,
             exclude_bboxes_by_page=exclude_for_bodytext,
-            start_page=1,
+            start_page=3,
         )
         body_user = body_results["user_summary"]
         body_admin = body_results["admin_details"]
