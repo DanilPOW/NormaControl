@@ -6,7 +6,7 @@ import fitz  # PyMuPDF
 
 # ===================== НАСТРОЙКИ =====================
 
-# Поля документа (в сантиметрах)
+# Поля документа (см):
 DOC_MARGIN_LEFT_CM   = 3.0     # левое поле: 3 см
 DOC_MARGIN_RIGHT_CM  = 1.5     # правое поле: 1.5 см
 DOC_MARGIN_TOP_CM    = 2.0     # верхнее поле: 2 см
@@ -19,10 +19,9 @@ INDENT_MIN_CM = 1.25
 SIZE_MIN_PT = 12.0
 SIZE_MAX_PT = 14.0
 SIZE_EPS_PT = 0.5                # допуск кегля ±0.5 pt
-
 LINE_SPACING_TARGET = 1.5        # целевой коэффициент межстрочного интервала
 LINE_SPACING_TOL = 0.30          # допуск ±30% от целевого (в долях кегля)
-EMPTY_GAP_SURPLUS = 0.10         # «пустой зазор» — выше верхней границы ещё на 10%
+EMPTY_GAP_SURPLUS = 0.10         # «пустой зазор»: > верхней границы ещё на 10%
 
 # Прочие эвристики
 X0_SAME_COL_EPS = 40.0           # та же колонка (допуск по x0)
@@ -31,12 +30,8 @@ FILTER_OWN_ANNOTS_PREFIX = "Сервис нормоконтроля"
 
 # Варианты имён шрифта Times в PDF
 TIMES_FALLBACKS = (
-    "timesnewroman",
-    "times new roman",
-    "times-roman",
-    "timesroman",
-    "timesnewromanps",
-    "times",
+    "timesnewroman", "times new roman", "times-roman",
+    "timesroman", "timesnewromanps", "times",
 )
 
 # Автокалибровка полей (по двум страницам, начиная со start_page)
@@ -46,6 +41,11 @@ AUTO_CAL_SAMPLES_PER_PAGE = 400  # максимум строк на страни
 
 # Старт проверки (по умолчанию — с 3-й страницы)
 DEFAULT_START_PAGE = 3
+
+# ===== LOGGING / DEBUG =====
+VERBOSE_DEBUG_DEFAULT = True     # выводить подробный лог?
+MAX_DEBUG_LINES_DEFAULT = 4000   # верхний предел строк лога (чтобы не разрастался)
+DEBUG_TO_FILE_DEFAULT = None     # путь для сохранения лога (str | None)
 
 # ===================== ВСПОМОГАТЕЛЬНОЕ =====================
 
@@ -61,6 +61,12 @@ TOP_MARGIN_PT    = cm_to_pt(DOC_MARGIN_TOP_CM)
 BOTTOM_MARGIN_PT = cm_to_pt(DOC_MARGIN_BOTTOM_CM)
 INDENT_MIN_PT    = cm_to_pt(INDENT_MIN_CM)
 
+def _fmt(x: float, n: int = 1) -> str:
+    try:
+        return f"{float(x):.{n}f}"
+    except Exception:
+        return str(x)
+
 def _intersects_any(r: fitz.Rect, rects: List[fitz.Rect]) -> bool:
     if not rects:
         return False
@@ -74,8 +80,7 @@ def _is_times_font(fontname: str) -> bool:
     if not fontname:
         return False
     name = fontname.lower()
-    # убрать PDF-префикс "ABCDEF+TimesNewRomanPSMT"
-    if "+" in name:
+    if "+" in name:  # убрать PDF-префикс "ABCDEF+TimesNewRomanPSMT"
         name = name.split("+", 1)[1]
     return any(key in name for key in TIMES_FALLBACKS)
 
@@ -128,7 +133,7 @@ def _normalize_page_map(
 ) -> Dict[int, List[fitz.Rect]]:
     """
     Приводит карту исключений к ключам-индексам страниц 0-based и fitz.Rect.
-    Поддерживает 1-based ключи (часто так делают в других чекерах).
+    Поддерживает 1-based ключи.
     """
     out: Dict[int, List[fitz.Rect]] = {}
     if not mp:
@@ -229,6 +234,16 @@ def _estimate_margins_two_pages(
 
     return per_page
 
+def _pin_point_for_line(spans: list) -> Tuple[float, float]:
+    """Точка привязки примечания внутри строки: середина первого спана + небольшой сдвиг."""
+    if not spans:
+        return 0.0, 0.0
+    b = spans[0].get("bbox", [0,0,0,0])
+    x0, y0, x1, y1 = map(float, b)
+    x = x0 + 2.0                    # +2 pt вправо от начала текста
+    y = y0 + (y1 - y0) * 0.45       # ближе к базовой линии
+    return x, y
+
 # ===================== АБЗАЦНАЯ МОДЕЛЬ =====================
 
 class Para:
@@ -243,7 +258,8 @@ class Para:
 
     def add_line(self, bbox: fitz.Rect, spans: List[dict]):
         if not self.lines:
-            self.x0_first = _line_x0_x1(spans)[0]
+            x0, _ = _line_x0_x1(spans)
+            self.x0_first = x0
             self.y0_first = bbox.y0
         self.lines.append((bbox, spans))
         f, s = _dominant_span_props(spans)
@@ -291,16 +307,23 @@ def check_body_text(
     exclude_bboxes_by_page: Optional[Dict[int, List[Tuple[float, float, float, float]]]] = None,
     start_page: int = DEFAULT_START_PAGE,
     annotate_pdf: bool = True,
-    auto_calibrate: bool = False,   # ← при True аккуратно уточнит поля на первых двух страницах
+    auto_calibrate: bool = False,   # аккуратно уточнит usable_left/right на первых двух страницах
+    verbose_debug: bool = VERBOSE_DEBUG_DEFAULT,        # включить подробный лог
+    max_debug_lines: int = MAX_DEBUG_LINES_DEFAULT,     # ограничение длины лога
+    debug_to_file: Optional[str] = DEBUG_TO_FILE_DEFAULT # путь для сохранения лога
 ) -> dict:
     """
     Проверяет основной текст абзацами относительно полей:
-      - левое 3 см, правое 1.5 см, верх/низ 2 см;
+      - левое 3 см, правое 1.5 см, верх/низ 2 см (с опцией мягкой автокалибровки);
       - Times New Roman, 12–14 pt;
       - межстрочник ≈1.5×кегля с допуском;
-      - абзацы: начало — абзацный отступ или пустой зазор; конец — пустой зазор или отступ у следующей строки.
+      - абзацы: начало — абзацный отступ или «пустой зазор»; конец — «пустой зазор» или отступ у следующей строки.
     Исключает области других элементов.
     Делает точечные аннотации по одной на абзац с нарушением.
+    Возвращает:
+      - user_summary (коротко для пользователя),
+      - admin_details (итог + ошибки),
+      - debug_log (детальная трассировка; можно писать в файл).
     """
     total_pages = len(doc)
 
@@ -318,6 +341,7 @@ def check_body_text(
     excluded = _normalize_page_map(combined, total_pages)
 
     admin_lines: List[str] = []
+    debug_lines: List[str] = []
     error_pages: List[int] = []
     page_stats: List[Tuple[int, int, int]] = []  # (page, paras_checked, issues_found)
     total_paras_checked = 0
@@ -330,6 +354,7 @@ def check_body_text(
     if auto_calibrate:
         per_page_margins = _estimate_margins_two_pages(doc, start_idx0=start_idx0)
 
+    # ======= ОБХОД СТРАНИЦ =======
     for pno in range(start_idx0, total_pages):
         page = doc[pno]
         page_num = pno + 1
@@ -345,11 +370,16 @@ def check_body_text(
         # при включённой калибровке уточним левый/правый
         if auto_calibrate and pno in per_page_margins:
             pl, pr = per_page_margins[pno]
-            # в разумных пределах (не выходить за рамки базовых полей)
-            usable_left  = max(usable_left - cm_to_pt(0.5), min(pl, usable_left  + cm_to_pt(0.5)))
-            usable_right = min(usable_right + cm_to_pt(0.5), max(pr, usable_right - cm_to_pt(0.5)))
+            # в разумных пределах (не выходить далеко за рамки базовых полей)
+            delta = cm_to_pt(0.5)
+            usable_left  = max(usable_left - delta, min(pl, usable_left  + delta))
+            usable_right = min(usable_right + delta, max(pr, usable_right - delta))
 
-        # Забираем структурированный текст и исключаем области/поля по Y
+        if verbose_debug:
+            debug_lines.append(f"[p{page_num}] usable_left={_fmt(usable_left)}, usable_right={_fmt(usable_right)}, "
+                               f"usable_top={_fmt(usable_top)}, usable_bottom={_fmt(usable_bottom)}")
+
+        # Текстовые линии
         try:
             blocks = page.get_text("dict").get("blocks", [])
         except Exception:
@@ -366,7 +396,7 @@ def check_body_text(
                 spans = l.get("spans", [])
                 if not spans:
                     continue
-                # пропустим наши аннотации при повторной проверке
+                # пропустить наши аннотации при повторной проверке
                 sample = "".join(s.get("text","") for s in spans)[:48].strip()
                 if sample.startswith(FILTER_OWN_ANNOTS_PREFIX):
                     continue
@@ -375,10 +405,28 @@ def check_body_text(
         # Отсортируем по Y, затем X
         raw_lines.sort(key=lambda it: (it[0].y0, it[0].x0))
 
+        # Лог — список строк с координатами/отступами
+        if verbose_debug:
+            for idx, (bb, sp) in enumerate(raw_lines):
+                x0, x1 = _line_x0_x1(sp)
+                distL = x0 - usable_left
+                distR = usable_right - x1
+                font, size = _dominant_span_props(sp)
+                debug_lines.append(
+                    f"[p{page_num}][line {idx}] y0={_fmt(bb.y0)}, x0={_fmt(x0)}, x1={_fmt(x1)}, "
+                    f"distL={_fmt(distL)}, distR={_fmt(distR)}, font='{font}', size={_fmt(size)}"
+                )
+                if len(debug_lines) >= max_debug_lines:
+                    debug_lines.append("... (debug log truncated)")
+                    break
+
         # Построение абзацев
         paras: List[Para] = []
         i = 0
         while i < len(raw_lines):
+            if verbose_debug and len(debug_lines) >= max_debug_lines:
+                break
+
             bbox_i, spans_i = raw_lines[i]
             x0_i, x1_i = _line_x0_x1(spans_i)
 
@@ -386,16 +434,25 @@ def check_body_text(
             empty_before = False
             if paras and paras[-1].lines:
                 prev_bbox, prev_spans = paras[-1].lines[-1]
-                # «пустой зазор» — если top-to-top выше верхней границы (hi) ещё на 10%
                 _, s_prev = _dominant_span_props(prev_spans)
                 _, s_cur  = _dominant_span_props(spans_i)
                 lo, hi = _expected_top2top(s_prev, s_cur)
                 top2top = bbox_i.y0 - prev_bbox.y0
-                if top2top > hi * (1.0 + EMPTY_GAP_SURPLUS):
-                    empty_before = True
+                empty_before = top2top > hi * (1.0 + EMPTY_GAP_SURPLUS)
+                if verbose_debug:
+                    debug_lines.append(
+                        f"[p{page_num}][gap check] prev_y0={_fmt(prev_bbox.y0)} -> cur_y0={_fmt(bbox_i.y0)}, "
+                        f"t2t={_fmt(top2top)}, hi={_fmt(hi)}, empty_before={empty_before}"
+                    )
 
             is_indent_start = (x0_i - usable_left) >= INDENT_MIN_PT
             is_new_para = (not paras) or empty_before or is_indent_start
+
+            if verbose_debug:
+                debug_lines.append(
+                    f"[p{page_num}][line→para] y0={_fmt(bbox_i.y0)}, indent={is_indent_start}, "
+                    f"empty_before={empty_before}, start_new_para={is_new_para}"
+                )
 
             if is_new_para:
                 paras.append(Para(page_num))
@@ -411,27 +468,34 @@ def check_body_text(
                 _, s_next = _dominant_span_props(spans_next)
                 lo2, hi2 = _expected_top2top(s_cur, s_next)
                 top2top2 = bbox_next.y0 - bbox_i.y0
-                if top2top2 > hi2 * (1.0 + EMPTY_GAP_SURPLUS):
-                    empty_after = True
+                empty_after = top2top2 > hi2 * (1.0 + EMPTY_GAP_SURPLUS)
                 x0_next, _ = _line_x0_x1(spans_next)
                 next_indent = (x0_next - usable_left) >= INDENT_MIN_PT
 
-            # Завершение абзаца — если «пустой зазор» или следующий с отступом
+                if verbose_debug:
+                    debug_lines.append(
+                        f"[p{page_num}][end check] cur_y0={_fmt(bbox_i.y0)} -> next_y0={_fmt(bbox_next.y0)}, "
+                        f"t2t={_fmt(top2top2)}, hi={_fmt(hi2)}, empty_after={empty_after}, next_indent={next_indent}"
+                    )
+
             if empty_after or next_indent:
+                if verbose_debug:
+                    debug_lines.append(f"[p{page_num}][para break] reason={'empty_after' if empty_after else 'next_indent'}")
                 i += 1
                 continue
 
-            # иначе это продолжение текущего абзаца
             i += 1
 
         # ==== Проверка абзацев ====
         page_issues = 0
         total_paras_checked += len(paras)
 
-        for para in paras:
+        for k, para in enumerate(paras, 1):
             if not para.lines:
                 continue
             if para.all_bold:
+                if verbose_debug:
+                    debug_lines.append(f"[p{page_num}][para {k}] y0={_fmt(para.y0_first)} ALL BOLD -> skip")
                 continue
 
             dom_font, dom_size = para.dominant_font_size()
@@ -446,7 +510,14 @@ def check_body_text(
                 para_errs.append(f"Неверный кегль: {dom_size:.1f} pt (нужно 12–14 pt)")
 
             # Межстрочники внутри абзаца
-            para_errs.extend(para.spacing_issues())
+            spacing_errs = para.spacing_issues()
+            para_errs.extend(spacing_errs)
+
+            if verbose_debug:
+                debug_lines.append(
+                    f"[p{page_num}][para {k}] y0={_fmt(para.y0_first)} lines={len(para.lines)} "
+                    f"font='{dom_font}' size={_fmt(dom_size)} issues={len(para_errs)}"
+                )
 
             if para_errs:
                 page_issues += 1
@@ -457,11 +528,12 @@ def check_body_text(
                     msg = " | ".join(para_errs)
                     if len(msg) > 300:
                         msg = msg[:297] + "…"
-                    first_bbox, _ = para.lines[0]
-                    _add_text_annot_silent(page, para.x0_first, para.y0_first, f"Абзац: {msg}")
+                    _, first_spans = para.lines[0]
+                    px, py = _pin_point_for_line(first_spans)
+                    _add_text_annot_silent(page, px, py, f"Абзац: {msg}")
 
                 admin_lines.append(
-                    f"[Стр. {para.page_num}] Абзац на y≈{para.y0_first:.1f}: " + " | ".join(para_errs)
+                    f"[Стр. {para.page_num}] Абзац на y≈{_fmt(para.y0_first)}: " + " | ".join(para_errs)
                 )
 
         page_stats.append((page_num, len(paras), page_issues))
@@ -487,6 +559,16 @@ def check_body_text(
     else:
         err_pages_str = ", ".join(map(str, sorted(set(error_pages)))) if error_pages else "—"
         user_summary = f"⚠️Проверка основного текста: нарушения на страницах {err_pages_str}"
+
+    # ВКЛЕИВАЕМ ОТЛАДОЧНЫЙ ЛОГ ПРЯМО В admin_details
+    if verbose_debug and debug_lines:
+        admin_details += "\n\n[DEBUG TRACE] =====================\n" + "\n".join(debug_lines)
+        if debug_to_file:
+            try:
+                with open(debug_to_file, "w", encoding="utf-8") as f:
+                    f.write("\n".join(debug_lines))
+            except Exception:
+                pass
 
     return {
         "user_summary": user_summary,
