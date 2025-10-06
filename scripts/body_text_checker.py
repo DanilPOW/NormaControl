@@ -47,6 +47,9 @@ VERBOSE_DEBUG_DEFAULT = True     # выводить подробный лог?
 MAX_DEBUG_LINES_DEFAULT = 4000   # верхний предел строк лога (чтобы не разрастался)
 DEBUG_TO_FILE_DEFAULT = None     # путь для сохранения лога (str | None)
 
+# ===== СПЕЦИАЛЬНО ДЛЯ «ПУСТЫШЕК» =====
+MIN_LINE_TEXT_WIDTH_PT = 30.0    # ширина текста < этого — считаем строку «пустышкой»
+
 # ===================== ВСПОМОГАТЕЛЬНОЕ =====================
 
 def mm_to_pt(mm: float) -> float:
@@ -244,6 +247,28 @@ def _pin_point_for_line(spans: list) -> Tuple[float, float]:
     y = y0 + (y1 - y0) * 0.45       # ближе к базовой линии
     return x, y
 
+# ===== «ПУСТЫШКИ» — текст и критерий =====
+
+def _text_of(spans: List[dict], limit: int = 80) -> str:
+    return "".join(s.get("text", "") for s in spans)[:limit].strip()
+
+def _is_spacer_line(spans: List[dict], x0: float, x1: float) -> bool:
+    """
+    Строка-разделитель («пустышка»):
+      - очень малая ширина текста,
+      - или фактически пустой текст (≤1 символа и т.п.).
+    Такие строки НЕ попадают в абзац, но считаются разрывом между абзацами.
+    """
+    width = x1 - x0
+    if width <= 0:
+        return True
+    if width < MIN_LINE_TEXT_WIDTH_PT:
+        return True
+    t = _text_of(spans)
+    if len(t) <= 1:
+        return True
+    return False
+
 # ===================== АБЗАЦНАЯ МОДЕЛЬ =====================
 
 class Para:
@@ -317,13 +342,11 @@ def check_body_text(
       - левое 3 см, правое 1.5 см, верх/низ 2 см (с опцией мягкой автокалибровки);
       - Times New Roman, 12–14 pt;
       - межстрочник ≈1.5×кегля с допуском;
-      - абзацы: начало — абзацный отступ или «пустой зазор»; конец — «пустой зазор» или отступ у следующей строки.
+      - абзацы: начало — абзацный отступ, «пустой зазор» ИЛИ встретилась «пустышка»;
+        конец — «пустой зазор», отступ у следующей строки ИЛИ следующая строка — «пустышка».
     Исключает области других элементов.
     Делает точечные аннотации по одной на абзац с нарушением.
-    Возвращает:
-      - user_summary (коротко для пользователя),
-      - admin_details (итог + ошибки),
-      - debug_log (детальная трассировка; можно писать в файл).
+    Весь отладочный трейс добавляется в admin_details (можно отключить).
     """
     total_pages = len(doc)
 
@@ -379,13 +402,14 @@ def check_body_text(
             debug_lines.append(f"[p{page_num}] usable_left={_fmt(usable_left)}, usable_right={_fmt(usable_right)}, "
                                f"usable_top={_fmt(usable_top)}, usable_bottom={_fmt(usable_bottom)}")
 
-        # Текстовые линии
+        # Текстовые линии (с пометкой spacer)
         try:
             blocks = page.get_text("dict").get("blocks", [])
         except Exception:
             blocks = []
 
-        raw_lines: List[Tuple[fitz.Rect, List[dict]]] = []  # (bbox, spans)
+        # raw_lines_ext: [(bbox, spans, is_spacer)]
+        raw_lines_ext: List[Tuple[fitz.Rect, List[dict], bool]] = []
         for b in blocks:
             for l in b.get("lines", []):
                 l_bbox = fitz.Rect(l.get("bbox", [0, 0, 0, 0]))
@@ -400,39 +424,54 @@ def check_body_text(
                 sample = "".join(s.get("text","") for s in spans)[:48].strip()
                 if sample.startswith(FILTER_OWN_ANNOTS_PREFIX):
                     continue
-                raw_lines.append((l_bbox, spans))
+
+                x0_tmp, x1_tmp = _line_x0_x1(spans)
+                spacer = _is_spacer_line(spans, x0_tmp, x1_tmp)
+                raw_lines_ext.append((l_bbox, spans, spacer))
 
         # Отсортируем по Y, затем X
-        raw_lines.sort(key=lambda it: (it[0].y0, it[0].x0))
+        raw_lines_ext.sort(key=lambda it: (it[0].y0, it[0].x0))
 
         # Лог — список строк с координатами/отступами
         if verbose_debug:
-            for idx, (bb, sp) in enumerate(raw_lines):
+            for idx, (bb, sp, spacer) in enumerate(raw_lines_ext):
                 x0, x1 = _line_x0_x1(sp)
                 distL = x0 - usable_left
                 distR = usable_right - x1
                 font, size = _dominant_span_props(sp)
+                mark = " [SPACER]" if spacer else ""
                 debug_lines.append(
                     f"[p{page_num}][line {idx}] y0={_fmt(bb.y0)}, x0={_fmt(x0)}, x1={_fmt(x1)}, "
-                    f"distL={_fmt(distL)}, distR={_fmt(distR)}, font='{font}', size={_fmt(size)}"
+                    f"distL={_fmt(distL)}, distR={_fmt(distR)}, font='{font}', size={_fmt(size)}{mark} text='{_text_of(sp,40)}'"
                 )
                 if len(debug_lines) >= max_debug_lines:
                     debug_lines.append("... (debug log truncated)")
                     break
 
-        # Построение абзацев
+        # Построение абзацев (используем «пустышки» как разрывы)
         paras: List[Para] = []
         i = 0
-        while i < len(raw_lines):
+        last_was_spacer = False
+
+        while i < len(raw_lines_ext):
             if verbose_debug and len(debug_lines) >= max_debug_lines:
                 break
 
-            bbox_i, spans_i = raw_lines[i]
+            bbox_i, spans_i, is_spacer_i = raw_lines_ext[i]
             x0_i, x1_i = _line_x0_x1(spans_i)
 
-            # «пустой зазор до текущей»
+            # Если текущая строка — «пустышка»: она САМА не входит в абзац, но
+            # отсекает текущий абзац (если он был), а следующая строка начнёт новый.
+            if is_spacer_i:
+                if verbose_debug:
+                    debug_lines.append(f"[p{page_num}][spacer] y0={_fmt(bbox_i.y0)} — paragraph delimiter")
+                last_was_spacer = True
+                i += 1
+                continue
+
+            # «пустой зазор до текущей» (по межстрочнику)
             empty_before = False
-            if paras and paras[-1].lines:
+            if paras and paras[-1].lines and not last_was_spacer:
                 prev_bbox, prev_spans = paras[-1].lines[-1]
                 _, s_prev = _dominant_span_props(prev_spans)
                 _, s_cur  = _dominant_span_props(spans_i)
@@ -446,12 +485,13 @@ def check_body_text(
                     )
 
             is_indent_start = (x0_i - usable_left) >= INDENT_MIN_PT
-            is_new_para = (not paras) or empty_before or is_indent_start
+            # стартуем абзац если: его нет, БЫЛ спейсер до этой строки, пустой зазор, или есть абзацный отступ
+            is_new_para = (not paras) or last_was_spacer or empty_before or is_indent_start
 
             if verbose_debug:
                 debug_lines.append(
                     f"[p{page_num}][line→para] y0={_fmt(bbox_i.y0)}, indent={is_indent_start}, "
-                    f"empty_before={empty_before}, start_new_para={is_new_para}"
+                    f"empty_before={empty_before}, last_was_spacer={last_was_spacer}, start_new_para={is_new_para}"
                 )
 
             if is_new_para:
@@ -459,31 +499,44 @@ def check_body_text(
 
             paras[-1].add_line(bbox_i, spans_i)
 
-            # Проверим конец абзаца: пустой зазор ПОСЛЕ или отступ у следующей строки
+            # Проверим конец абзаца: 1) после нас «пустышка», 2) пустой зазор ПОСЛЕ, 3) отступ у следующей нормальной строки
             empty_after = False
             next_indent = False
-            if i + 1 < len(raw_lines):
-                bbox_next, spans_next = raw_lines[i + 1]
-                _, s_cur = _dominant_span_props(spans_i)
-                _, s_next = _dominant_span_props(spans_next)
-                lo2, hi2 = _expected_top2top(s_cur, s_next)
-                top2top2 = bbox_next.y0 - bbox_i.y0
-                empty_after = top2top2 > hi2 * (1.0 + EMPTY_GAP_SURPLUS)
-                x0_next, _ = _line_x0_x1(spans_next)
-                next_indent = (x0_next - usable_left) >= INDENT_MIN_PT
+            next_is_spacer = False
+
+            if i + 1 < len(raw_lines_ext):
+                bbox_next, spans_next, is_spacer_next = raw_lines_ext[i + 1]
+                next_is_spacer = is_spacer_next
+
+                # если следующая — «пустышка», это гарантированный разрыв
+                if next_is_spacer:
+                    empty_after = True  # трактуем как «пустой зазор»
+                else:
+                    # обычная проверка по межстрочнику
+                    _, s_cur = _dominant_span_props(spans_i)
+                    _, s_next = _dominant_span_props(spans_next)
+                    lo2, hi2 = _expected_top2top(s_cur, s_next)
+                    top2top2 = bbox_next.y0 - bbox_i.y0
+                    empty_after = top2top2 > hi2 * (1.0 + EMPTY_GAP_SURPLUS)
+
+                    x0_next, _ = _line_x0_x1(spans_next)
+                    # ВАЖНО: next_indent учитываем только если следующая строка НЕ «пустышка»
+                    next_indent = (x0_next - usable_left) >= INDENT_MIN_PT
 
                 if verbose_debug:
                     debug_lines.append(
                         f"[p{page_num}][end check] cur_y0={_fmt(bbox_i.y0)} -> next_y0={_fmt(bbox_next.y0)}, "
-                        f"t2t={_fmt(top2top2)}, hi={_fmt(hi2)}, empty_after={empty_after}, next_indent={next_indent}"
+                        f"empty_after={empty_after}, next_indent={next_indent}, next_is_spacer={next_is_spacer}"
                     )
 
             if empty_after or next_indent:
                 if verbose_debug:
-                    debug_lines.append(f"[p{page_num}][para break] reason={'empty_after' if empty_after else 'next_indent'}")
+                    debug_lines.append(f"[p{page_num}][para break] reason={'next_is_spacer' if next_is_spacer else ('empty_after' if empty_after else 'next_indent')}")
                 i += 1
+                last_was_spacer = next_is_spacer  # если разрыв по spacer, пометим для ясности
                 continue
 
+            last_was_spacer = False
             i += 1
 
         # ==== Проверка абзацев ====
@@ -560,7 +613,7 @@ def check_body_text(
         err_pages_str = ", ".join(map(str, sorted(set(error_pages)))) if error_pages else "—"
         user_summary = f"⚠️Проверка основного текста: нарушения на страницах {err_pages_str}"
 
-    # ВКЛЕИВАЕМ ОТЛАДОЧНЫЙ ЛОГ ПРЯМО В admin_details
+    # Вклеиваем подробный лог в admin_details (по желанию сохраняем в файл)
     if verbose_debug and debug_lines:
         admin_details += "\n\n[DEBUG TRACE] =====================\n" + "\n".join(debug_lines)
         if debug_to_file:
