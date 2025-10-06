@@ -360,8 +360,11 @@ def _gather_items(lines: List[Line], admin: List[str], stats: Dict[str, int]) ->
     items: List[Item] = []
     cur: Optional[Item] = None
 
+    # локальные допуски для склейки
+    DY_FACTOR = 4.0   # было 3.0 * fs → стало 4.0 * fs
+    LEFT_DRIFT_TOL = max(INDENT_TOL_PT, PARAGRAPH_INDENT_PT * 0.4)  # разрешим небольшой «дрейф» влево
+
     for ln in lines:
-        # жирные — пропускаем
         if ln.is_bold:
             stats["bold_skipped"] += 1
             if DEBUG_DIAGNOSTICS:
@@ -394,12 +397,14 @@ def _gather_items(lines: List[Line], admin: List[str], stats: Dict[str, int]) ->
         if DEBUG_DIAGNOSTICS:
             admin.append(f"[Dbg][gather] y0={ln.bbox.y0:.2f} '{ln.text[:40]}' -> no marker")
 
-        # многострочный хвост к текущему пункту?
+        # попытка приклеить как многострочный хвост
         if cur is not None:
             fs = _first_text_span_size(cur.line)
             dy = _y_dist(cur.line.bbox, ln.bbox)
-            # позволяем хвост, если не левее начала пункта
-            if dy <= 3.0 * fs and not (ln.x0_text + INDENT_TOL_PT < cur.line.x0_text):
+
+            # допускаем горизонтальный «дрейф» немного левее базового x0 текущего пункта
+            left_ok = not (ln.x0_text + LEFT_DRIFT_TOL < cur.line.x0_text)
+            if dy <= DY_FACTOR * fs and left_ok:
                 stats["multiline_attached"] += 1
                 if DEBUG_DIAGNOSTICS:
                     admin.append(f"[Dbg][gather] multiline attach: dy={dy:.2f} fs={fs:.2f} -> '{ln.text[:40]}'")
@@ -500,31 +505,33 @@ def _compatible_for_carry(prev: FoundList, nxt: FoundList) -> bool:
     base = getattr(prev, "_base_x0", a.line.x0_text)
     la = _indent_level(a.line.x0_text, base)
     lb = _indent_level(b.line.x0_text, base)
-    if la != lb:  # переносим только одинаковый уровень
-        return False
 
+    # если следующий пункт правее базовой кромки, считаем вложенным → переносим в тот же список
+    if lb > 0:
+        return True
+
+    # базовый уровень: требуем строгую совместимость вида маркера/нумерации
     if a.kind != b.kind:
         return False
 
     if a.kind == "bulleted":
         return a.marker_text == b.marker_text
 
-    # numbered: форматы должны совпадать
     if a.number_kind != b.number_kind:
         return False
 
     if a.number_kind == "digits":
         ma = re.match(r"^\s*(\d+)", a.marker_text or "")
         mb = re.match(r"^\s*(\d+)", b.marker_text or "")
-        if not (ma and mb): return False
-        return int(mb.group(1)) == int(ma.group(1)) + 1
+        return bool(ma and mb and (int(mb.group(1)) == int(ma.group(1)) + 1))
 
     if a.number_kind == "alpha":
-        la_ = (re.match(r"^\s*([A-Za-zА-Яа-яЁё])", a.marker_text or "") or [None,None])[1]
-        lb_ = (re.match(r"^\s*([A-Za-zА-Яа-яЁё])", b.marker_text or "") or [None,None])[1]
+        la_ = (re.match(r"^\s*([A-Za-zА-Яа-яЁё])", a.marker_text or "") or [None, None])[1]
+        lb_ = (re.match(r"^\s*([A-Za-zА-Яа-яЁё])", b.marker_text or "") or [None, None])[1]
         if not (la_ and lb_): return False
         alpha = "".join(ALLOWED_LETTERS)
-        return _next_letter(la_, alpha) == lb_
+        nxt_letter = _next_letter(la_, alpha)
+        return nxt_letter == lb_
 
     if a.number_kind == "roman":
         ra_m = re.match(r"^\s*([IVXLCDMivxlcdm]+)", a.marker_text or "")
@@ -532,8 +539,7 @@ def _compatible_for_carry(prev: FoundList, nxt: FoundList) -> bool:
         if not (ra_m and rb_m): return False
         ra = _roman_to_int(ra_m.group(1))
         rb = _roman_to_int(rb_m.group(1))
-        if ra is None or rb is None: return False
-        return rb == ra + 1
+        return (ra is not None and rb is not None and rb == ra + 1)
 
     return False
 
@@ -682,22 +688,21 @@ def check_lists(
                 if DEBUG_DIAGNOSTICS:
                     admin.append(f"[Dbg][page {page_num}] list:append lvl={it.level} '{it.line.text[:40]}'")
             else:
-                # Завершаем текущий список ТОЛЬКО если у него уже есть терминатор
+                # Завершаем только если текущий список уже имеет терминатор
                 if _ends_with_terminator(cur_list):
                     found_on_page.append(cur_list)
                     if DEBUG_DIAGNOSTICS:
                         admin.append(f"[Dbg][page {page_num}] list:finalize (new incompatible at base lvl)")
                     start_new_list(it)
                 else:
-                    # нет точки — продолжаем тем же списком (считаем, что идёт длинный блок)
-                    # но если новый явно «влево» от базового x0 — это сигнал нового блока
-                    if (it.line.x0_text + INDENT_TOL_PT) < cur_list._base_x0:
+                    # «слегка влево» — считаем это вложенным уровнем; «сильно влево» — начинаем новый
+                    HARD_SHIFT_TOL = max(INDENT_STEP_PT, PARAGRAPH_INDENT_PT * 0.75)
+                    if (cur_list._base_x0 - it.line.x0_text) > HARD_SHIFT_TOL:
                         found_on_page.append(cur_list)
                         if DEBUG_DIAGNOSTICS:
-                            admin.append(f"[Dbg][page {page_num}] list:finalize (hard left shift)")
+                            admin.append(f"[Dbg][page {page_num}] list:finalize (strong left shift)")
                         start_new_list(it)
                     else:
-                        # принимаем как вложенный (форсим уровень ≥ 1)
                         it.level = max(1, _indent_level(it.line.x0_text, cur_list._base_x0))
                         cur_list.items.append(it)
                         _normalize_bbox(cur_list)
