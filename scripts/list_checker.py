@@ -275,9 +275,9 @@ def _glue_lonely_bullets(lines: List[Line], admin: List[str], stats: Dict[str,in
 
 
 # --- Регэкспы нумерации (строго со скобкой ) ) ---
-RE_NUM_DIGITS  = re.compile(r"^\s*(\d+)\)\s+")
-RE_NUM_ALPHA   = re.compile(r"^\s*([A-Za-zА-Яа-яЁё])\)\s+")
-RE_NUM_ROMAN   = re.compile(r"^\s*([IVXLCDMivxlcdm]+)\)\s+")
+RE_NUM_DIGITS  = re.compile(r"^\s*(\d+)\)\s*")
+RE_NUM_ALPHA   = re.compile(r"^\s*([A-Za-zА-Яа-яЁё])\)\s*")
+RE_NUM_ROMAN   = re.compile(r"^\s*([IVXLCDMivxlcdm]+)\)\s*")
 
 def _classify_marker(line: Line, admin: Optional[List[str]] = None) -> Optional[Tuple[str,str,str]]:
     """
@@ -324,15 +324,15 @@ def _classify_marker(line: Line, admin: Optional[List[str]] = None) -> Optional[
             if DEBUG_DIAGNOSTICS and admin is not None:
                 admin.append(f"[Dbg][classify] bulleted-tight '{head[:10]}' -> '{head[0]}'")
             return ("bulleted", "", head[0])
-        if re.match(r"^\d+\)\s+", head):
+        if re.match(r"^\d+\)\s*", head):
             if DEBUG_DIAGNOSTICS and admin is not None:
                 admin.append(f"[Dbg][classify] digits-tight '{head[:10]}'")
             return ("numbered", "digits", re.match(r"^\s*(\d+\))", head).group(1))
-        if re.match(r"^[A-Za-zА-Яа-яЁё]\)\s+", head):
+        if re.match(r"^[A-Za-zА-Яа-яЁё]\)\s*", head):
             if DEBUG_DIAGNOSTICS and admin is not None:
                 admin.append(f"[Dbg][classify] alpha-tight '{head[:10]}'")
             return ("numbered", "alpha", re.match(r"^\s*([A-Za-zА-Яа-яЁё]\))", head).group(1))
-        if re.match(r"^[IVXLCDMivxlcdm]+\)\s+", head):
+        if re.match(r"^[IVXLCDMivxlcdm]+\)\s*", head):
             if DEBUG_DIAGNOSTICS and admin is not None:
                 admin.append(f"[Dbg][classify] roman-tight '{head[:10]}'")
             return ("numbered", "roman", re.match(r"^\s*([IVXLCDMivxlcdm]+\))", head).group(1).upper())
@@ -348,7 +348,7 @@ def _strip_marker_text(kind: str, marker_text: str, txt: str) -> str:
     if kind == "bulleted":
         return s[1:].lstrip() if s else ""
     # numbered: убираем "^\s*<marker>\s+"
-    patt = r"^\s*%s\s+(.*)$" % re.escape(marker_text)
+    patt = r"^\s*%s\s*(.*)$" % re.escape(marker_text)
     m = re.match(patt, s)
     if m:
         return m.group(1).strip()
