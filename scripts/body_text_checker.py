@@ -12,6 +12,14 @@ LINE_SPACING_TARGET = 1.5       # целевой межстрочный коэф
 LINE_SPACING_TOL = 0.30         # допуск ±30% от целевого (в долях кегля)
 INTERSECT_EPS = 0.5             # минимальная площадь пересечения, pt^2
 
+# Поля/отступы абзацев и эвристики «рваного края»
+LEFT_MARGIN_PT  = 72.0          # левое поле страницы (примерно 2.54 см)
+RIGHT_MARGIN_PT = 72.0          # правое поле страницы
+INDENT_MIN_PT   = 18.0          # минимальный отступ начала абзаца (~0.63 см)
+RAGGED_EPS_PT   = 18.0          # насколько «короче» от правого поля считать строку концом абзаца
+X0_SAME_COL_EPS = 40.0          # допуск для «той же колонки» (как было)
+EMPTY_GAP_FACTOR = 1.2          # множитель к среднему кеглю для определения «пустой строки»
+
 # Варианты имён шрифта Times в PDF
 TIMES_FALLBACKS = (
     "timesnewroman",
@@ -22,7 +30,7 @@ TIMES_FALLBACKS = (
     "times",
 )
 
-# ---- Утилиты ----
+# ================= УТИЛИТЫ =================
 def _intersects_any(r: fitz.Rect, rects: List[fitz.Rect]) -> bool:
     if not rects:
         return False
@@ -36,24 +44,20 @@ def _is_times_font(fontname: str) -> bool:
     if not fontname:
         return False
     name = fontname.lower()
-    # убрать PDF-префикс вида "ABCDEF+TimesNewRomanPSMT"
-    if "+" in name:
+    if "+" in name:  # убрать PDF-префикс вида "ABCDEF+TimesNewRomanPSMT"
         name = name.split("+", 1)[1]
     return any(key in name for key in TIMES_FALLBACKS)
 
 def _span_is_bold(sp: dict) -> bool:
-    # 1) по флагам (если есть)
     try:
         if int(sp.get("flags", 0)) & 2:  # у PyMuPDF бит 2 часто означает bold
             return True
     except Exception:
         pass
-    # 2) по имени шрифта
     name = (sp.get("font") or "").lower()
     return any(k in name for k in ("bold", "bd", "black", "semibold", "demi", "demibold"))
 
 def _line_is_all_bold(spans: list) -> bool:
-    """Истинно, если все спаны строки полужирные."""
     if not spans:
         return False
     return all(_span_is_bold(s) for s in spans)
@@ -100,7 +104,6 @@ def _normalize_page_map(
     keys = list(mp.keys())
     if not keys:
         return out
-    # если в ключах есть 0 — скорее всего уже 0-based
     zero_based = (0 in keys) or (max(keys) >= total_pages)
     for k, boxes in mp.items():
         p0 = k if zero_based else (k - 1)
@@ -111,7 +114,75 @@ def _normalize_page_map(
             out.setdefault(p0, []).append(rect)
     return out
 
-# ---- Главная функция ----
+def _line_text_x0(spans: List[dict]) -> float:
+    """Минимальный x0 по спанам — «реальный» старт текста в строке."""
+    x0s = []
+    for s in spans:
+        b = s.get("bbox", [0,0,0,0])
+        x0s.append(float(b[0]))
+    return min(x0s) if x0s else 0.0
+
+def _line_text_x1(spans: List[dict]) -> float:
+    """Максимальный x1 по спанам — «реальный» конец текста в строке."""
+    x1s = []
+    for s in spans:
+        b = s.get("bbox", [0,0,0,0])
+        x1s.append(float(b[2]))
+    return max(x1s) if x1s else 0.0
+
+# ================= АБЗАЦНАЯ ЛОГИКА =================
+class Para:
+    def __init__(self, page_num: int):
+        self.page_num = page_num
+        self.lines: List[Tuple[fitz.Rect, List[dict]]] = []   # [(bbox, spans), ...]
+        self.fonts: List[str] = []
+        self.sizes: List[float] = []
+        self.all_bold: bool = True
+        self.x0_first: float = 0.0
+        self.y0_first: float = 0.0
+
+    def add_line(self, bbox: fitz.Rect, spans: List[dict]):
+        if not self.lines:
+            self.x0_first = _line_text_x0(spans)
+            self.y0_first = bbox.y0
+        self.lines.append((bbox, spans))
+        f, s = _dominant_span_props(spans)
+        if f:
+            self.fonts.append(f)
+        if s:
+            self.sizes.append(s)
+        self.all_bold = self.all_bold and _line_is_all_bold(spans)
+
+    def dominant_font_size(self) -> Tuple[str, float]:
+        if not self.lines:
+            return "", 0.0
+        # По первой строке абзаца (часто определяет стиль абзаца)
+        f, s = _dominant_span_props(self.lines[0][1])
+        return f, s
+
+    def avg_size(self) -> float:
+        return sum(self.sizes)/len(self.sizes) if self.sizes else 0.0
+
+    def spacing_issues(self) -> List[str]:
+        """Проверка межстрочника внутри абзаца (по соседним строкам)."""
+        issues = []
+        for i in range(len(self.lines)-1):
+            (bbox_i, spans_i) = self.lines[i]
+            (bbox_j, spans_j) = self.lines[i+1]
+            if _line_is_all_bold(spans_i) or _line_is_all_bold(spans_j):
+                continue
+            same_column = (abs(bbox_i.x0 - bbox_j.x0) < X0_SAME_COL_EPS) or (bbox_j.x0 < bbox_i.x1)
+            if not same_column:
+                continue
+            _, si = _dominant_span_props(spans_i)
+            _, sj = _dominant_span_props(spans_j)
+            top2top = bbox_j.y0 - bbox_i.y0
+            lo, hi = _expected_top2top(si, sj)
+            if not (lo <= top2top <= hi):
+                issues.append(f"межстрочник {top2top:.1f} pt (допуск {lo:.1f}–{hi:.1f}) на y≈{bbox_i.y0:.1f}→{bbox_j.y0:.1f}")
+        return issues
+
+# ================= ГЛАВНАЯ ФУНКЦИЯ =================
 def check_body_text(
     doc: fitz.Document,
     *,
@@ -123,35 +194,35 @@ def check_body_text(
     annotate_pdf: bool = True,
 ) -> dict:
     """
-    Проверяет основной текст: Times New Roman, 12–14 pt, межстрочник ≈1.5×кегля.
-    Исключает области других элементов по карте exclude_bboxes_by_page (если передана).
-    Делает ТОЛЬКО точечные аннотации (без рамок) в местах ошибок.
-    Возвращает отчёт в стиле других чекеров: {"user_summary": str, "admin_details": str}.
+    Проверяет основной текст абзацами:
+      - Times New Roman, 12–14 pt,
+      - межстрочник ≈1.5×кегля с допуском,
+      - объединение строк в абзацы по правилам: начало — строка с отступом; конец — «короткая» строка
+        (не доходит до правого поля) или «пустая строка» до/после.
+    Исключает области других элементов (если переданы).
+    Делает ТОЛЬКО точечные аннотации (без рамок) — по одной на абзац с нарушением.
     """
     total_pages = len(doc)
 
-    # Скомбинируем все карты исключений (если что-то пришло по отдельности)
+    # Скомбинируем все карты исключений
     combined: Dict[int, List[Tuple[float, float, float, float]]] = {}
     def _merge_map(mp):
         if not mp:
             return
         for k, v in mp.items():
             combined.setdefault(k, []).extend(v)
-
     _merge_map(exclude_bboxes_by_page)
     _merge_map(table_bboxes_by_page)
     _merge_map(table_caption_bboxes_by_page)
     _merge_map(figure_caption_bboxes_by_page)
-
     excluded = _normalize_page_map(combined, total_pages)
 
     admin_lines: List[str] = []
     error_pages: List[int] = []
-    page_stats: List[Tuple[int, int, int]] = []  # (page_num, lines_checked, issues_found)
-    total_lines_checked = 0
+    page_stats: List[Tuple[int, int, int]] = []  # (page, paras_checked, issues_found)
+    total_paras_checked = 0
     total_issues = 0
 
-    # Пройтись по страницам, начиная со start_page (обычно 1)
     start_idx0 = max(0, start_page - 1)
 
     for pno in range(start_idx0, total_pages):
@@ -159,14 +230,18 @@ def check_body_text(
         page_num = pno + 1
         page_ex = excluded.get(pno, [])
 
-        # Структурированный текст
+        # Геометрия страницы
+        mediabox = page.mediabox
+        usable_left  = mediabox.x0 + LEFT_MARGIN_PT
+        usable_right = mediabox.x1 - RIGHT_MARGIN_PT
+
+        # Забираем структурированный текст, исключаем области
         try:
             blocks = page.get_text("dict").get("blocks", [])
         except Exception:
             blocks = []
 
-        # Собираем строки, которые НЕ попадают в исключённые области
-        lines: List[Tuple[fitz.Rect, List[dict]]] = []
+        raw_lines: List[Tuple[fitz.Rect, List[dict]]] = []  # (bbox, spans)
         for b in blocks:
             for l in b.get("lines", []):
                 l_bbox = fitz.Rect(l.get("bbox", [0, 0, 0, 0]))
@@ -175,78 +250,123 @@ def check_body_text(
                 spans = l.get("spans", [])
                 if not spans:
                     continue
-                lines.append((l_bbox, spans))
+                raw_lines.append((l_bbox, spans))
 
-        lines.sort(key=lambda it: (it[0].y0, it[0].x0))
-        page_issues = 0
-        total_lines_checked += len(lines)
+        # Отсортируем по Y, затем X
+        raw_lines.sort(key=lambda it: (it[0].y0, it[0].x0))
 
-        # Проверки по строкам
-        for i, (bbox_i, spans_i) in enumerate(lines):
-            font_i, size_i = _dominant_span_props(spans_i)
-            if _line_is_all_bold(spans_i):
+        # Построение абзацев
+        paras: List[Para] = []
+        i = 0
+        while i < len(raw_lines):
+            bbox_i, spans_i = raw_lines[i]
+            x0_text = _line_text_x0(spans_i)
+            x1_text = _line_text_x1(spans_i)
+
+            # эвристика «пустая строка до текущей»
+            empty_before = False
+            if paras and paras[-1].lines:
+                last_bbox_prev, last_spans_prev = paras[-1].lines[-1]
+                # оценим средний кегль между строками
+                _, s_prev = _dominant_span_props(last_spans_prev)
+                _, s_cur  = _dominant_span_props(spans_i)
+                s_avg = (s_prev + s_cur)/2 if (s_prev and s_cur) else max(s_prev, s_cur, 0.0)
+                gap = bbox_i.y0 - last_bbox_prev.y1
+                if s_avg and gap > EMPTY_GAP_FACTOR * s_avg:
+                    empty_before = True
+
+            is_indent_start = (x0_text - usable_left) >= INDENT_MIN_PT
+            is_new_para = (not paras) or empty_before or is_indent_start
+
+            if is_new_para:
+                paras.append(Para(page_num))
+
+            # добавляем текущую строку в последний абзац
+            paras[-1].add_line(bbox_i, spans_i)
+
+            # проверим критерий конца абзаца на самой строке
+            line_is_short = (usable_right - x1_text) >= RAGGED_EPS_PT
+
+            # также посмотрим «пустую строку ПОСЛЕ»
+            empty_after = False
+            if i + 1 < len(raw_lines):
+                bbox_next, spans_next = raw_lines[i + 1]
+                _, s_cur = _dominant_span_props(spans_i)
+                _, s_next = _dominant_span_props(spans_next)
+                s_avg2 = (s_cur + s_next)/2 if (s_cur and s_next) else max(s_cur, s_next, 0.0)
+                gap2 = bbox_next.y0 - bbox_i.y1
+                if s_avg2 and gap2 > EMPTY_GAP_FACTOR * s_avg2:
+                    empty_after = True
+
+            # если конец абзаца — просто стартуем следующий на следующей итерации
+            if line_is_short or empty_after:
+                i += 1
                 continue
 
-            # ШРИФТ
-            if not _is_times_font(font_i):
-                page_issues += 1; total_issues += 1
+            # иначе возможно это «продолжение абзаца» — следующая строка без отступа
+            i += 1
+
+        # ==== Проверка абзацев ====
+        page_issues = 0
+        total_paras_checked += len(paras)
+
+        for para in paras:
+            if not para.lines:
+                continue
+            # Пропустить полностью полужирные абзацы
+            if para.all_bold:
+                continue
+
+            # Доминирующий шрифт/кегль (по первой строке абзаца)
+            dom_font, dom_size = para.dominant_font_size()
+
+            # Сбор ошибок абзаца
+            para_errs: List[str] = []
+
+            # Шрифт
+            if not _is_times_font(dom_font):
+                para_errs.append(f"Неверная гарнитура: '{dom_font}' (ожидается Times New Roman)")
+
+            # Кегль
+            if not _check_size_ok(dom_size):
+                para_errs.append(f"Неверный кегль: {dom_size:.1f} pt (нужно 12–14 pt)")
+
+            # Межстрочники внутри абзаца
+            spacing_errs = para.spacing_issues()
+            para_errs.extend(spacing_errs)
+
+            if para_errs:
+                page_issues += 1
+                total_issues += 1
+                error_pages.append(para.page_num)
+
+                # Одна аннотация на абзац — ставим пин в начале абзаца
                 if annotate_pdf:
+                    msg = " ; ".join(para_errs)
+                    # чтобы текст пина не был слишком длинным
+                    if len(msg) > 300:
+                        msg = msg[:297] + "…"
+                    # координата — первая строка абзаца
+                    first_bbox, first_spans = para.lines[0]
                     _add_text_annot_silent(
-                        page, bbox_i.x0, bbox_i.y0,
-                        "Использован не Times New Roman. Как должно быть: основной текст набран гарнитурой Times New Roman."
+                        page, para.x0_first, para.y0_first,
+                        f"Абзац: {msg}"
                     )
+
+                # Админ-лог
                 admin_lines.append(
-                    f"[Стр. {page_num}] Неверная гарнитура на y≈{bbox_i.y0:.1f} pt: '{font_i}'"
+                    f"[Стр. {para.page_num}] Абзац на y≈{para.y0_first:.1f}: " + " | ".join(para_errs)
                 )
 
-            # КЕГЛЬ
-            if not _check_size_ok(size_i):
-                page_issues += 1; total_issues += 1
-                if annotate_pdf:
-                    _add_text_annot_silent(
-                        page, bbox_i.x0, bbox_i.y0,
-                        f"Неверный кегль основного текста ({size_i:.1f} pt). Как должно быть: 12–14 pt."
-                    )
-                admin_lines.append(
-                    f"[Стр. {page_num}] Неверный кегль на y≈{bbox_i.y0:.1f} pt: {size_i:.1f} pt (нужно 12–14)"
-                )
-
-            # МЕЖСТРОЧНИК (top-to-top)
-            if i + 1 < len(lines):
-                bbox_j, spans_j = lines[i + 1]
-                if _line_is_all_bold(spans_i) or _line_is_all_bold(spans_j):
-                    continue
-                # эвристика «та же колонка»: схожий x0 или наложение по X
-                same_column = (abs(bbox_i.x0 - bbox_j.x0) < 40) or (bbox_j.x0 < bbox_i.x1)
-                if same_column:
-                    _, size_j = _dominant_span_props(spans_j)
-                    top2top = bbox_j.y0 - bbox_i.y0
-                    lo, hi = _expected_top2top(size_i, size_j)
-                    if not (lo <= top2top <= hi):
-                        page_issues += 1; total_issues += 1
-                        if annotate_pdf:
-                            # ставим пин примерно в «зазоре» — у верхней строки
-                            _add_text_annot_silent(
-                                page, min(bbox_i.x0, bbox_j.x0), min(bbox_i.y0, bbox_j.y0),
-                                (f"Неверный межстрочный интервал (~{top2top:.1f} pt). "
-                                 f"Как должно быть: ≈ 1.5×кегль (диапазон {lo:.1f}–{hi:.1f} pt для текущего кегля).")
-                            )
-                        admin_lines.append(
-                            f"[Стр. {page_num}] Межстрочник вне допуска на y≈{bbox_i.y0:.1f}→{bbox_j.y0:.1f} pt: "
-                            f"{top2top:.1f} pt (нужно {lo:.1f}–{hi:.1f})"
-                        )
-
-        page_stats.append((page_num, len(lines), page_issues))
-        if page_issues > 0:
-            error_pages.append(page_num)
+        page_stats.append((page_num, len(paras), page_issues))
 
     # --- Итоговый отчёт ---
     per_page_lines = [
-        f"Стр. {n}: проверено строк {checked}, нарушений {issues}"
+        f"Стр. {n}: проверено абзацев {checked}, нарушений {issues}"
         for n, checked, issues in page_stats
     ]
     counts_summary = (
-        f"Проверено строк основного текста: {total_lines_checked}\n"
+        f"Проверено абзацев основного текста: {total_paras_checked}\n"
         f"Всего нарушений: {total_issues}\n" +
         ("\n".join(per_page_lines) if per_page_lines else "Страниц с текстом не найдено.")
     )
