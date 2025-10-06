@@ -19,9 +19,16 @@ INDENT_MIN_CM = 1.25
 SIZE_MIN_PT = 12.0
 SIZE_MAX_PT = 14.0
 SIZE_EPS_PT = 0.5                # допуск кегля ±0.5 pt
-LINE_SPACING_TARGET = 1.5        # целевой коэффициент межстрочного интервала
-LINE_SPACING_TOL = 0.30          # допуск ±30% от целевого (в долях кегля)
-EMPTY_GAP_SURPLUS = 0.10         # «пустой зазор»: > верхней границы ещё на 10%
+
+# Проверка межстрочного по отношению r = top2top / avg(size)
+LINE_SPACING_TARGET = 1.5        # целевой коэффициент (для справки)
+LINE_SPACING_TOL = 0.10          # ЖЕСТКИЙ допуск ±10% вокруг 1.5 (для проверки как ошибки)
+# Кроме того, вводим «стоп-пороги» для явных случаев:
+LINE_SPACING_HARD_MIN = 1.30     # всё, что ниже — явная ошибка (слишком мало)
+LINE_SPACING_HARD_MAX = 1.80     # всё, что выше — явная ошибка (слишком много)
+
+# Правила разрыва абзацев по «пустому зазору» (используем старую геометрию top2top с более мягким допуском)
+EMPTY_GAP_SURPLUS = 0.10         # «пустой зазор»: > верхней границы hi ещё на 10%
 
 # Прочие эвристики
 X0_SAME_COL_EPS = 40.0           # та же колонка (допуск по x0)
@@ -44,7 +51,7 @@ DEFAULT_START_PAGE = 3
 
 # ===== LOGGING / DEBUG =====
 VERBOSE_DEBUG_DEFAULT = True     # выводить подробный лог?
-MAX_DEBUG_LINES_DEFAULT = 4000   # верхний предел строк лога (чтобы не разрастался)
+MAX_DEBUG_LINES_DEFAULT = 4000   # верхний предел строк лога
 DEBUG_TO_FILE_DEFAULT = None     # путь для сохранения лога (str | None)
 
 # ===== СПЕЦИАЛЬНО ДЛЯ «ПУСТЫШЕК» =====
@@ -115,10 +122,36 @@ def _check_size_ok(size: float) -> bool:
     return (SIZE_MIN_PT - SIZE_EPS_PT) <= size <= (SIZE_MAX_PT + SIZE_EPS_PT)
 
 def _expected_top2top(size_a: float, size_b: float) -> Tuple[float, float]:
-    """Допустимый диапазон top-to-top для 1.5×кегля с допуском."""
+    """
+    МЯГКИЕ границы для поиска «пустых зазоров» (не для ошибок):
+    считаем целевым 1.5× среднего кегля и применяем ДОПУСК ±30%.
+    """
     ref = (size_a + size_b) / 2.0 if (size_a and size_b) else max(size_a, size_b, 0.0)
-    target = LINE_SPACING_TARGET * ref
-    return target * (1.0 - LINE_SPACING_TOL), target * (1.0 + LINE_SPACING_TOL)
+    target = 1.5 * ref
+    return target * (1.0 - 0.30), target * (1.0 + 0.30)
+
+def _ratio_ok(size_a: float, size_b: float, top2top: float) -> Tuple[bool, float, str]:
+    """
+    ЖЁСТКАЯ проверка межстрочника по отношению r = top2top / avg(size).
+    Возвращает (ok, r, reason) — reason только при ошибке.
+    """
+    ref = (size_a + size_b) / 2.0 if (size_a and size_b) else max(size_a, size_b, 0.0)
+    if ref <= 0:
+        return True, 0.0, ""
+    r = top2top / ref
+
+    # Жёсткие стоп-пороги
+    if r < LINE_SPACING_HARD_MIN:
+        return False, r, "межстрочник слишком мал"
+    if r > LINE_SPACING_HARD_MAX:
+        return False, r, "межстрочник слишком велик"
+
+    # Основной коридор 1.50 ± 10%
+    lo_r = 1.5 * (1.0 - LINE_SPACING_TOL)  # 1.35
+    hi_r = 1.5 * (1.0 + LINE_SPACING_TOL)  # 1.65
+    if not (lo_r <= r <= hi_r):
+        return False, r, "межстрочник вне допустимого диапазона"
+    return True, r, ""
 
 def _add_text_annot_silent(page: fitz.Page, x: float, y: float, msg: str):
     """Точечная аннотация (pin) без падений."""
@@ -301,7 +334,9 @@ class Para:
         return f, s
 
     def spacing_issues(self) -> List[str]:
-        """Проверка межстрочника внутри абзаца (по соседним строкам)."""
+        """
+        Проверка межстрочника внутри абзаца (по соседним строкам) — ЖЁСТКИМИ правилами.
+        """
         issues = []
         for i in range(len(self.lines)-1):
             (bbox_i, spans_i) = self.lines[i]
@@ -314,10 +349,10 @@ class Para:
             _, si = _dominant_span_props(spans_i)
             _, sj = _dominant_span_props(spans_j)
             top2top = bbox_j.y0 - bbox_i.y0
-            lo, hi = _expected_top2top(si, sj)
-            if not (lo <= top2top <= hi):
+            ok, r, reason = _ratio_ok(si, sj, top2top)
+            if not ok:
                 issues.append(
-                    f"межстрочник {top2top:.1f} pt (допуск {lo:.1f}–{hi:.1f}) на y≈{bbox_i.y0:.1f}→{bbox_j.y0:.1f}"
+                    f"{reason} (r≈{r:.2f}, нужно 1.50±10%) на y≈{bbox_i.y0:.1f}→{bbox_j.y0:.1f}"
                 )
         return issues
 
@@ -341,8 +376,8 @@ def check_body_text(
     Проверяет основной текст абзацами относительно полей:
       - левое 3 см, правое 1.5 см, верх/низ 2 см (с опцией мягкой автокалибровки);
       - Times New Roman, 12–14 pt;
-      - межстрочник ≈1.5×кегля с допуском;
-      - абзацы: начало — абзацный отступ, «пустой зазор» ИЛИ встретилась «пустышка»;
+      - МЕЖСТРОЧНИК: жёстко 1.50 ± 10% по r = top2top / avg(size), с «стоп-порогами»  <1.30 или >1.80;
+      - Абзацы: начало — абзацный отступ, «пустой зазор» ИЛИ встретилась «пустышка»;
         конец — «пустой зазор», отступ у следующей строки ИЛИ следующая строка — «пустышка».
     Исключает области других элементов.
     Делает точечные аннотации по одной на абзац с нарушением.
@@ -469,7 +504,7 @@ def check_body_text(
                 i += 1
                 continue
 
-            # «пустой зазор до текущей» (по межстрочнику)
+            # «пустой зазор до текущей» (по межстрочнику) — используем МЯГКИЕ допуски для разрыва
             empty_before = False
             if paras and paras[-1].lines and not last_was_spacer:
                 prev_bbox, prev_spans = paras[-1].lines[-1]
@@ -512,7 +547,7 @@ def check_body_text(
                 if next_is_spacer:
                     empty_after = True  # трактуем как «пустой зазор»
                 else:
-                    # обычная проверка по межстрочнику
+                    # обычная проверка по межстрочнику (МЯГКИЕ допуски) для разрыва
                     _, s_cur = _dominant_span_props(spans_i)
                     _, s_next = _dominant_span_props(spans_next)
                     lo2, hi2 = _expected_top2top(s_cur, s_next)
@@ -520,7 +555,7 @@ def check_body_text(
                     empty_after = top2top2 > hi2 * (1.0 + EMPTY_GAP_SURPLUS)
 
                     x0_next, _ = _line_x0_x1(spans_next)
-                    # ВАЖНО: next_indent учитываем только если следующая строка НЕ «пустышка»
+                    # next_indent учитываем только если следующая строка НЕ «пустышка»
                     next_indent = (x0_next - usable_left) >= INDENT_MIN_PT
 
                 if verbose_debug:
@@ -531,7 +566,8 @@ def check_body_text(
 
             if empty_after or next_indent:
                 if verbose_debug:
-                    debug_lines.append(f"[p{page_num}][para break] reason={'next_is_spacer' if next_is_spacer else ('empty_after' if empty_after else 'next_indent')}")
+                    reason = 'next_is_spacer' if next_is_spacer else ('empty_after' if empty_after else 'next_indent')
+                    debug_lines.append(f"[p{page_num}][para break] reason={reason}")
                 i += 1
                 last_was_spacer = next_is_spacer  # если разрыв по spacer, пометим для ясности
                 continue
@@ -562,7 +598,7 @@ def check_body_text(
             if not _check_size_ok(dom_size):
                 para_errs.append(f"Неверный кегль: {dom_size:.1f} pt (нужно 12–14 pt)")
 
-            # Межстрочники внутри абзаца
+            # Межстрочники внутри абзаца (ЖЁСТКИЕ правила)
             spacing_errs = para.spacing_issues()
             para_errs.extend(spacing_errs)
 
