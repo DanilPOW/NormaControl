@@ -65,6 +65,8 @@ def _line_all_bold(spans: List[Dict]) -> bool:
                 return False
     return has_visible
 
+# --- Допустимый «возврат влево» для хвоста пункта ---
+LEFT_BACK_TOL_PT = 1.3 * CM_TO_PT  # 1.3 см
 
 @dataclass
 class Line:
@@ -78,7 +80,6 @@ class Line:
     is_bold: bool = False
     y_bucket: float = 0.0  # для склейки по базовой линии
 
-
 @dataclass
 class Item:
     page_index0: int
@@ -87,7 +88,6 @@ class Item:
     kind: str               # "bulleted" | "numbered"
     marker_text: str        # исходный маркер (символ/токен)
     number_kind: str        # "digits" | "alpha" | "roman" | ""
-
 
 @dataclass
 class FoundList:
@@ -190,7 +190,6 @@ def _collect_text_lines_with_raw(page: fitz.Page) -> List[Line]:
     out.sort(key=lambda L: (L.y_bucket, L.bbox.x0))
     return out
 
-
 # --- Склейка линий на одной базовой линии (baseline) ---
 def _merge_same_baseline(lines: List[Line], admin: List[str], stats: Dict[str,int]) -> List[Line]:
     if not lines:
@@ -230,7 +229,6 @@ def _merge_same_baseline(lines: List[Line], admin: List[str], stats: Dict[str,in
             cur_group = [lines[i]]
     flush(cur_group)
     return merged
-
 
 # --- Склейка «одинокого» маркера с текстом на том же базлайне ---
 def _glue_lonely_bullets(lines: List[Line], admin: List[str], stats: Dict[str,int]) -> List[Line]:
@@ -273,7 +271,6 @@ def _glue_lonely_bullets(lines: List[Line], admin: List[str], stats: Dict[str,in
         i += 1
     return out
 
-
 # --- Регэкспы нумерации (строго со скобкой ) ) ---
 RE_NUM_DIGITS  = re.compile(r"^\s*(\d+)\)\s*")
 RE_NUM_ALPHA   = re.compile(r"^\s*([A-Za-zА-Яа-яЁё])\)\s*")
@@ -283,7 +280,7 @@ def _classify_marker(line: Line, admin: Optional[List[str]] = None) -> Optional[
     """
     Возвращает (kind, number_kind, marker_text) либо None.
     kind: "bulleted"|"numbered"
-    number_kind: "digits"|"alpha"|"roman"|""
+    number_kind: "digits"|"alpha"|"roman"|"
     marker_text: исходный маркер (например "–", "-" или "1)")
     """
     if line.is_bold:
@@ -341,7 +338,6 @@ def _classify_marker(line: Line, admin: Optional[List[str]] = None) -> Optional[
         admin.append(f"[Dbg][classify] no-marker '{t[:40]}'")
     return None
 
-
 def _strip_marker_text(kind: str, marker_text: str, txt: str) -> str:
     """ Удаляет маркер из начала строки и возвращает «чистый» текст пункта. """
     s = txt.lstrip()
@@ -354,17 +350,13 @@ def _strip_marker_text(kind: str, marker_text: str, txt: str) -> str:
         return m.group(1).strip()
     return s
 
-
 # --- Сбор пунктов с многострочкой ---
 def _gather_items(lines: List[Line], admin: List[str], stats: Dict[str, int]) -> List[Item]:
     items: List[Item] = []
     cur: Optional[Item] = None
 
-    # локальные допуски для склейки
-    DY_FACTOR = 4.0   # было 3.0 * fs → стало 4.0 * fs
-    LEFT_DRIFT_TOL = max(INDENT_TOL_PT, PARAGRAPH_INDENT_PT * 0.4)  # разрешим небольшой «дрейф» влево
-
     for ln in lines:
+        # жирные — пропускаем
         if ln.is_bold:
             stats["bold_skipped"] += 1
             if DEBUG_DIAGNOSTICS:
@@ -397,17 +389,21 @@ def _gather_items(lines: List[Line], admin: List[str], stats: Dict[str, int]) ->
         if DEBUG_DIAGNOSTICS:
             admin.append(f"[Dbg][gather] y0={ln.bbox.y0:.2f} '{ln.text[:40]}' -> no marker")
 
-        # попытка приклеить как многострочный хвост
+        # многострочный хвост к текущему пункту?
         if cur is not None:
             fs = _first_text_span_size(cur.line)
             dy = _y_dist(cur.line.bbox, ln.bbox)
 
-            # допускаем горизонтальный «дрейф» немного левее базового x0 текущего пункта
-            left_ok = not (ln.x0_text + LEFT_DRIFT_TOL < cur.line.x0_text)
-            if dy <= DY_FACTOR * fs and left_ok:
+            # сколько «ушла» текущая линия ln влево относительно начала пункта (строки с маркером)
+            left_shift = max(0.0, cur.line.x0_text - ln.x0_text)
+
+            # разрешаем левый сдвиг хвоста до 1.3 см; немного ослабим допустимый dy
+            if dy <= 3.8 * fs and left_shift <= LEFT_BACK_TOL_PT:
                 stats["multiline_attached"] += 1
                 if DEBUG_DIAGNOSTICS:
-                    admin.append(f"[Dbg][gather] multiline attach: dy={dy:.2f} fs={fs:.2f} -> '{ln.text[:40]}'")
+                    admin.append(
+                        f"[Dbg][gather] multiline attach: dy={dy:.2f} fs={fs:.2f} left_shift={left_shift:.1f}pt"
+                    )
                 cur.line.text = (cur.line.text.rstrip() + " " + ln.text.lstrip()).strip()
                 cb = cur.line.bbox
                 cur.line.bbox = fitz.Rect(
@@ -415,13 +411,31 @@ def _gather_items(lines: List[Line], admin: List[str], stats: Dict[str, int]) ->
                     max(cb.x1, ln.bbox.x1), max(cb.y1, ln.bbox.y1)
                 )
                 continue
-            else:
+
+            # мягкая эвристика — частичное горизонтальное перекрытие и чуть больший лимит
+            overlap = max(0.0, min(cur.line.bbox.x1, ln.bbox.x1) - max(cur.line.bbox.x0, ln.bbox.x0))
+            width   = max(1.0, min(cur.line.bbox.x1, ln.bbox.x1) - min(cur.line.bbox.x0, ln.bbox.x0))
+            if dy <= 4.2 * fs and (overlap / width) >= 0.6 and left_shift <= LEFT_BACK_TOL_PT * 1.1:
+                stats["multiline_attached"] += 1
                 if DEBUG_DIAGNOSTICS:
-                    admin.append(f"[Dbg][gather] multiline FAIL: dy={dy:.2f} fs={fs:.2f} or x-left")
+                    admin.append(
+                        f"[Dbg][gather] multiline attach (soft): dy={dy:.2f}, overlap={overlap/width:.2f}, left_shift={left_shift:.1f}pt"
+                    )
+                cur.line.text = (cur.line.text.rstrip() + " " + ln.text.lstrip()).strip()
+                cb = cur.line.bbox
+                cur.line.bbox = fitz.Rect(
+                    min(cb.x0, ln.bbox.x0), min(cb.y0, ln.bbox.y0),
+                    max(cb.x1, ln.bbox.x1), max(cb.y1, ln.bbox.y1)
+                )
+                continue
+
+            if DEBUG_DIAGNOSTICS:
+                admin.append(
+                    f"[Dbg][gather] multiline FAIL: dy={dy:.2f} fs={fs:.2f} left_shift={left_shift:.1f}pt"
+                )
             cur = None
 
     return items
-
 
 def _normalize_bbox(fl: FoundList) -> None:
     xs0 = [it.line.bbox.x0 for it in fl.items]
@@ -430,32 +444,41 @@ def _normalize_bbox(fl: FoundList) -> None:
     ys1 = [it.line.bbox.y1 for it in fl.items]
     fl.bbox = fitz.Rect(min(xs0), min(ys0), max(xs1), max(ys1))
 
-
 def _find_refs_cutoff(pdf_document: fitz.Document, start_page: int = 1) -> Optional[Tuple[int, float]]:
-    """ Возвращает (page_index0, y0) заголовка «Список источников». """
+    """ Возвращает (page_index0, y0) заголовка «Список источников».
+        Теперь учитываем ТОЛЬКО жирную строку и расположение в верхней четверти страницы.
+    """
     for pidx, page in enumerate(pdf_document):
         page_num = pidx + 1
         if page_num < start_page:
             continue
-        d = page.get_text("dict")
+        try:
+            d = page.get_text("dict")
+        except Exception:
+            continue
+        page_h = float(page.rect.height)
+        top_threshold = page_h * 0.25  # верхняя четверть
         for b in d.get("blocks", []):
             if b.get("type") != 0:
                 continue
             for ln in b.get("lines", []):
-                texts, xs, ys = [], [], []
+                texts, xs, ys, spans = [], [], [], []
                 for sp in ln.get("spans", []):
                     t = sp.get("text") or ""
                     if t.strip():
                         texts.append(t)
                         x0,y0,x1,y1 = sp.get("bbox", (0,0,0,0))
                         xs += [x0,x1]; ys += [y0,y1]
+                        spans.append(sp)
                 if not texts:
                     continue
                 line_text = "".join(texts).strip()
+                y0_line = float(min(ys)) if ys else 0.0
                 if RE_REFS_HEAD.match(line_text):
-                    return (pidx, float(min(ys)))
+                    # дополнительно требуем жирность и «положение сверху»
+                    if _line_all_bold(spans) and y0_line <= top_threshold:
+                        return (pidx, y0_line)
     return None
-
 
 def _line_spacing_check(lines: List[Line]):
     if len(lines) < 2:
@@ -476,7 +499,6 @@ def _line_spacing_check(lines: List[Line]):
     base_off = getattr(__import__('const'), 'LINE_SPACING_BASELINE_OFFSET', 0.25)
     ratio_adj = max(0.0, r - base_off)
     return (lo-1e-3 <= ratio_adj <= hi+1e-3), ratio_adj
-
 
 # --- Проверки совместимости/переноса ---
 def _next_letter(ch: str, alphabet: str) -> Optional[str]:
@@ -505,33 +527,31 @@ def _compatible_for_carry(prev: FoundList, nxt: FoundList) -> bool:
     base = getattr(prev, "_base_x0", a.line.x0_text)
     la = _indent_level(a.line.x0_text, base)
     lb = _indent_level(b.line.x0_text, base)
+    if la != lb:  # переносим только одинаковый уровень
+        return False
 
-    # если следующий пункт правее базовой кромки, считаем вложенным → переносим в тот же список
-    if lb > 0:
-        return True
-
-    # базовый уровень: требуем строгую совместимость вида маркера/нумерации
     if a.kind != b.kind:
         return False
 
     if a.kind == "bulleted":
         return a.marker_text == b.marker_text
 
+    # numbered: форматы должны совпадать
     if a.number_kind != b.number_kind:
         return False
 
     if a.number_kind == "digits":
         ma = re.match(r"^\s*(\d+)", a.marker_text or "")
         mb = re.match(r"^\s*(\d+)", b.marker_text or "")
-        return bool(ma and mb and (int(mb.group(1)) == int(ma.group(1)) + 1))
+        if not (ma and mb): return False
+        return int(mb.group(1)) == int(ma.group(1)) + 1
 
     if a.number_kind == "alpha":
-        la_ = (re.match(r"^\s*([A-Za-zА-Яа-яЁё])", a.marker_text or "") or [None, None])[1]
-        lb_ = (re.match(r"^\s*([A-Za-zА-Яа-яЁё])", b.marker_text or "") or [None, None])[1]
+        la_ = (re.match(r"^\s*([A-Za-zА-Яа-яЁё])", a.marker_text or "") or [None,None])[1]
+        lb_ = (re.match(r"^\s*([A-Za-zА-Яа-яЁё])", b.marker_text or "") or [None,None])[1]
         if not (la_ and lb_): return False
         alpha = "".join(ALLOWED_LETTERS)
-        nxt_letter = _next_letter(la_, alpha)
-        return nxt_letter == lb_
+        return _next_letter(la_, alpha) == lb_
 
     if a.number_kind == "roman":
         ra_m = re.match(r"^\s*([IVXLCDMivxlcdm]+)", a.marker_text or "")
@@ -539,10 +559,10 @@ def _compatible_for_carry(prev: FoundList, nxt: FoundList) -> bool:
         if not (ra_m and rb_m): return False
         ra = _roman_to_int(ra_m.group(1))
         rb = _roman_to_int(rb_m.group(1))
-        return (ra is not None and rb is not None and rb == ra + 1)
+        if ra is None or rb is None: return False
+        return rb == ra + 1
 
     return False
-
 
 # --- Основная функция ---
 def check_lists(
@@ -688,21 +708,22 @@ def check_lists(
                 if DEBUG_DIAGNOSTICS:
                     admin.append(f"[Dbg][page {page_num}] list:append lvl={it.level} '{it.line.text[:40]}'")
             else:
-                # Завершаем только если текущий список уже имеет терминатор
+                # Завершаем текущий список ТОЛЬКО если у него уже есть терминатор
                 if _ends_with_terminator(cur_list):
                     found_on_page.append(cur_list)
                     if DEBUG_DIAGNOSTICS:
                         admin.append(f"[Dbg][page {page_num}] list:finalize (new incompatible at base lvl)")
                     start_new_list(it)
                 else:
-                    # «слегка влево» — считаем это вложенным уровнем; «сильно влево» — начинаем новый
-                    HARD_SHIFT_TOL = max(INDENT_STEP_PT, PARAGRAPH_INDENT_PT * 0.75)
-                    if (cur_list._base_x0 - it.line.x0_text) > HARD_SHIFT_TOL:
+                    # нет точки — продолжаем тем же списком (считаем, что идёт длинный блок)
+                    # но если новый явно «влево» от базового x0 — это сигнал нового блока
+                    if (it.line.x0_text + INDENT_TOL_PT) < cur_list._base_x0:
                         found_on_page.append(cur_list)
                         if DEBUG_DIAGNOSTICS:
-                            admin.append(f"[Dbg][page {page_num}] list:finalize (strong left shift)")
+                            admin.append(f"[Dbg][page {page_num}] list:finalize (hard left shift)")
                         start_new_list(it)
                     else:
+                        # принимаем как вложенный (форсим уровень ≥ 1)
                         it.level = max(1, _indent_level(it.line.x0_text, cur_list._base_x0))
                         cur_list.items.append(it)
                         _normalize_bbox(cur_list)
