@@ -1,24 +1,33 @@
 # scripts/body_text_checker.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from typing import List, Tuple, Dict, Iterable, Any, Optional
+from typing import List, Tuple, Dict, Optional
 import fitz  # PyMuPDF
 
-# ---- Настройки/допуски ----
+# ===================== НАСТРОЙКИ =====================
+
+# Поля документа (в сантиметрах)
+DOC_MARGIN_LEFT_CM   = 3.0     # левое поле: 3 см
+DOC_MARGIN_RIGHT_CM  = 1.5     # правое поле: 1.5 см
+DOC_MARGIN_TOP_CM    = 2.0     # верхнее поле: 2 см
+DOC_MARGIN_BOTTOM_CM = 2.0     # нижнее поле: 2 см
+
+# Абзацный отступ (минимум, см от левого поля)
+INDENT_MIN_CM = 1.25
+
+# Кегль и межстрочный
 SIZE_MIN_PT = 12.0
 SIZE_MAX_PT = 14.0
-SIZE_EPS_PT = 0.5               # допуск по размеру кегля
-LINE_SPACING_TARGET = 1.5       # целевой межстрочный коэффициент
-LINE_SPACING_TOL = 0.30         # допуск ±30% от целевого (в долях кегля)
-INTERSECT_EPS = 0.5             # минимальная площадь пересечения, pt^2
+SIZE_EPS_PT = 0.5                # допуск кегля ±0.5 pt
 
-# Поля/отступы абзацев и эвристики «рваного края»
-LEFT_MARGIN_PT  = 72.0          # левое поле страницы (примерно 2.54 см)
-RIGHT_MARGIN_PT = 72.0          # правое поле страницы
-INDENT_MIN_PT   = 18.0          # минимальный отступ начала абзаца (~0.63 см)
-RAGGED_EPS_PT   = 18.0          # насколько «короче» от правого поля считать строку концом абзаца
-X0_SAME_COL_EPS = 40.0          # допуск для «той же колонки» (как было)
-EMPTY_GAP_FACTOR = 1.2          # множитель к среднему кеглю для определения «пустой строки»
+LINE_SPACING_TARGET = 1.5        # целевой коэффициент межстрочного интервала
+LINE_SPACING_TOL = 0.30          # допуск ±30% от целевого (в долях кегля)
+EMPTY_GAP_SURPLUS = 0.10         # «пустой зазор» — выше верхней границы ещё на 10%
+
+# Прочие эвристики
+X0_SAME_COL_EPS = 40.0           # та же колонка (допуск по x0)
+INTERSECT_EPS = 0.5              # минимальная площадь пересечения, pt^2
+FILTER_OWN_ANNOTS_PREFIX = "Сервис нормоконтроля"
 
 # Варианты имён шрифта Times в PDF
 TIMES_FALLBACKS = (
@@ -30,7 +39,28 @@ TIMES_FALLBACKS = (
     "times",
 )
 
-# ================= УТИЛИТЫ =================
+# Автокалибровка полей (по двум страницам, начиная со start_page)
+AUTO_CAL_PAGES = 2
+AUTO_CAL_BIN_SIZE = 2.0          # ширина корзины (pt) для «грубой моды»
+AUTO_CAL_SAMPLES_PER_PAGE = 400  # максимум строк на страницу для оценки
+
+# Старт проверки (по умолчанию — с 3-й страницы)
+DEFAULT_START_PAGE = 3
+
+# ===================== ВСПОМОГАТЕЛЬНОЕ =====================
+
+def mm_to_pt(mm: float) -> float:
+    return mm * 2.8346456693
+
+def cm_to_pt(cm: float) -> float:
+    return mm_to_pt(cm * 10.0)
+
+LEFT_MARGIN_PT   = cm_to_pt(DOC_MARGIN_LEFT_CM)
+RIGHT_MARGIN_PT  = cm_to_pt(DOC_MARGIN_RIGHT_CM)
+TOP_MARGIN_PT    = cm_to_pt(DOC_MARGIN_TOP_CM)
+BOTTOM_MARGIN_PT = cm_to_pt(DOC_MARGIN_BOTTOM_CM)
+INDENT_MIN_PT    = cm_to_pt(INDENT_MIN_CM)
+
 def _intersects_any(r: fitz.Rect, rects: List[fitz.Rect]) -> bool:
     if not rects:
         return False
@@ -44,13 +74,14 @@ def _is_times_font(fontname: str) -> bool:
     if not fontname:
         return False
     name = fontname.lower()
-    if "+" in name:  # убрать PDF-префикс вида "ABCDEF+TimesNewRomanPSMT"
+    # убрать PDF-префикс "ABCDEF+TimesNewRomanPSMT"
+    if "+" in name:
         name = name.split("+", 1)[1]
     return any(key in name for key in TIMES_FALLBACKS)
 
 def _span_is_bold(sp: dict) -> bool:
     try:
-        if int(sp.get("flags", 0)) & 2:  # у PyMuPDF бит 2 часто означает bold
+        if int(sp.get("flags", 0)) & 2:
             return True
     except Exception:
         pass
@@ -63,11 +94,12 @@ def _line_is_all_bold(spans: list) -> bool:
     return all(_span_is_bold(s) for s in spans)
 
 def _dominant_span_props(spans: List[dict]) -> Tuple[str, float]:
-    """Вернуть (основной_шрифт, основной_кегль) по спану с максимальной шириной."""
+    """(основной_шрифт, основной_кегль) по спану с максимальной шириной."""
     if not spans:
         return "", 0.0
     def _w(s):
-        b = s.get("bbox", [0, 0, 0, 0]); return (b[2] - b[0])
+        b = s.get("bbox", [0, 0, 0, 0])
+        return (b[2] - b[0])
     best = max(spans, key=_w)
     return best.get("font", "") or "", float(best.get("size", 0.0))
 
@@ -75,17 +107,17 @@ def _check_size_ok(size: float) -> bool:
     return (SIZE_MIN_PT - SIZE_EPS_PT) <= size <= (SIZE_MAX_PT + SIZE_EPS_PT)
 
 def _expected_top2top(size_a: float, size_b: float) -> Tuple[float, float]:
-    """Вернуть допустимый диапазон top-to-top для 1.5×кегля с допуском."""
+    """Допустимый диапазон top-to-top для 1.5×кегля с допуском."""
     ref = (size_a + size_b) / 2.0 if (size_a and size_b) else max(size_a, size_b, 0.0)
     target = LINE_SPACING_TARGET * ref
     return target * (1.0 - LINE_SPACING_TOL), target * (1.0 + LINE_SPACING_TOL)
 
 def _add_text_annot_silent(page: fitz.Page, x: float, y: float, msg: str):
-    """Безопасно добавить точечную аннотацию (pin) с заголовком."""
+    """Точечная аннотация (pin) без падений."""
     try:
         pt = fitz.Point(float(x), float(y))
-        ann = page.add_text_annot(pt, f"Сервис нормоконтроля: {msg}")
-        ann.set_info(title="Сервис нормоконтроля", content=msg)
+        ann = page.add_text_annot(pt, f"{FILTER_OWN_ANNOTS_PREFIX}: {msg}")
+        ann.set_info(title=FILTER_OWN_ANNOTS_PREFIX, content=msg)
         ann.update()
     except Exception:
         pass
@@ -95,8 +127,8 @@ def _normalize_page_map(
     total_pages: int
 ) -> Dict[int, List[fitz.Rect]]:
     """
-    Приводит карту исключений к ключам-индексам страниц 0-based и значениям fitz.Rect.
-    Поддерживает, если ключи приходят 1-based (обычно так делают чекеры).
+    Приводит карту исключений к ключам-индексам страниц 0-based и fitz.Rect.
+    Поддерживает 1-based ключи (часто так делают в других чекерах).
     """
     out: Dict[int, List[fitz.Rect]] = {}
     if not mp:
@@ -114,23 +146,91 @@ def _normalize_page_map(
             out.setdefault(p0, []).append(rect)
     return out
 
-def _line_text_x0(spans: List[dict]) -> float:
-    """Минимальный x0 по спанам — «реальный» старт текста в строке."""
-    x0s = []
+def _line_x0_x1(spans: List[dict]) -> Tuple[float, float]:
+    xs0, xs1 = [], []
     for s in spans:
         b = s.get("bbox", [0,0,0,0])
-        x0s.append(float(b[0]))
-    return min(x0s) if x0s else 0.0
+        xs0.append(float(b[0])); xs1.append(float(b[2]))
+    return (min(xs0), max(xs1)) if xs0 and xs1 else (0.0, 0.0)
 
-def _line_text_x1(spans: List[dict]) -> float:
-    """Максимальный x1 по спанам — «реальный» конец текста в строке."""
-    x1s = []
-    for s in spans:
-        b = s.get("bbox", [0,0,0,0])
-        x1s.append(float(b[2]))
-    return max(x1s) if x1s else 0.0
+def _dominant_bin(values: List[float], bin_size: float = 2.0) -> Optional[float]:
+    """Грубая мода по корзинам фиксированного размера (pt)."""
+    if not values:
+        return None
+    from collections import Counter
+    buckets = Counter(int(v // bin_size) for v in values)
+    k, _ = buckets.most_common(1)[0]
+    lo, hi = k * bin_size, (k + 1) * bin_size
+    in_bucket = [v for v in values if lo <= v < hi]
+    return sum(in_bucket) / len(in_bucket) if in_bucket else (k + 0.5) * bin_size
 
-# ================= АБЗАЦНАЯ ЛОГИКА =================
+def _estimate_margins_two_pages(
+    doc: fitz.Document,
+    *,
+    start_idx0: int,
+    pages_to_scan: int = AUTO_CAL_PAGES,
+    sample_limit_per_page: int = AUTO_CAL_SAMPLES_PER_PAGE,
+) -> Dict[int, Tuple[float, float]]:
+    """
+    Оценка usable_left/usable_right для первых двух страниц проверки (локальные).
+    Возвращает словарь: per_page[pno] = (usable_left, usable_right).
+    """
+    per_page: Dict[int, Tuple[float, float]] = {}
+
+    for pno in range(start_idx0, min(len(doc), start_idx0 + pages_to_scan)):
+        page = doc[pno]
+        mb = page.mediabox
+
+        # Базовые поля — по ТЗ (фиксированные)
+        base_left  = mb.x0 + LEFT_MARGIN_PT
+        base_right = mb.x1 - RIGHT_MARGIN_PT
+
+        try:
+            blocks = page.get_text("dict").get("blocks", [])
+        except Exception:
+            blocks = []
+
+        dleft, dright = [], []
+        count = 0
+        for b in blocks:
+            for l in b.get("lines", []):
+                if count >= sample_limit_per_page:
+                    break
+                spans = l.get("spans", [])
+                if not spans:
+                    continue
+                # фильтр: не учитываем наши же аннотации
+                sample = "".join(s.get("text","") for s in spans)[:48].strip()
+                if sample.startswith(FILTER_OWN_ANNOTS_PREFIX):
+                    continue
+
+                x0, x1 = _line_x0_x1(spans)
+                if x1 <= x0:
+                    continue
+                dleft.append(max(0.0, x0 - mb.x0))
+                dright.append(max(0.0, mb.x1 - x1))
+                count += 1
+
+        dom_left = _dominant_bin(dleft, bin_size=AUTO_CAL_BIN_SIZE)
+        dom_right = _dominant_bin(dright, bin_size=AUTO_CAL_BIN_SIZE)
+
+        # мягкая корректировка вокруг базовых полей
+        if dom_left is not None:
+            usable_left = 0.7 * (mb.x0 + dom_left) + 0.3 * base_left
+        else:
+            usable_left = base_left
+
+        if dom_right is not None:
+            usable_right = 0.7 * (mb.x1 - dom_right) + 0.3 * base_right
+        else:
+            usable_right = base_right
+
+        per_page[pno] = (usable_left, usable_right)
+
+    return per_page
+
+# ===================== АБЗАЦНАЯ МОДЕЛЬ =====================
+
 class Para:
     def __init__(self, page_num: int):
         self.page_num = page_num
@@ -143,7 +243,7 @@ class Para:
 
     def add_line(self, bbox: fitz.Rect, spans: List[dict]):
         if not self.lines:
-            self.x0_first = _line_text_x0(spans)
+            self.x0_first = _line_x0_x1(spans)[0]
             self.y0_first = bbox.y0
         self.lines.append((bbox, spans))
         f, s = _dominant_span_props(spans)
@@ -156,12 +256,8 @@ class Para:
     def dominant_font_size(self) -> Tuple[str, float]:
         if not self.lines:
             return "", 0.0
-        # По первой строке абзаца (часто определяет стиль абзаца)
         f, s = _dominant_span_props(self.lines[0][1])
         return f, s
-
-    def avg_size(self) -> float:
-        return sum(self.sizes)/len(self.sizes) if self.sizes else 0.0
 
     def spacing_issues(self) -> List[str]:
         """Проверка межстрочника внутри абзаца (по соседним строкам)."""
@@ -179,10 +275,13 @@ class Para:
             top2top = bbox_j.y0 - bbox_i.y0
             lo, hi = _expected_top2top(si, sj)
             if not (lo <= top2top <= hi):
-                issues.append(f"межстрочник {top2top:.1f} pt (допуск {lo:.1f}–{hi:.1f}) на y≈{bbox_i.y0:.1f}→{bbox_j.y0:.1f}")
+                issues.append(
+                    f"межстрочник {top2top:.1f} pt (допуск {lo:.1f}–{hi:.1f}) на y≈{bbox_i.y0:.1f}→{bbox_j.y0:.1f}"
+                )
         return issues
 
-# ================= ГЛАВНАЯ ФУНКЦИЯ =================
+# ===================== ГЛАВНАЯ ФУНКЦИЯ =====================
+
 def check_body_text(
     doc: fitz.Document,
     *,
@@ -190,21 +289,22 @@ def check_body_text(
     table_caption_bboxes_by_page: Optional[Dict[int, List[Tuple[float, float, float, float]]]] = None,
     figure_caption_bboxes_by_page: Optional[Dict[int, List[Tuple[float, float, float, float]]]] = None,
     exclude_bboxes_by_page: Optional[Dict[int, List[Tuple[float, float, float, float]]]] = None,
-    start_page: int = 1,
+    start_page: int = DEFAULT_START_PAGE,
     annotate_pdf: bool = True,
+    auto_calibrate: bool = False,   # ← при True аккуратно уточнит поля на первых двух страницах
 ) -> dict:
     """
-    Проверяет основной текст абзацами:
-      - Times New Roman, 12–14 pt,
-      - межстрочник ≈1.5×кегля с допуском,
-      - объединение строк в абзацы по правилам: начало — строка с отступом; конец — «короткая» строка
-        (не доходит до правого поля) или «пустая строка» до/после.
-    Исключает области других элементов (если переданы).
-    Делает ТОЛЬКО точечные аннотации (без рамок) — по одной на абзац с нарушением.
+    Проверяет основной текст абзацами относительно полей:
+      - левое 3 см, правое 1.5 см, верх/низ 2 см;
+      - Times New Roman, 12–14 pt;
+      - межстрочник ≈1.5×кегля с допуском;
+      - абзацы: начало — абзацный отступ или пустой зазор; конец — пустой зазор или отступ у следующей строки.
+    Исключает области других элементов.
+    Делает точечные аннотации по одной на абзац с нарушением.
     """
     total_pages = len(doc)
 
-    # Скомбинируем все карты исключений
+    # Скомбинируем карты исключений
     combined: Dict[int, List[Tuple[float, float, float, float]]] = {}
     def _merge_map(mp):
         if not mp:
@@ -225,17 +325,31 @@ def check_body_text(
 
     start_idx0 = max(0, start_page - 1)
 
+    # Локальная авто-калибровка usable_left/usable_right на первых 2 стр. проверки (мягко)
+    per_page_margins: Dict[int, Tuple[float, float]] = {}
+    if auto_calibrate:
+        per_page_margins = _estimate_margins_two_pages(doc, start_idx0=start_idx0)
+
     for pno in range(start_idx0, total_pages):
         page = doc[pno]
         page_num = pno + 1
         page_ex = excluded.get(pno, [])
 
-        # Геометрия страницы
-        mediabox = page.mediabox
-        usable_left  = mediabox.x0 + LEFT_MARGIN_PT
-        usable_right = mediabox.x1 - RIGHT_MARGIN_PT
+        mb = page.mediabox
+        # базовые usable поля — из ТЗ
+        usable_left  = mb.x0 + LEFT_MARGIN_PT
+        usable_right = mb.x1 - RIGHT_MARGIN_PT
+        usable_top   = mb.y0 + TOP_MARGIN_PT
+        usable_bottom= mb.y1 - BOTTOM_MARGIN_PT
 
-        # Забираем структурированный текст, исключаем области
+        # при включённой калибровке уточним левый/правый
+        if auto_calibrate and pno in per_page_margins:
+            pl, pr = per_page_margins[pno]
+            # в разумных пределах (не выходить за рамки базовых полей)
+            usable_left  = max(usable_left - cm_to_pt(0.5), min(pl, usable_left  + cm_to_pt(0.5)))
+            usable_right = min(usable_right + cm_to_pt(0.5), max(pr, usable_right - cm_to_pt(0.5)))
+
+        # Забираем структурированный текст и исключаем области/поля по Y
         try:
             blocks = page.get_text("dict").get("blocks", [])
         except Exception:
@@ -247,8 +361,14 @@ def check_body_text(
                 l_bbox = fitz.Rect(l.get("bbox", [0, 0, 0, 0]))
                 if _intersects_any(l_bbox, page_ex):
                     continue
+                if l_bbox.y0 < usable_top or l_bbox.y1 > usable_bottom:
+                    continue
                 spans = l.get("spans", [])
                 if not spans:
+                    continue
+                # пропустим наши аннотации при повторной проверке
+                sample = "".join(s.get("text","") for s in spans)[:48].strip()
+                if sample.startswith(FILTER_OWN_ANNOTS_PREFIX):
                     continue
                 raw_lines.append((l_bbox, spans))
 
@@ -260,50 +380,48 @@ def check_body_text(
         i = 0
         while i < len(raw_lines):
             bbox_i, spans_i = raw_lines[i]
-            x0_text = _line_text_x0(spans_i)
-            x1_text = _line_text_x1(spans_i)
+            x0_i, x1_i = _line_x0_x1(spans_i)
 
-            # эвристика «пустая строка до текущей»
+            # «пустой зазор до текущей»
             empty_before = False
             if paras and paras[-1].lines:
-                last_bbox_prev, last_spans_prev = paras[-1].lines[-1]
-                # оценим средний кегль между строками
-                _, s_prev = _dominant_span_props(last_spans_prev)
+                prev_bbox, prev_spans = paras[-1].lines[-1]
+                # «пустой зазор» — если top-to-top выше верхней границы (hi) ещё на 10%
+                _, s_prev = _dominant_span_props(prev_spans)
                 _, s_cur  = _dominant_span_props(spans_i)
-                s_avg = (s_prev + s_cur)/2 if (s_prev and s_cur) else max(s_prev, s_cur, 0.0)
-                gap = bbox_i.y0 - last_bbox_prev.y1
-                if s_avg and gap > EMPTY_GAP_FACTOR * s_avg:
+                lo, hi = _expected_top2top(s_prev, s_cur)
+                top2top = bbox_i.y0 - prev_bbox.y0
+                if top2top > hi * (1.0 + EMPTY_GAP_SURPLUS):
                     empty_before = True
 
-            is_indent_start = (x0_text - usable_left) >= INDENT_MIN_PT
+            is_indent_start = (x0_i - usable_left) >= INDENT_MIN_PT
             is_new_para = (not paras) or empty_before or is_indent_start
 
             if is_new_para:
                 paras.append(Para(page_num))
 
-            # добавляем текущую строку в последний абзац
             paras[-1].add_line(bbox_i, spans_i)
 
-            # проверим критерий конца абзаца на самой строке
-            line_is_short = (usable_right - x1_text) >= RAGGED_EPS_PT
-
-            # также посмотрим «пустую строку ПОСЛЕ»
+            # Проверим конец абзаца: пустой зазор ПОСЛЕ или отступ у следующей строки
             empty_after = False
+            next_indent = False
             if i + 1 < len(raw_lines):
                 bbox_next, spans_next = raw_lines[i + 1]
                 _, s_cur = _dominant_span_props(spans_i)
                 _, s_next = _dominant_span_props(spans_next)
-                s_avg2 = (s_cur + s_next)/2 if (s_cur and s_next) else max(s_cur, s_next, 0.0)
-                gap2 = bbox_next.y0 - bbox_i.y1
-                if s_avg2 and gap2 > EMPTY_GAP_FACTOR * s_avg2:
+                lo2, hi2 = _expected_top2top(s_cur, s_next)
+                top2top2 = bbox_next.y0 - bbox_i.y0
+                if top2top2 > hi2 * (1.0 + EMPTY_GAP_SURPLUS):
                     empty_after = True
+                x0_next, _ = _line_x0_x1(spans_next)
+                next_indent = (x0_next - usable_left) >= INDENT_MIN_PT
 
-            # если конец абзаца — просто стартуем следующий на следующей итерации
-            if line_is_short or empty_after:
+            # Завершение абзаца — если «пустой зазор» или следующий с отступом
+            if empty_after or next_indent:
                 i += 1
                 continue
 
-            # иначе возможно это «продолжение абзаца» — следующая строка без отступа
+            # иначе это продолжение текущего абзаца
             i += 1
 
         # ==== Проверка абзацев ====
@@ -313,14 +431,10 @@ def check_body_text(
         for para in paras:
             if not para.lines:
                 continue
-            # Пропустить полностью полужирные абзацы
             if para.all_bold:
                 continue
 
-            # Доминирующий шрифт/кегль (по первой строке абзаца)
             dom_font, dom_size = para.dominant_font_size()
-
-            # Сбор ошибок абзаца
             para_errs: List[str] = []
 
             # Шрифт
@@ -332,28 +446,20 @@ def check_body_text(
                 para_errs.append(f"Неверный кегль: {dom_size:.1f} pt (нужно 12–14 pt)")
 
             # Межстрочники внутри абзаца
-            spacing_errs = para.spacing_issues()
-            para_errs.extend(spacing_errs)
+            para_errs.extend(para.spacing_issues())
 
             if para_errs:
                 page_issues += 1
                 total_issues += 1
                 error_pages.append(para.page_num)
 
-                # Одна аннотация на абзац — ставим пин в начале абзаца
                 if annotate_pdf:
-                    msg = " ; ".join(para_errs)
-                    # чтобы текст пина не был слишком длинным
+                    msg = " | ".join(para_errs)
                     if len(msg) > 300:
                         msg = msg[:297] + "…"
-                    # координата — первая строка абзаца
-                    first_bbox, first_spans = para.lines[0]
-                    _add_text_annot_silent(
-                        page, para.x0_first, para.y0_first,
-                        f"Абзац: {msg}"
-                    )
+                    first_bbox, _ = para.lines[0]
+                    _add_text_annot_silent(page, para.x0_first, para.y0_first, f"Абзац: {msg}")
 
-                # Админ-лог
                 admin_lines.append(
                     f"[Стр. {para.page_num}] Абзац на y≈{para.y0_first:.1f}: " + " | ".join(para_errs)
                 )
