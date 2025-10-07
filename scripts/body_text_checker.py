@@ -13,6 +13,9 @@ X0_SAME_COL_EPS, INTERSECT_EPS, Y_MERGE_EPS, SPACER_MAX_WIDTH_PT = 40.0, 0.5, 0.
 FILTER_OWN_ANNOTS_PREFIX, DEFAULT_START_PAGE = "Сервис нормоконтроля", 3
 TIMES_FALLBACKS = ("timesnewroman","times new roman","times-roman","timesroman","timesnewromanps","times")
 
+# ВАЖНО: всё, что набрано Cambria Math, полностью исключаем из проверки основного текста
+MATH_FONTS = {"cambria math"}
+
 # ====== утилиты ======
 def mm_to_pt(mm: float) -> float: return mm * 2.8346456693
 def cm_to_pt(cm: float) -> float: return mm_to_pt(cm * 10)
@@ -117,6 +120,38 @@ def _last_words(text: str, n: int=3) -> str:
     ws = [w for w in text.strip().split() if w]
     return " ".join(ws[-n:]) if ws else ""
 
+# ====== мат. строки / Cambria Math ======
+def _spans_fonts_share(spans: List[dict]) -> Dict[str, float]:
+    """Оцениваем вклад шрифтов как сумму ширин спанов (bbox.x1-x0)."""
+    share: Dict[str, float] = {}
+    total = 0.0
+    for s in spans:
+        x0,y0,x1,y1 = map(float, s.get("bbox",[0,0,0,0]))
+        w = max(0.0, x1-x0)
+        f = (s.get("font") or "").lower().split("+",1)[-1]
+        share[f] = share.get(f, 0.0) + w
+        total += w
+    if total <= 0:
+        return share
+    # нормируем в 0..1
+    for k in list(share.keys()):
+        share[k] = share[k] / total
+    return share
+
+def _is_math_line(spans: List[dict]) -> bool:
+    """Строка считается математической, если:
+       - доминирующий шрифт — Cambria Math, ИЛИ
+       - суммарная доля Cambria Math ≥ 0.6."""
+    if not spans:
+        return False
+    dom_font, _ = _dom_span(spans)
+    dom_font_l = dom_font.lower().split("+",1)[-1]
+    if dom_font_l in MATH_FONTS:
+        return True
+    shares = _spans_fonts_share(spans)
+    cm_share = sum(v for k,v in shares.items() if k in MATH_FONTS)
+    return cm_share >= 0.60
+
 # ====== абзац ======
 class Para:
     def __init__(self, page_num:int):
@@ -149,7 +184,7 @@ class Para:
             if not _ls_ok(siz,sjz,bj.y0-bi.y0): issues.append("межстрочник не 1.5")
         return issues
 
-    # ------ Новое: удобные геттеры для лога ------
+    # ------ удобные геттеры для лога ------
     def head_tail(self, n_words:int=3) -> Tuple[str,str]:
         if not self.lines: return "",""
         head_txt=""
@@ -176,20 +211,14 @@ class Para:
         fnt,_ = self.dom()
         return fnt or ""
 
-# ====== НОВОЕ: диагностическая распечатка всех строк ======
+# ====== диагностическая распечатка всех строк (не включает Cambria Math) ======
 def _lines_diagnostics(page_num:int, vis_lines, left:float, right:float) -> List[str]:
-    """
-    Возвращает список строк с диагностикой по каждой визуальной строке:
-    координаты, отступы от полей (от вычисленных left/right), ширина/высота, шрифт/кегль,
-    флаг жирности, пустышка, t2t/ratio до следующей строки и т.п.
-    """
     out=[f"[LINES DEBUG] Стр. {page_num} — всего строк: {len(vis_lines)}"]
     for idx,(bb,sp,txt,is_sp) in enumerate(vis_lines):
         x0,x1=_line_x0x1(sp); font,size=_dom_span(sp)
         distL=x0-left; distR=right-x1
         width=bb.x1-bb.x0; height=bb.y1-bb.y0
         bold=_line_all_bold(sp)
-        # t2t и ratio с последующей строкой
         t2t=ratio="-"
         if idx+1<len(vis_lines):
             nbb,nsp,_,_ = vis_lines[idx+1]
@@ -233,7 +262,7 @@ def check_body_text(
         # Границы по полям для вертикальной обрезки
         top, bottom = mb.y0+TOP_MARGIN_PT, mb.y1-BOTTOM_MARGIN_PT
 
-        # 1) собрать «сырые строки» (не фильтруем по левому/правому полю — только по top/bottom и исключениям)
+        # 1) собрать «сырые строки»
         try: blocks=page.get_text("dict").get("blocks",[])
         except: blocks=[]
         raw=[]
@@ -245,16 +274,21 @@ def check_body_text(
                 if not spans: continue
                 head=("".join(s.get("text","") for s in spans)[:48]).strip()
                 if head.startswith(FILTER_OWN_ANNOTS_PREFIX): continue
+
+                # --- ПОЛНОЕ ИСКЛЮЧЕНИЕ CAMBRIA MATH НА УРОВНЕ СТРОКИ ---
+                if _is_math_line(spans):
+                    continue
+
                 txt=_spans_text(spans)
-                x0,x1=_line_x0x1(spans); is_sp=(txt.strip()=="") or (x1-x0<=SPACER_MAX_WIDTH_PT)
+                x0,x1=_line_x0x1(spans)
+                is_sp=(txt.strip()=="") or (x1-x0<=SPACER_MAX_WIDTH_PT)
                 raw.append((bb,spans,txt,is_sp))
 
         # 2) визуальные строки
         raw.sort(key=lambda it:(it[0].y0,it[0].x0))
         vis=_merge_lines(raw)
 
-        # 2.1) НОВОЕ: вычисление динамических границ текста на странице
-        # Берём крайний левый и крайний правый по невспомогательным строкам
+        # 2.1) динамические границы текста (без Cambria Math — уже исключили)
         page_left_text = None
         page_right_text = None
         for bb, sp, txt, is_sp in vis:
@@ -264,12 +298,11 @@ def check_body_text(
             if page_left_text is None or x0 < page_left_text: page_left_text = x0
             if page_right_text is None or x1 > page_right_text: page_right_text = x1
 
-        # Фолбэк: если страница пустая, используем геом. поля
         left_fb, right_fb = (mb.x0+LEFT_MARGIN_PT), (mb.x1-RIGHT_MARGIN_PT)
         left = page_left_text if page_left_text is not None else left_fb
         right = page_right_text if page_right_text is not None else right_fb
 
-        # (NEW) Диагностика строк страницы — уже относительно новых left/right
+        # Диагностика строк страницы
         lines_debug.extend(_lines_diagnostics(pno+1, vis, left, right))
 
         # 3) построить абзацы (отступ относительно вычисленного left)
@@ -284,13 +317,38 @@ def check_body_text(
             i+=1
 
         # 4) проверки
-        page_issues=0; total_paras+=len(paras)
+        page_issues=0
+
+        # ЕЩЁ РАЗ страхуемся: удалим абзацы, где доминирующий шрифт Cambria Math
+        filtered_paras: List[Para] = []
         for pa in paras:
-            if not pa.lines or pa.all_bold: continue
-            fnt, sz_dom = pa.dom(); errs=[]
-            if not _is_times_font(fnt): errs.append("шрифт не Times New Roman")
-            if not _size_ok(sz_dom): errs.append("кегль вне 12–14 pt")
+            if not pa.lines:
+                continue
+            fnt, _ = pa.dom()
+            if fnt.lower().split("+",1)[-1] in MATH_FONTS:
+                # полностью пропускаем такие абзацы — никаких проверок/аннотаций/логов
+                continue
+            filtered_paras.append(pa)
+
+        total_paras+=len(filtered_paras)
+        for pa in filtered_paras:
+            if pa.all_bold: 
+                continue
+
+            errs=[]
+            fnt, sz_dom = pa.dom()
+
+            # Шрифт: проверяем только если это не Cambria Math (она уже исключена)
+            if not _is_times_font(fnt):
+                errs.append("шрифт не Times New Roman")
+
+            # Кегль
+            if not _size_ok(sz_dom):
+                errs.append("кегль вне 12–14 pt")
+
+            # Межстрочный интервал
             errs += pa.spacing_issues()
+
             if errs:
                 page_issues+=1; total_issues+=1; error_pages.append(pa.page_num)
                 if annotate_pdf:
@@ -298,7 +356,7 @@ def check_body_text(
                     _, sp_first, _ = pa.lines[0]
                     x,y=_pin_point(sp_first); _annot(page,x,y," | ".join(sorted(set(errs))))
 
-                # ------- НОВОЕ: расширенный лог по абзацу -------
+                # расширенный лог по абзацу
                 head, tail = pa.head_tail(3)
                 avg_sz = pa.avg_size()
                 dom_font = pa.dominant_font()
@@ -310,7 +368,7 @@ def check_body_text(
                         h=head, t=tail
                     )
                 )
-        page_stats.append((pno+1,len(paras),page_issues))
+        page_stats.append((pno+1,len(filtered_paras),page_issues))
 
     per_page=[f"Стр. {n}: проверено абзацев {c}, нарушений {i}" for n,c,i in page_stats]
     counts = (
@@ -318,7 +376,6 @@ def check_body_text(
         f"Всего нарушений: {total_issues}\n" + ("\n".join(per_page) if per_page else "Страниц с текстом не найдено.")
     )
     admin_details = "[BodyText]\n"+counts+("\n\n"+("\n".join(admin_lines)) if admin_lines else "\n\nНарушений в основном тексте не найдено.")
-    # Приложим диагностический блок по строкам:
     if lines_debug:
         admin_details += "\n\n" + "\n".join(lines_debug)
 
