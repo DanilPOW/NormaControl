@@ -775,7 +775,7 @@ def check_lists(
                     if annotate_pdf:
                         ann = page.add_text_annot(fitz.Point(fl.bbox.x0, fl.bbox.y0),
                             "Список: нарушения\n" + "\n".join(f"• {m}" for m in issues))
-                        ann.set_info(title="Сервис нормоконтроля", content="\n".join(issues))
+                        ann.set_info(title="Сервис нормоконтроля: ошибка списков", content="\n".join(issues))
                         ann.update()
                 else:
                     if annotate_pdf:
