@@ -152,13 +152,11 @@ class Para:
     # ------ Новое: удобные геттеры для лога ------
     def head_tail(self, n_words:int=3) -> Tuple[str,str]:
         if not self.lines: return "",""
-        # первая непустая строка
         head_txt=""
         for _,_,t in self.lines:
             if t.strip():
                 head_txt=t
                 break
-        # последняя непустая строка
         tail_txt=""
         for _,_,t in reversed(self.lines):
             if t.strip():
@@ -182,7 +180,7 @@ class Para:
 def _lines_diagnostics(page_num:int, vis_lines, left:float, right:float) -> List[str]:
     """
     Возвращает список строк с диагностикой по каждой визуальной строке:
-    координаты, отступы от полей, ширина/высота, шрифт/кегль,
+    координаты, отступы от полей (от вычисленных left/right), ширина/высота, шрифт/кегль,
     флаг жирности, пустышка, t2t/ratio до следующей строки и т.п.
     """
     out=[f"[LINES DEBUG] Стр. {page_num} — всего строк: {len(vis_lines)}"]
@@ -232,10 +230,10 @@ def check_body_text(
 
     for pno in range(start0,total_pages):
         page=doc[pno]; mb=page.mediabox; ex=excluded.get(pno,[])
-        left, right = mb.x0+LEFT_MARGIN_PT, mb.x1-RIGHT_MARGIN_PT
+        # Границы по полям для вертикальной обрезки
         top, bottom = mb.y0+TOP_MARGIN_PT, mb.y1-BOTTOM_MARGIN_PT
 
-        # 1) собрать «сырые строки»
+        # 1) собрать «сырые строки» (не фильтруем по левому/правому полю — только по top/bottom и исключениям)
         try: blocks=page.get_text("dict").get("blocks",[])
         except: blocks=[]
         raw=[]
@@ -255,10 +253,26 @@ def check_body_text(
         raw.sort(key=lambda it:(it[0].y0,it[0].x0))
         vis=_merge_lines(raw)
 
-        # (NEW) Диагностика строк страницы
+        # 2.1) НОВОЕ: вычисление динамических границ текста на странице
+        # Берём крайний левый и крайний правый по невспомогательным строкам
+        page_left_text = None
+        page_right_text = None
+        for bb, sp, txt, is_sp in vis:
+            if is_sp: continue
+            if not (txt or "").strip(): continue
+            x0, x1 = _line_x0x1(sp)
+            if page_left_text is None or x0 < page_left_text: page_left_text = x0
+            if page_right_text is None or x1 > page_right_text: page_right_text = x1
+
+        # Фолбэк: если страница пустая, используем геом. поля
+        left_fb, right_fb = (mb.x0+LEFT_MARGIN_PT), (mb.x1-RIGHT_MARGIN_PT)
+        left = page_left_text if page_left_text is not None else left_fb
+        right = page_right_text if page_right_text is not None else right_fb
+
+        # (NEW) Диагностика строк страницы — уже относительно новых left/right
         lines_debug.extend(_lines_diagnostics(pno+1, vis, left, right))
 
-        # 3) построить абзацы
+        # 3) построить абзацы (отступ относительно вычисленного left)
         paras: List[Para]=[]; last_sp=False; i=0
         while i<len(vis):
             bb,sp,txt,is_sp=vis[i]
