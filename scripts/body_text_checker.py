@@ -10,7 +10,7 @@ INDENT_MIN_CM = 1.25
 SIZE_MIN_PT, SIZE_MAX_PT, SIZE_EPS_PT = 12.0, 14.0, 0.5
 LS_R_1_MIN, LS_R_1_MAX, LS_R_15_MIN, LS_R_15_MAX = 1.00, 1.20, 1.20, 1.75
 X0_SAME_COL_EPS, INTERSECT_EPS, Y_MERGE_EPS, SPACER_MAX_WIDTH_PT = 40.0, 0.5, 0.8, 6.0
-FILTER_OWN_ANNOTS_PREFIX, DEFAULT_START_PAGE = "Сервис нормоконтроля", 3
+FILTER_OWN_ANNOTS_PREFIX, DEFAULT_START_PAGE = "Сервис нормоконтроля: ошибка основного текста", 3
 TIMES_FALLBACKS = ("timesnewroman","times new roman","times-roman","timesroman","timesnewromanps","times")
 
 # ВАЖНО: всё, что набрано Cambria Math, полностью исключаем из проверки основного текста
