@@ -400,59 +400,47 @@ def check_body_text(
         for pa in filtered_paras:
             if pa.all_bold:
                 continue
-
-            para_has_issue = False
-
-            # --- Проверка красной строки ---
+        
+            issues: List[str] = []
+        
+            # --- Красная строка ---
             red_issue_msg = pa.redline_issue(left)
             if red_issue_msg:
-                para_has_issue = True
-                error_pages.append(pa.page_num)
-                if annotate_pdf:
-                    _, sp_first, _ = pa.lines[0]
-                    x, y = _pin_point(sp_first)
-                    # ВАЖНО: точная формулировка по требованию
-                    _annot(page, x, y, "Красная строка должна быть 1.25")
-                # лог
-                head, tail = pa.head_tail(3)
-                admin_lines.append(
-                    "[Стр. {p}] Абзац y≈{y}: красная строка ≠ 1.25 см | «{h} … {t}»"
-                    .format(p=pa.page_num, y=_fmt(pa.y0_first), h=head, t=tail)
-                )
-
-            # --- Остальные проверки ---
-            errs: List[str] = []
+                issues.append(red_issue_msg)
+        
+            # --- Шрифт/кегль/межстрочный ---
             fnt, sz_dom = pa.dom()
-
             if not _is_times_font(fnt):
-                errs.append("шрифт не Times New Roman")
+                issues.append("шрифт не Times New Roman")
             if not _size_ok(sz_dom):
-                errs.append("кегль вне 12–14 pt")
-            errs += pa.spacing_issues()
-
-            if errs:
-                para_has_issue = True
+                issues.append("кегль вне 12–14 pt")
+            issues += pa.spacing_issues()
+        
+            if issues:
+                # считаем абзац проблемным ОДИН раз
+                page_issues_for_count += 1
+                total_issues += 1
                 error_pages.append(pa.page_num)
+        
                 if annotate_pdf:
+                    # одна аннотация с объединённым сообщением
                     _, sp_first, _ = pa.lines[0]
                     x, y = _pin_point(sp_first)
-                    _annot(page, x, y, " | ".join(sorted(set(errs))))
+                    msg = " | ".join(sorted(set(issues)))
+                    _annot(page, x, y, msg)
+        
+                # лог — тоже один блок на абзац
                 head, tail = pa.head_tail(3)
                 avg_sz = pa.avg_size()
                 dom_font = pa.dominant_font()
                 admin_lines.append(
                     "[Стр. {p}] Абзац y≈{y}: {errs} | строк={n} | шрифт='{f}' | кегль: dom={sd} avg={sa} | «{h} … {t}»"
                     .format(
-                        p=pa.page_num, y=_fmt(pa.y0_first), errs=" | ".join(sorted(set(errs))),
+                        p=pa.page_num, y=_fmt(pa.y0_first), errs=" | ".join(sorted(set(issues))),
                         n=len(pa.lines), f=dom_font, sd=_fmt(sz_dom), sa=_fmt(avg_sz),
                         h=head, t=tail
                     )
                 )
-
-            if para_has_issue:
-                page_issues_for_count += 1
-                total_issues += 1
-
         page_stats.append((pno + 1, len(filtered_paras), page_issues_for_count))
 
     per_page = [f"Стр. {n}: проверено абзацев {c}, нарушений {i}" for n, c, i in page_stats]
