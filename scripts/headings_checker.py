@@ -3,141 +3,167 @@ from __future__ import annotations
 import re, fitz
 from typing import Dict, List, Tuple
 
-PREFIX = "Сервис нормоконтроля: заголовки"
-ERR_CASE    = "Сервис нормоконтроля: ошибка заголовков. Все буквы кроме первой должны быть строчными"
-ERR_NEWPAGE = "Сервис нормоконтроля: ошибка заголовков. Заголовки разделов должны начинаться с новой страницы"
-ERR_SPACING = "Сервис нормоконтроля: ошибка заголовков. Нарушены интервалы/пустые строки вокруг заголовка"
-ERR_BETWEEN = "Сервис нормоконтроля: ошибка заголовков. Между заголовками разных уровней — ровно одна пустая строка и без текста"
+# ==== тексты/константы ====
+PREFIX      = "Сервис нормоконтроля: ошибка заголовков"
+ERR_CASE    = f"{PREFIX}. Все буквы кроме первой должны быть строчными"
+ERR_NEWPAGE = f"{PREFIX}. Заголовки разделов должны начинаться с новой страницы"
+ERR_SPACING = f"{PREFIX}. Нарушены интервалы/пустые строки вокруг заголовка"
+ERR_BETWEEN = f"{PREFIX}. Между заголовками разных уровней — ровно одна пустая строка и без текста"
 
 HEAD_RE = re.compile(r"^\s*(\d+(?:\.\d+){0,5})\s+(\S.*)$")
 BOLD_TOKENS = ("bold","bd","black","semibold","semi-bold","demi","demibold","heavy","extrabold","ultrabold")
 
-def _is_bold(sp): 
-    return any(t in (sp.get("font") or "").lower() for t in BOLD_TOKENS)
+# ==== утилиты — тот же стиль аннотаций, что в body_text_checker ====
+def _pin_point(spans: List[dict]) -> Tuple[float, float]:
+    if not spans: return 0.0, 0.0
+    x0,y0,x1,y1 = map(float, spans[0].get("bbox", [0,0,0,0]))
+    return x0 + 2.0, y0 + (y1 - y0) * 0.45
 
-def _union(spans)->fitz.Rect:
+def _pin_from_rect(r: fitz.Rect) -> Tuple[float, float]:
+    return float(r.x0)+2.0, float(r.y0)+(float(r.y1-r.y0))*0.45
+
+def _annot(page: fitz.Page, x: float, y: float, msg: str):
+    try:
+        a = page.add_text_annot(fitz.Point(x, y), msg)
+        a.set_info(title=PREFIX, content=msg)
+        a.update()
+    except:
+        pass
+
+def _is_bold(sp: dict)->bool:
+    return any(tok in (sp.get("font") or "").lower() for tok in BOLD_TOKENS)
+
+def _union(spans: List[dict]) -> fitz.Rect:
     r=None
     for s in spans:
-        x0,y0,x1,y1=s["bbox"]; rr=fitz.Rect(x0,y0,x1,y1)
-        r = rr if r is None else r|rr
+        x0,y0,x1,y1 = s["bbox"]
+        rr = fitz.Rect(x0,y0,x1,y1)
+        r = rr if r is None else r | rr
     return r or fitz.Rect(0,0,0,0)
 
-def _lvl(num:str)->int: return num.count(".")+1
+def _lvl(num: str)->int: return num.count(".")+1
 
-def _titlecase_ok(s:str)->bool:
-    words=re.findall(r"[А-Яа-яA-Za-zЁё]+",s)
+def _titlecase_ok(s: str)->bool:
+    words = re.findall(r"[А-Яа-яA-Za-zЁё]+", s)
     if not words: return True
-    first=words[0]
-    ok_first=(first[:1].upper()+first[1:].lower())==first
-    rest=re.findall(r"[А-Яа-яA-Za-zЁё]", s[len(first):])
-    return ok_first and all(ch==ch.lower() for ch in rest)
+    first = words[0]
+    ok_first = (first[:1].upper()+first[1:].lower()) == first
+    rest_letters = re.findall(r"[А-Яа-яA-Za-zЁё]", s[len(first):])
+    return ok_first and all(ch == ch.lower() for ch in rest_letters)
 
-def check_headings(doc:fitz.Document,*,start_page:int=3,annotate_pdf:bool=True)->dict:
-    found: Dict[int,List[Tuple[fitz.Rect,str,int,float,int]]] = {}   # rect, txt, lvl, size, idx_line
-    page_lines: Dict[int,List[Tuple[float,float,str,float]]] = {}    # y0,y1,txt,sz
+# ==== основная функция ====
+def check_headings(doc: fitz.Document, *, start_page:int=3, annotate_pdf:bool=True)->dict:
+    """
+    Жирные нумерованные заголовки (1 / 1.2 / ... + пробел + текст).
+    Правила:
+      - Уровень 1 — первая строка страницы (верх не проверяем).
+      - Склейка многострочного заголовка вперёд (жирный, без новой нумерации, близко по вертикали).
+      - Интервалы: однострочный — одна пустая строка; многострочный — пустая строка + ~8 pt.
+      - Между заголовками разных уровней — одна пустая строка и без текста.
+    Аннотации — ТЕКСТОВЫЕ, как в body_text_checker.
+    """
+    found: Dict[int, List[Tuple[fitz.Rect,str,int,float,int,int,List[dict]]]] = {}  # rect, txt, lvl, sz, fst_idx, lst_idx, fst_spans
     debug: List[str] = []
-    BLANK_K, TOL_PT = 1.3, 6.0  # пустая строка ~ >=1.3*ref_step; допуск для 8pt
+    BLANK_K, TOL_PT = 1.3, 6.0  # пустая строка ≥ 1.3*ref_step; допуск для 8 pt
 
-    for pno in range(max(0,start_page-1), len(doc)):
-        page=doc[pno]
-        lines=[]
-        for b in page.get_text("dict").get("blocks",[]):
-            for ln in b.get("lines",[]):
-                sp=ln.get("spans",[]); 
+    for pno in range(max(0, start_page-1), len(doc)):
+        page = doc[pno]
+        # собираем строки
+        raw: List[Tuple[float,float,str,float,List[dict]]] = []
+        for b in page.get_text("dict").get("blocks", []):
+            for ln in b.get("lines", []):
+                sp = ln.get("spans", [])
                 if not sp: continue
-                txt="".join(s.get("text","") for s in sp).strip()
-                if not txt or txt.startswith(PREFIX): continue
-                y0=min(s["bbox"][1] for s in sp); y1=max(s["bbox"][3] for s in sp)
-                sz=max(float(s.get("size",0)) for s in sp) or 12.0
-                lines.append((y0,y1,txt,sz,sp))
-        lines.sort(key=lambda t:t[0])
-        page_lines[pno]=[(y0,y1,txt,sz) for y0,y1,txt,sz,_ in lines]
+                txt = "".join(s.get("text","") for s in sp).strip()
+                if not txt: continue
+                y0 = min(s["bbox"][1] for s in sp); y1 = max(s["bbox"][3] for s in sp)
+                sz = max(float(s.get("size",0)) for s in sp) or 12.0
+                raw.append((y0,y1,txt,sz,sp))
+        raw.sort(key=lambda t:t[0])
 
-        # ref_step: медиана нормальных межстрочных зазоров
+        # референтный шаг (медиана нормальных зазоров)
         gaps=[]
-        for i in range(1,len(page_lines[pno])):
-            g=page_lines[pno][i][0]-page_lines[pno][i-1][1]
-            if 6.0<=g<=30.0: gaps.append(g)
-        if gaps:
-            gaps.sort(); ref_step=gaps[len(gaps)//2]
-        else:
-            ref_step=1.3*(page_lines[pno][0][3] if page_lines[pno] else 12.0)
+        for i in range(1,len(raw)):
+            g = raw[i][0] - raw[i-1][1]
+            if 6.0 <= g <= 30.0: gaps.append(g)
+        ref_step = (sorted(gaps)[len(gaps)//2] if gaps else 1.3*(raw[0][3] if raw else 12.0))
 
-        for idx,(y0,y1,txt,sz,sp) in enumerate(lines):
-            if not all(_is_bold(s) for s in sp): continue
-            m=HEAD_RE.match(txt)
-            if not m: continue
-            rect=_union(sp); lvl=_lvl(m.group(1))
-            found.setdefault(pno,[]).append((rect,txt,lvl,sz,idx))
+        # индексы кандидатов: жирные + HEAD_RE
+        heads = [i for i,(_,_,txt,_,sp) in enumerate(raw) if all(_is_bold(s) for s in sp) and HEAD_RE.match(txt)]
 
-        # валидируем и аннотируем
-        viol=set()
-        items=found.get(pno,[])
-        for rect,txt,lvl,sz,idx in items:
-            tail=HEAD_RE.match(txt).group(2)
+        # склейка многострочного заголовка
+        items=[]
+        for i in heads:
+            y0,y1,txt,sz,sp = raw[i]
+            rect = _union(sp); fst=i; j=i
+            while j+1 < len(raw):
+                y0n,y1n,txtn,szn,spn = raw[j+1]
+                if not all(_is_bold(s) for s in spn): break
+                if HEAD_RE.match(txtn): break
+                if (y0n - rect.y1) > 0.6*ref_step: break
+                rect = rect | _union(spn)
+                txt  = (txt + " " + txtn).strip()
+                j += 1
+            lvl = _lvl(HEAD_RE.match(raw[i][2]).group(1))
+            items.append((rect, txt, lvl, sz, fst, j, sp))
+        found[pno] = items
 
-            # Кейс букв
+        # проверки + аннотации (текстовые)
+        for rect, txt, lvl, sz, fst, lst, fst_sp in items:
+            tail = HEAD_RE.match(txt).group(2)
+
+            # 1) Регистр
             if not _titlecase_ok(tail):
-                if annotate_pdf: page.add_highlight_annot(rect).set_info(title=PREFIX,content=ERR_CASE)
-                viol.add(pno+1)
+                if annotate_pdf: _annot(page, *_pin_point(fst_sp), ERR_CASE)
 
-            # Раздел = первая строка страницы
-            if lvl==1 and idx!=0:
-                if annotate_pdf: page.add_highlight_annot(rect).set_info(title=PREFIX,content=ERR_NEWPAGE)
-                viol.add(pno+1)
+            # 2) Раздел — первая строка страницы
+            if lvl == 1 and fst != 0:
+                if annotate_pdf: _annot(page, *_pin_point(fst_sp), ERR_NEWPAGE)
 
-            # Интервалы
-            prev_gap=(rect.y0 - page_lines[pno][idx-1][1]) if idx>0 else ref_step
-            next_gap=(page_lines[pno][idx+1][0] - rect.y1) if idx<len(page_lines[pno])-1 else ref_step
-            multiline = rect.height > 1.6*sz
-            has_blank_before = prev_gap >= BLANK_K*ref_step
+            # 3) Интервалы (верх не проверяем, если fst==0)
+            prev_gap = (raw[fst][0] - raw[fst-1][1]) if fst>0 else None
+            next_gap = (raw[lst+1][0] - rect.y1) if lst < len(raw)-1 else ref_step
+            multiline = (lst > fst)
+
+            has_blank_before = True if fst==0 else (prev_gap is not None and prev_gap >= BLANK_K*ref_step)
             has_blank_after  = next_gap >= BLANK_K*ref_step
+            ok_after = has_blank_after if not multiline else (has_blank_after and abs(next_gap - (2.0*ref_step + 8.0)) <= TOL_PT)
 
-            ok_after = has_blank_after if not multiline else (has_blank_after and abs(next_gap-(2.0*ref_step+8.0))<=TOL_PT)
-            ok_before = has_blank_before
+            if not (has_blank_before and ok_after):
+                if annotate_pdf: _annot(page, *_pin_point(fst_sp), ERR_SPACING)
 
-            if not (ok_before and ok_after):
-                if annotate_pdf: page.add_highlight_annot(rect).set_info(title=PREFIX,content=ERR_SPACING)
-                viol.add(pno+1)
-
+            # debug
             debug.append(
-                f"Стр.{pno+1} idx={idx} lvl={lvl} sz={sz:.1f} "
-                f"ref_step={ref_step:.1f} prev_gap={prev_gap:.1f} next_gap={next_gap:.1f} "
+                f"Стр.{pno+1} idx={fst}..{lst} lvl={lvl} sz={sz:.1f} ref_step={ref_step:.1f} "
+                f"prev_gap={'-' if fst==0 else f'{prev_gap:.1f}'} next_gap={next_gap:.1f} "
                 f"multiline={int(multiline)} blank_before={int(has_blank_before)} blank_after={int(has_blank_after)} "
                 f"rule_after={'blank' if not multiline else 'blank+8'} ok_after={int(ok_after)} :: {txt[:80]}"
             )
 
-        # Между заголовками разных уровней — 1 пустая строка и без текста
-        items_sorted=sorted(items,key=lambda t:t[4])
-        for (r1,t1,l1,s1,i1),(r2,t2,l2,s2,i2) in zip(items_sorted,items_sorted[1:]):
-            if l1==l2: continue
-            between=[L for k,L in enumerate(page_lines[pno]) if i1<k<i2]
-            has_text=any(len(re.findall(r"[А-Яа-яA-Za-z0-9Ёё]",t))>=3 for _,_,t,_ in between)
-            gap=r2.y0-r1.y1; ok_gap=(0.8*ref_step<=gap<=1.8*ref_step)
+        # 4) Между заголовками разных уровней — одна пустая строка, без текста
+        items_sorted = sorted(items, key=lambda t:t[4])  # по fst
+        for (r1,t1,l1,s1,f1,l1e,sp1),(r2,t2,l2,s2,f2,l2e,sp2) in zip(items_sorted, items_sorted[1:]):
+            if l1 == l2: continue
+            between = [R for k,R in enumerate(raw) if l1e < k < f2]
+            has_text = any(len(re.findall(r"[А-Яа-яA-Za-z0-9Ёё]", R[2])) >= 3 for R in between)
+            gap = r2.y0 - r1.y1
+            ok_gap = (0.8*ref_step <= gap <= 1.8*ref_step)
             if has_text or not ok_gap:
-                if annotate_pdf: page.add_highlight_annot(r1|r2).set_info(title=PREFIX,content=ERR_BETWEEN)
-                viol.add(pno+1)
-
-        # обновляем user summary для страницы (накапливаем в общем ниже)
-        found[pno]=items
-        # (violations учитываются при финальном формировании суммарного вывода)
-        if viol: pass
+                if annotate_pdf:
+                    x,y = _pin_from_rect(r1 | r2)
+                    _annot(page, x, y, ERR_BETWEEN)
 
     total = sum(len(v) for v in found.values())
     per_page = [f"Стр. {k}: найдено заголовков {len(v)}" for k,v in sorted(found.items())]
     admin = "[Headings]\n" + f"Найдено заголовков всего: {total}\n" + ("\n".join(per_page) if per_page else "Заголовков не найдено.")
     if debug: admin += "\n\n[HeadingsDebug]\n" + "\n".join(debug)
 
-    # страницы с нарушениями (по жёлтым аннотациям определить нельзя здесь), поэтому пересчитаем быстро:
-    # простая переоценка: если в debug у строки ok_after=0 или blank_*==0 или сработали NEWPAGE/CASE/BETWEEN — мы их уже добавляли в viol.
-    # Для краткости сформируем из debug:
+    # user_summary в нужном формате
     viol_pages=set()
     for row in debug:
-        if "ok_after=0" in row or "blank_before=0" in row or "rule_after" in row and ("::" in row):
-            try:
-                pg=int(row.split("Стр.")[1].split()[0])
-                viol_pages.add(pg)
+        if "ok_after=0" in row or "blank_before=0" in row:
+            try: viol_pages.add(int(row.split("Стр.")[1].split()[0]))
             except: pass
-    user = ("✅Проверка заголовков: нарушений не обнаружено" 
+    user = ("✅Проверка заголовков: нарушений не обнаружено"
             if not viol_pages else f"⚠️Проверка заголовков: нарушения на страницах {', '.join(map(str,sorted(viol_pages)))}")
     return {"user_summary": user, "admin_details": admin}
