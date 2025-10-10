@@ -15,6 +15,7 @@ from scripts.figure_caption_checker import check_figure_captions
 from scripts.structural_headings_checker import check_structural_headings
 from scripts.list_checker import check_lists
 from scripts.formula_checker import check_formulas
+from scripts.headings_checker import check_headings
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
@@ -143,6 +144,13 @@ def process_pdf_file(pdf_path: str):
         struct_user = struct_results['user_summary']
         struct_admin = struct_results['admin_details']
 
+        headings_results = check_headings(
+            pdf_doc,
+            start_page=3,
+            annotate_pdf=True   # хочешь без аннотаций — поставь False
+        )
+        headings_user = headings_results['user_summary']
+        headings_admin = headings_results['admin_details']
 
         # --- Основной текст (Times New Roman, 12–14 pt, межстрочник ≈1.5; исключаем не-текст) ---
         exclude_for_bodytext = _merge_bbox_maps(
@@ -180,8 +188,9 @@ def process_pdf_file(pdf_path: str):
         f"{double_space_user}\n"
         f"{table_user}\n"
         f"{image_user}\n"
-        f"{formula_user}\n"     
+        f"{formula_user}\n"
         f"{list_user}\n"
+        f"{headings_user}\n"         
         f"{struct_user}\n"
         f"{body_user}"
     )
@@ -193,12 +202,11 @@ def process_pdf_file(pdf_path: str):
         "\n\n[DoubleSpaceCheck]\n" + double_space_admin +
         "\n\n[TableCheck]\n" + table_admin +
         "\n\n[ImageCheck]\n" + image_admin +
-        "\n\n[FormulaCheck]\n" + formula_admin +   
+        "\n\n[FormulaCheck]\n" + formula_admin +
         "\n\n[ListCheck]\n" + list_admin +
-        "\n\n[StructHeadings]\n" + struct_admin+
+        "\n\n[Headings]\n" + headings_admin +   
+        "\n\n[StructHeadings]\n" + struct_admin +
         "\n\n[BodyText]\n" + body_admin
-        
-        
     )
     return (
         out_path,
