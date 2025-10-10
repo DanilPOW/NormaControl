@@ -38,13 +38,12 @@ def _annot(page:fitz.Page,x:float,y:float,msg:str):
 
 def check_headings(doc:fitz.Document,*,start_page:int=3,annotate_pdf:bool=True)->dict:
     found:Dict[int,List[Tuple[fitz.Rect,str,int,float,int,int,List[dict]]]]={}
-    debug:List[str]=[]
-    viol_pages:set=set()
+    debug:List[str]=[]; viol_pages:set=set()
     BLANK_K,TOL_PT=1.3,6.0
 
     for pno in range(max(0,start_page-1),len(doc)):
         page=doc[pno]
-        raw=[]  # y0,y1,txt,sz,spans
+        raw=[]  # (y0,y1,txt,sz,spans)
         for b in page.get_text("dict").get("blocks",[]):
             for ln in b.get("lines",[]):
                 sp=ln.get("spans",[]); 
@@ -101,16 +100,21 @@ def check_headings(doc:fitz.Document,*,start_page:int=3,annotate_pdf:bool=True)-
                 f"rule_after={'blank' if not multiline else 'blank+8'} ok_after={int(ok_after)} :: {txt[:80]}"
             )
 
-        # между заголовками разных уровней — одна пустая строка и без текста
+        # Между уровнями: одна пустая строка и без текста. Меряем top->top.
         items_sorted=sorted(items,key=lambda t:t[4])
-        for (r1,_,l1,_,f1,l1e,_),(r2,_,l2,_,f2,l2e,_) in zip(items_sorted,items_sorted[1:]):
+        for (r1,t1,l1,_,f1,l1e,_),(r2,t2,l2,_,f2,l2e,_) in zip(items_sorted,items_sorted[1:]):
             if l1==l2: continue
             between=[R for k,R in enumerate(raw) if l1e<k<f2]
             has_text=any(len(re.findall(r"[А-Яа-яA-Za-z0-9Ёё]",R[2]))>=3 for R in between)
-            gap=r2.y0-r1.y1; ok_gap=(0.8*ref_step<=gap<=1.8*ref_step)
+            top_gap = r2.y0 - r1.y0
+            ok_gap = (1.6*ref_step <= top_gap <= 3.8*ref_step)
             if has_text or not ok_gap:
                 if annotate_pdf: _annot(page,*_pin_from_rect(r1|r2),ERR_BETWEEN)
                 viol_pages.add(pno+1)
+                debug.append(
+                    f"Стр.{pno+1} BETWEEN lvl{l1}->{l2} top_gap={top_gap:.1f} ref_step={ref_step:.1f} "
+                    f"has_text={int(has_text)} ok_gap={int(ok_gap)} :: '{t1[:40]}' → '{t2[:40]}'"
+                )
 
     total=sum(len(v) for v in found.values())
     per_page=[f"Стр. {k}: найдено заголовков {len(v)}" for k,v in sorted(found.items())]
