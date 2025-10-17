@@ -100,7 +100,7 @@ def check_headings(doc:fitz.Document,*,start_page:int=3,annotate_pdf:bool=True)-
                 f"rule_after={'blank' if not multiline else 'blank+8'} ok_after={int(ok_after)} :: {txt[:80]}"
             )
 
-        # Между уровнями: одна пустая строка и без текста. Меряем top->top.
+        # Между уровнями: одна пустая строка и без текста
         items_sorted=sorted(items,key=lambda t:t[4])
         for (r1,t1,l1,_,f1,l1e,_),(r2,t2,l2,_,f2,l2e,_) in zip(items_sorted,items_sorted[1:]):
             if l1==l2: continue
