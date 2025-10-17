@@ -84,17 +84,17 @@ def _is_noise_line(line):  # отсев «мусорных» строк
     x0,y0,x1,y1 = line["bbox"]
     h = max(0.0, y1 - y0)
     txt = (line.get("text") or "").strip()
-    if fs < 6.0:                       # слишком мелкий кегль
+    if fs < 6.0:      
         return True
-    if h < mm_to_pt(2.0):              # слишком маленькая высота
+    if h < mm_to_pt(2.0):     
         return True
-    if len(txt) == 0:                  # пустой текст
+    if len(txt) == 0:                
         return True
-    if _PUNCT_ONLY_RE.match(txt):      # только пунктуация
+    if _PUNCT_ONLY_RE.match(txt):      # только пунктуаци
         return True
     return False
 
-def collect_text_lines(page):  # собрать и нормализовать строки текста на странице
+def collect_text_lines(page):
     lines = []
     d = page.get_text("dict")
     for b in d.get("blocks", []):
