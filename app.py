@@ -16,6 +16,7 @@ from scripts.structural_headings_checker import check_structural_headings
 from scripts.list_checker import check_lists
 from scripts.formula_checker import check_formulas
 from scripts.headings_checker import check_headings
+from scripts.references_checker import check_references
 
 TEMP_DIR = "/opt/gradio-app/tmp"
 
@@ -179,6 +180,11 @@ def process_pdf_file(pdf_path: str):
         formula_admin = formula_results['admin_details']
         formula_bboxes_by_page = formula_results.get('formula_bboxes_by_page', {})
 
+        # --- Список использованных источников ---
+        refs_results = check_references(pdf_doc)
+        refs_user = refs_results['user_summary']
+        refs_admin = refs_results['admin_details']
+
         pdf_doc.save(out_path)
 
     user_notes = (
@@ -190,7 +196,8 @@ def process_pdf_file(pdf_path: str):
         f"{image_user}\n"
         f"{formula_user}\n"
         f"{list_user}\n"
-        f"{headings_user}\n"         
+        f"{headings_user}\n"
+        f"{refs_user}\n"            # <-- добавили
         f"{struct_user}\n"
         f"{body_user}"
     )
@@ -204,7 +211,8 @@ def process_pdf_file(pdf_path: str):
         "\n\n[ImageCheck]\n" + image_admin +
         "\n\n[FormulaCheck]\n" + formula_admin +
         "\n\n[ListCheck]\n" + list_admin +
-        "\n\n[Headings]\n" + headings_admin +   
+        "\n\n[Headings]\n" + headings_admin +
+        "\n\n[References]\n" + refs_admin +      # <-- добавили
         "\n\n[StructHeadings]\n" + struct_admin +
         "\n\n[BodyText]\n" + body_admin
     )
@@ -294,6 +302,8 @@ with gr.Blocks(title="Нормоконтроль", theme=gr.themes.Soft()) as if
         - Проверка таблиц/подписей таблиц
         - Проверка заголовков структурных элементов
         - Проверка основного текста (в процессе)
+        - Проверка списка использованных источников
+        - Проверка заголовков разделов/подразделов/пунктов
         
         Формат выходного файла:
         `<ИсходноеИмя>_Проверено_DD.MM.YYYY_в_HH:MM.pdf`
