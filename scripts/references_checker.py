@@ -96,25 +96,29 @@ def _analyze_source_candidate(text: str, debug: List[str]) -> Tuple[str, int, bo
     if 'учебник' in text_lower: features.append("УЧЕБНИК")
     if 'пособие' in text_lower: features.append("ПОСОБИЕ") 
     if 'сборник' in text_lower: features.append("СБОРНИК")
-    if 'закон' in text_lower: features.append("ЗАКОН")
+    if 'закон' in text_lower or 'федеральный' in text_lower: features.append("ЗАКОН")
     if 'гост' in text_lower: features.append("ГОСТ")
     if 'автореферат' in text_lower: features.append("АВТОРЕФЕРАТ")
     if 'диссертация' in text_lower: features.append("ДИССЕРТАЦИЯ")
-    if '//' in text: features.append("СТАТЬЯ_СЛЭШ")
+    if '//' in text or re.search(r'/\s*[А-Я]', text): features.append("СТАТЬЯ_СЛЭШ")
     if 'журнал' in text_lower: features.append("ЖУРНАЛ")
     if any(word in text_lower for word in ['под ред', 'ред.']): features.append("РЕДАКТОР")
     
-    type_scores = {
-        "Книга/учебник": len([f for f in features if f in ["УЧЕБНИК", "ПОСОБИЕ", "ISBN", "ГОД_СТРАНИЦЫ"]]),
-        "Сборник": len([f for f in features if f in ["СБОРНИК", "РЕДАКТОР", "ISBN"]]),
-        "Нормативный акт": len([f for f in features if f in ["ЗАКОН", "ФЕДЕРАЛЬНЫЙ"]]),
-        "Стандарт": len([f for f in features if f in ["ГОСТ", "СТАНДАРТ", "URL"]]),
-        "Диссертация": len([f for f in features if f in ["АВТОРЕФЕРАТ", "ДИССЕРТАЦИЯ", "URL"]]),
-        "Статья": len([f for f in features if f in ["СТАТЬЯ_СЛЭШ", "ЖУРНАЛ", "Т.", "С."]]),
-        "Электронный ресурс": len([f for f in features if f in ["URL", "ДАТА_ОБРАЩЕНИЯ", "САЙТ"]])
-    }
+    # Приоритетная классификация для нормативных актов
+    if 'закон' in text_lower or 'федеральный' in text_lower:
+        probable_type = "Нормативный акт"
+        score = 10
+    else:
+        type_scores = {
+            "Книга/учебник": len([f for f in features if f in ["УЧЕБНИК", "ПОСОБИЕ", "ISBN", "ГОД_СТРАНИЦЫ"]]),
+            "Сборник": len([f for f in features if f in ["СБОРНИК", "РЕДАКТОР", "ISBN"]]),
+            "Стандарт": len([f for f in features if f in ["ГОСТ", "СТАНДАРТ", "URL"]]),
+            "Диссертация": len([f for f in features if f in ["АВТОРЕФЕРАТ", "ДИССЕРТАЦИЯ", "URL"]]),
+            "Статья": len([f for f in features if f in ["СТАТЬЯ_СЛЭШ", "ЖУРНАЛ", "Т.", "С."]]),
+            "Электронный ресурс": len([f for f in features if f in ["URL", "ДАТА_ОБРАЩЕНИЯ", "САЙТ"]])
+        }
+        probable_type, score = max(type_scores.items(), key=lambda x: x[1])
     
-    probable_type, score = max(type_scores.items(), key=lambda x: x[1])
     format_ok = _validate_source_format(probable_type, text, debug)
     expected_format = _get_expected_format(probable_type)
     
@@ -152,7 +156,7 @@ def _validate_source_format(source_type: str, text: str, debug: List[str]) -> bo
             (r'на соискание.*степени', "ученая степень")
         ],
         "Статья": [
-            (r'//', "двойной слеш"),
+            (r'//|/', "слеш"),  # Принимаем как двойной так и одинарный слеш
             (r'—.*\d{4}.*—', "год издания"),
             (r'[ТС]\.\d+', "том/страницы")
         ],
