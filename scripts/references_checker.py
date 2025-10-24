@@ -68,6 +68,18 @@ def _point_for_annot(spans: List[dict]) -> Tuple[float, float]:
     x0, y0, x1, y1 = spans[0]["bbox"]
     return x0 + 2.0, y0 + (y1 - y0) * 0.45
 
+def _get_expected_format(source_type: str) -> str:
+    formats = {
+        "Книга/учебник": "Фамилия И.О. Название. — Город: Издательство, Год. — XXX с.",
+        "Сборник": "Название сборника / под ред. И.О. Фамилии. — Город: Издательство, Год. — XXX с.",
+        "Нормативный акт": "Название акта № XXX-ФЗ от DD.MM.YYYY. — Режим доступа: URL",
+        "Стандарт": "ГОСТ X.XXX-YYYY Название стандарта. — Введ. DD.MM.YYYY.",
+        "Диссертация": "Фамилия И.О. Название: дис. ... уч. степень. — Город, Год. — XXX с.",
+        "Статья": "Фамилия И.О. Название статьи // Журнал. — Год. — № X. — С. XX-XX.",
+        "Электронный ресурс": "Фамилия И.О. Название [Электронный ресурс]. — URL (дата обращения: DD.MM.YYYY)."
+    }
+    return formats.get(source_type, "Стандартный библиографический формат")
+
 def _analyze_source_candidate(text: str, debug: List[str]) -> Tuple[str, int, bool]:
     text_lower = text.lower()
     features = []
@@ -99,10 +111,12 @@ def _analyze_source_candidate(text: str, debug: List[str]) -> Tuple[str, int, bo
     
     probable_type, score = max(type_scores.items(), key=lambda x: x[1])
     format_ok = _validate_source_format(probable_type, text, debug)
+    expected_format = _get_expected_format(probable_type)
     
     debug.append(f"КАНДИДАТ: '{text[:80]}...'")
     debug.append(f"  ПРИЗНАКИ: {features}")
     debug.append(f"  ТИП: {probable_type} (баллы: {score})")
+    debug.append(f"  ОЖИДАЕМЫЙ ФОРМАТ: {expected_format}")
     debug.append(f"  РЕГУЛЯРКИ: {'ПРОШЕЛ' if format_ok else 'НЕ ПРОШЕЛ'}")
     debug.append("")
     
