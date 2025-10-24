@@ -134,7 +134,7 @@ def _analyze_source_candidate(text: str, debug: List[str]) -> Tuple[str, int, bo
 def _validate_source_format(source_type: str, text: str, debug: List[str]) -> bool:
     validation_patterns = {
         "Книга/учебник": [
-            (r'[А-Я][а-я]+ [А-Я]\.[А-Я]\.', "автор с инициалами"),
+            (r'[А-Я][а-я]+\s+[А-Я]\.\s*[А-Я]\.', "автор с инициалами"),
             (r'.*—.*:.*\d{4}', "год издания с тире"),
             (r'.*—.*\d+.*с', "количество страниц")
         ],
@@ -158,7 +158,7 @@ def _validate_source_format(source_type: str, text: str, debug: List[str]) -> bo
         "Статья": [
             (r'//|/', "слеш"),  # Принимаем как двойной так и одинарный слеш
             (r'—.*\d{4}.*—', "год издания"),
-            (r'[ТС]\.\d+', "том/страницы")
+            (r'[ТС]\.\s*\d+', "том/страницы")
         ],
         "Электронный ресурс": [
             (r'URL:', "URL"),
