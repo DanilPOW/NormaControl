@@ -49,13 +49,18 @@ def _page_margins(rows: List[Tuple[float, float, List[dict], str]]) -> Tuple[flo
     xe = [s["bbox"][2] for _,_,sp,txt in rows for s in sp if txt.strip()]
     return (min(xs), max(xe)) if xs and xe else (72.0, 523.0)
 
-def _parse_number_prefix(spans: List[dict]) -> Tuple[Optional[int], bool, fitz.Rect, int]:
-    if not spans: return None, False, fitz.Rect(), 0
+def _parse_number_prefix(spans: List[dict], left_margin: float) -> Tuple[Optional[int], bool, fitz.Rect, int, bool]:
+    if not spans: return None, False, fitz.Rect(), 0, False
     t0 = spans[0].get("text", "")
     m = re.match(r"\s*(\d{1,3})[\.\s]*", t0)
-    if m:
-        return int(m.group(1)), '.' in t0[:10], fitz.Rect(*spans[0]["bbox"]), 1
-    return None, False, fitz.Rect(*spans[0]["bbox"]), 0
+    
+    # Проверяем отступ
+    first_span_x = float(spans[0]["bbox"][0])
+    has_indent = (left_margin + INDENT_PT - TOL <= first_span_x <= left_margin + INDENT_PT + TOL)
+    
+    if m and has_indent:
+        return int(m.group(1)), '.' in t0[:10], fitz.Rect(*spans[0]["bbox"]), 1, has_indent
+    return None, False, fitz.Rect(*spans[0]["bbox"]), 0, has_indent
 
 def _first_content_x(spans: List[dict], used_spans: int) -> float:
     for s in spans[used_spans:]:
@@ -201,21 +206,23 @@ def check_references(doc: fitz.Document) -> dict:
     for pno in range(p_start, p_end_exc):
         rows = _page_text_rows(doc[pno])
         page_rows_cache[pno] = rows
-        page_margin_cache[pno] = _page_margins(rows)
+        left_margin, _ = _page_margins(rows)
+        page_margin_cache[pno] = (left_margin, _)
+        
         for i, (y0, y1, sp, txt) in enumerate(rows):
-            num, okfmt, bbox, used = _parse_number_prefix(sp)
-            if num is not None:
-                starts.append((pno, i, num, okfmt, used))
+            num, okfmt, bbox, used, has_indent = _parse_number_prefix(sp, left_margin)
+            if num is not None and has_indent:
+                starts.append((pno, i, num, okfmt, used, has_indent))
 
     starts.sort(key=lambda t: (t[0], page_rows_cache[t[0]][t[1]][0]))
     
-    for k, (pno, idx, num, okfmt, used) in enumerate(starts):
+    for k, (pno, idx, num, okfmt, used, has_indent) in enumerate(starts):
         rows = page_rows_cache[pno]
         tail = [(pno, idx)]
         
         next_pno, next_idx = (starts[k+1][0], starts[k+1][1]) if k+1 < len(starts) else (None, None)
         for j in range(idx+1, len(rows)):
-            if (pno == next_pno and j >= next_idx) or _parse_number_prefix(rows[j][2])[0] is not None:
+            if (pno == next_pno and j >= next_idx) or _parse_number_prefix(rows[j][2], page_margin_cache[pno][0])[0] is not None:
                 break
             tail.append((pno, j))
             
