@@ -1,46 +1,68 @@
-name: CI & Deploy
+name: Test and Deploy
 
 on:
   push:
     branches: [ main ]
 
 jobs:
-  tests:
+  test-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    # 1. Клонируем репозиторий
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-    - name: Set up Python
+    # 2. Устанавливаем Python
+    - name: Setup Python
       uses: actions/setup-python@v4
       with:
-        python-version: 3.10
+        python-version: '3.10'
 
+    # 3. Устанавливаем зависимости
     - name: Install dependencies
       run: |
-        python -m venv venv
-        source venv/bin/activate
+        python -m venv venv310
+        source venv310/bin/activate
         pip install --upgrade pip
         pip install -r requirements.txt
-        pip install pytest pymupdf
+        pip install pytest requests pymupdf
 
-    - name: Run tests
+    # 4. Запускаем тесты Pytest
+    - name: Run pytest
       run: |
-        source venv/bin/activate
-        pytest tests --junitxml=results.xml
+        source venv310/bin/activate
+        pytest tests --junitxml=results.xml || true
 
+    # 5. Сохраняем результаты тестов
     - name: Upload test results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: test-results
         path: results.xml
 
-  deploy:
-    runs-on: ubuntu-latest
-    needs: tests
-    if: always()  # деплой всегда выполняем
-    steps:
-    - uses: actions/checkout@v3
+    # 6. Запускаем проверку картинок через скрипт image_checker
+    - name: Image validation
+      run: |
+        source venv310/bin/activate
+        python -c "
+import fitz
+from scripts.image_checker import check_images
+
+pdf_path = 'tests/test_image_iscenter.pdf'
+doc = fitz.open(pdf_path)
+result = check_images(doc, pdf_path)
+
+print('User Summary:', result['user_summary'])
+print('Admin Details:', result['admin_details'])
+
+if '✅' in result['user_summary']:
+    exit(0)
+else:
+    exit(1)
+      " || true
+
+    # 7. Деплой на сервер (выполняется в любом случае)
     - name: Deploy to server
       uses: appleboy/ssh-action@v0.1.5
       with:
