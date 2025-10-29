@@ -22,6 +22,15 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt pytest requests pymupdf
 
+    - name: Debug file structure
+      run: |
+        echo "=== File Structure ==="
+        find . -type f -name "*.py" | head -20
+        echo "=== Tests directory ==="
+        ls -la tests/ || echo "Tests directory not found"
+        echo "=== Scripts directory ==="
+        ls -la scripts/ || echo "Scripts directory not found"
+
     - name: Run pytest
       run: |
         pytest tests --junitxml=results.xml
@@ -37,6 +46,7 @@ jobs:
         python scripts/validate_pdf.py
 
     - name: Deploy to server
+      if: success()
       uses: appleboy/ssh-action@v0.1.5
       with:
         host: 89.104.71.29
