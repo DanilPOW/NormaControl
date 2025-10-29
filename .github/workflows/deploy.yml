@@ -9,17 +9,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. Клонируем репозиторий
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # 2. Устанавливаем Python
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
 
-    # 3. Устанавливаем зависимости
     - name: Install dependencies
       run: |
         python -m venv venv310
@@ -28,24 +25,21 @@ jobs:
         pip install -r requirements.txt
         pip install pytest requests pymupdf
 
-    # 4. Запускаем тесты Pytest
     - name: Run pytest
       run: |
         source venv310/bin/activate
         pytest tests --junitxml=results.xml || true
 
-    # 5. Сохраняем результаты тестов
     - name: Upload test results
       uses: actions/upload-artifact@v4
       with:
         name: test-results
         path: results.xml
 
-    # 6. Запускаем проверку картинок через скрипт image_checker
     - name: Image validation
       run: |
         source venv310/bin/activate
-        python -c "
+        python - <<'EOF'
 import fitz
 from scripts.image_checker import check_images
 
@@ -60,9 +54,9 @@ if '✅' in result['user_summary']:
     exit(0)
 else:
     exit(1)
-      " || true
+EOF
+        || true
 
-    # 7. Деплой на сервер (выполняется в любом случае)
     - name: Deploy to server
       uses: appleboy/ssh-action@v0.1.5
       with:
