@@ -39,7 +39,7 @@ import fitz
 from scripts.image_checker import check_images
 
 # Открываем тестовый PDF файл
-pdf_path = 'tests/test_image_iscenter'  # путь к вашему тестовому файлу
+pdf_path = 'tests/test_image_iscenter.pdf'  # путь к вашему тестовому файлу
 doc = fitz.open(pdf_path)
 
 # Запускаем проверку
