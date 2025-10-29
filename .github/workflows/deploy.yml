@@ -16,19 +16,23 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
+        
+    - name: Cache Python dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
 
     - name: Install dependencies
       run: |
-        python -m venv venv310
-        source venv310/bin/activate
-        pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pytest requests pymupdf
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt pytest requests pymupdf
 
     - name: Run pytest
       run: |
-        source venv310/bin/activate
-        pytest tests --junitxml=results.xml || true
+        pytest tests --junitxml=results.xml
 
     - name: Upload test results
       uses: actions/upload-artifact@v4
@@ -38,8 +42,7 @@ jobs:
 
     - name: Image validation
       run: |
-        source venv310/bin/activate
-        python - <<'EOF'
+        python -c "
 import fitz
 from scripts.image_checker import check_images
 
@@ -51,11 +54,12 @@ print('User Summary:', result['user_summary'])
 print('Admin Details:', result['admin_details'])
 
 if '✅' in result['user_summary']:
+    print('Image validation passed')
     exit(0)
 else:
+    print('Image validation failed')
     exit(1)
-EOF
-        || true
+        "
 
     - name: Deploy to server
       uses: appleboy/ssh-action@v0.1.5
